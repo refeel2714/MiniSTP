@@ -47,7 +47,20 @@ MINISTP_TEST_DATABASE_URL=postgresql://postgres:postgres@localhost:5432/ministp_
 | `strategy`, `backtest` | 전략 인터페이스, 이벤트 기반 일봉 백테스트 (다음 봉 시가 체결, 슬리피지, 호가단위) | R-80~84 |
 | `risk`, `ticks` | 사전 리스크 체크, KRX 호가단위 | R-82~83 |
 | `strategies.ma_cross` | 예시 전략 (이동평균 교차) | D5 |
+| `broker` | 증권사 인터페이스, 한국투자증권 KIS 조회 클라이언트(토큰 캐시, 잔고 연속조회), 대사 항목 변환 | D1, R-70~71 |
 | `store` | PostgreSQL 이벤트 저장, 재생 복원, DB 수준 append-only·차대변 통제 | 03 데이터 모델, R-04, R-50 |
+
+## 한국투자증권 모의투자 연결 확인 (본인 PC에서)
+
+키는 저장소에 넣지 않고 환경변수로만 전달합니다. 아래 스크립트는 조회만 하고 주문은 내지 않으며, 키와 계좌번호를 출력하지 않습니다.
+
+```bash
+.venv/bin/python scripts/kis_smoke.py      # Windows: .venv\Scripts\python scripts\kis_smoke.py
+```
+
+앱키, 앱시크릿, 모의계좌번호(예: `12345678-01`)를 차례로 물어봅니다. 입력 내용은 화면에 표시되지 않고 저장되지 않습니다. `MINISTP_KIS_APP_KEY`, `MINISTP_KIS_APP_SECRET`, `MINISTP_KIS_ACCOUNT` 환경변수가 있으면 그 값을 씁니다.
+
+기본 연결 대상은 모의투자 서버입니다. 실전 서버는 `MINISTP_KIS_ENV=live`와 `MINISTP_ALLOW_LIVE=1`을 둘 다 설정해야 열립니다(Phase 4 전용). 토큰은 `~/.ministp/kis_token.json`에 캐시합니다(KIS 토큰 발급 1분당 1회 제한).
 
 ## 보안
 
