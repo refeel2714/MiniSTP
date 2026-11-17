@@ -18,12 +18,21 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .base import BrokerBalance, BrokerPosition
+from .base import BrokerBalance, BrokerOrder, BrokerPosition, OrderAck
 
 PAPER_URL = "https://openapivts.koreainvestment.com:29443"
 LIVE_URL = "https://openapi.koreainvestment.com:9443"
 BALANCE_PATH = "/uapi/domestic-stock/v1/trading/inquire-balance"
 TR_BALANCE = {"paper": "VTTC8434R", "live": "TTTC8434R"}
+ORDER_PATH = "/uapi/domestic-stock/v1/trading/order-cash"
+TR_ORDER = {("paper", "BUY"): "VTTC0012U", ("paper", "SELL"): "VTTC0011U",
+            ("live", "BUY"): "TTTC0012U", ("live", "SELL"): "TTTC0011U"}
+CANCEL_PATH = "/uapi/domestic-stock/v1/trading/order-rvsecncl"
+TR_CANCEL = {"paper": "VTTC0013U", "live": "TTTC0013U"}
+DAILY_PATH = "/uapi/domestic-stock/v1/trading/inquire-daily-ccld"
+TR_DAILY = {"paper": "VTTC0081R", "live": "TTTC0081R"}
+PRICE_PATH = "/uapi/domestic-stock/v1/quotations/inquire-price"
+TR_PRICE = "FHKST01010100"
 MAX_PAGES = 20
 
 
@@ -139,15 +148,41 @@ class KisClient:
         self._save_cached_token(*self._token)
         return body["access_token"]
 
-    def _get(self, path: str, tr_id: str, params: dict, tr_cont: str = "") -> tuple[dict, dict]:
-        headers = {"authorization": f"Bearer {self.token()}", "appkey": self.cfg.app_key,
-                   "appsecret": self.cfg.app_secret, "tr_id": tr_id, "custtype": "P",
-                   "tr_cont": tr_cont}
-        url = f"{self.cfg.base_url}{path}?{urllib.parse.urlencode(params)}"
-        status, resp_headers, body = self._transport("GET", url, headers, None)
+    def _headers(self, tr_id: str, tr_cont: str = "") -> dict:
+        return {"authorization": f"Bearer {self.token()}", "appkey": self.cfg.app_key,
+                "appsecret": self.cfg.app_secret, "tr_id": tr_id, "custtype": "P",
+                "tr_cont": tr_cont}
+
+    @staticmethod
+    def _check(tr_id: str, status: int, body: dict) -> None:
         if status != 200 or body.get("rt_cd") != "0":
             raise KisError(f"{tr_id} failed ({status}) {body.get('msg_cd', '')}: {body.get('msg1', '')}")
+
+    def _get(self, path: str, tr_id: str, params: dict, tr_cont: str = "") -> tuple[dict, dict]:
+        url = f"{self.cfg.base_url}{path}?{urllib.parse.urlencode(params)}"
+        status, resp_headers, body = self._transport("GET", url, self._headers(tr_id, tr_cont), None)
+        self._check(tr_id, status, body)
         return resp_headers, body
+
+    def _post(self, path: str, tr_id: str, body: dict) -> dict:
+        status, _, resp = self._transport("POST", f"{self.cfg.base_url}{path}",
+                                          self._headers(tr_id), body)
+        self._check(tr_id, status, resp)
+        return resp
+
+    def _paged(self, path: str, tr_id: str, params: dict) -> list[dict]:
+        """Follow tr_cont continuation; returns every page body."""
+        pages, tr_cont = [], ""
+        for _ in range(MAX_PAGES):
+            headers, body = self._get(path, tr_id, params, tr_cont)
+            pages.append(body)
+            if headers.get("tr_cont") not in ("M", "F"):
+                return pages
+            params = {**params, "CTX_AREA_FK100": body.get("ctx_area_fk100", ""),
+                      "CTX_AREA_NK100": body.get("ctx_area_nk100", "")}
+            tr_cont = "N"
+            self._sleep(0.5)  # paper accounts have a low call limit
+        raise KisError(f"{tr_id} continuation exceeded {MAX_PAGES} pages")
 
     # ----- queries -----
 
@@ -157,21 +192,10 @@ class KisClient:
                   "AFHR_FLPR_YN": "N", "OFL_YN": "", "INQR_DVSN": "02", "UNPR_DVSN": "01",
                   "FUND_STTL_ICLD_YN": "N", "FNCG_AMT_AUTO_RDPT_YN": "N", "PRCS_DVSN": "00",
                   "CTX_AREA_FK100": "", "CTX_AREA_NK100": ""}
-        rows, summary, raw, tr_cont = [], None, [], ""
-        for _ in range(MAX_PAGES):
-            headers, body = self._get(BALANCE_PATH, TR_BALANCE[self.cfg.env], params, tr_cont)
-            raw.append(body)
-            rows.extend(body.get("output1") or [])
-            if body.get("output2"):
-                summary = body["output2"][0]
-            if headers.get("tr_cont") not in ("M", "F"):
-                break
-            params = {**params, "CTX_AREA_FK100": body.get("ctx_area_fk100", ""),
-                      "CTX_AREA_NK100": body.get("ctx_area_nk100", "")}
-            tr_cont = "N"
-            self._sleep(0.5)  # paper accounts have a low call limit
-        else:
-            raise KisError(f"balance continuation exceeded {MAX_PAGES} pages")
+        raw = self._paged(BALANCE_PATH, TR_BALANCE[self.cfg.env], params)
+        rows = [r for body in raw for r in (body.get("output1") or [])]
+        summaries = [body["output2"][0] for body in raw if body.get("output2")]
+        summary = summaries[-1] if summaries else None
         if summary is None:
             raise KisError("balance response had no output2 summary")
 
@@ -184,3 +208,51 @@ class KisClient:
                              cash_d0=_int(summary.get("dnca_tot_amt")),
                              cash_projected=_int(summary.get("prvs_rcdl_excc_amt")),
                              raw=tuple(raw))
+
+    # ----- orders (spec R-40~43) -----
+
+    def get_price(self, symbol: str) -> int:
+        """현재가 (reference price for pre-trade risk on market orders)."""
+        _, body = self._get(PRICE_PATH, TR_PRICE,
+                            {"FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": symbol})
+        return _int(body["output"]["stck_prpr"])
+
+    def place_order(self, symbol: str, side: str, qty: int, limit_price: int | None) -> OrderAck:
+        """현금 주문. limit_price=None means a market order (시장가)."""
+        if qty <= 0:
+            raise KisError("qty must be positive")
+        body = {"CANO": self.cfg.account_no, "ACNT_PRDT_CD": self.cfg.product_code,
+                "PDNO": symbol, "ORD_DVSN": "01" if limit_price is None else "00",
+                "ORD_QTY": str(qty), "ORD_UNPR": "0" if limit_price is None else str(limit_price),
+                "EXCG_ID_DVSN_CD": "KRX", "SLL_TYPE": "01" if side == "SELL" else "",
+                "CNDT_PRIC": ""}
+        out = self._post(ORDER_PATH, TR_ORDER[(self.cfg.env, side)], body)["output"]
+        return OrderAck(order_no=out["ODNO"], org_no=out["KRX_FWDG_ORD_ORGNO"])
+
+    def cancel_order(self, ack: OrderAck) -> None:
+        """잔량 전부 취소."""
+        body = {"CANO": self.cfg.account_no, "ACNT_PRDT_CD": self.cfg.product_code,
+                "KRX_FWDG_ORD_ORGNO": ack.org_no, "ORGN_ODNO": ack.order_no, "ORD_DVSN": "00",
+                "RVSE_CNCL_DVSN_CD": "02", "ORD_QTY": "0", "ORD_UNPR": "0",
+                "QTY_ALL_ORD_YN": "Y", "EXCG_ID_DVSN_CD": "KRX"}
+        self._post(CANCEL_PATH, TR_CANCEL[self.cfg.env], body)
+
+    def daily_orders(self, day: dt.date) -> list[BrokerOrder]:
+        """주식일별주문체결조회 for one day: cumulative fill state per order."""
+        ymd = day.strftime("%Y%m%d")
+        params = {"CANO": self.cfg.account_no, "ACNT_PRDT_CD": self.cfg.product_code,
+                  "INQR_STRT_DT": ymd, "INQR_END_DT": ymd, "SLL_BUY_DVSN_CD": "00", "PDNO": "",
+                  "CCLD_DVSN": "00", "INQR_DVSN": "01", "INQR_DVSN_3": "00", "ORD_GNO_BRNO": "",
+                  "ODNO": "", "INQR_DVSN_1": "", "CTX_AREA_FK100": "", "CTX_AREA_NK100": ""}
+        out = []
+        for body in self._paged(DAILY_PATH, TR_DAILY[self.cfg.env], params):
+            for r in body.get("output1") or []:
+                if not r.get("odno"):
+                    continue
+                out.append(BrokerOrder(
+                    order_no=r["odno"], symbol=r["pdno"],
+                    side="SELL" if r.get("sll_buy_dvsn_cd") == "01" else "BUY",
+                    qty=_int(r.get("ord_qty")), filled_qty=_int(r.get("tot_ccld_qty")),
+                    filled_amount=_int(r.get("tot_ccld_amt")),
+                    canceled_qty=_int(r.get("cnc_cfrm_qty")), rejected_qty=_int(r.get("rjct_qty"))))
+        return out
