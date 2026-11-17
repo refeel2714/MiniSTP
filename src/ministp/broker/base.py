@@ -1,4 +1,5 @@
 """Broker-neutral view of an account, and its mapping to reconciliation items (spec R-70~71)."""
+import datetime as dt
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -21,8 +22,31 @@ class BrokerBalance:
     raw: tuple[dict, ...] = ()  # 원본 응답 (broker_snapshots 저장용)
 
 
+@dataclass(frozen=True)
+class OrderAck:
+    order_no: str   # 주문번호 (ODNO)
+    org_no: str     # 주문조직번호 (KRX_FWDG_ORD_ORGNO), needed to cancel
+
+
+@dataclass(frozen=True)
+class BrokerOrder:
+    """One order as the broker reports it today (cumulative)."""
+    order_no: str
+    symbol: str
+    side: str            # "BUY" | "SELL"
+    qty: int
+    filled_qty: int
+    filled_amount: int   # 총체결금액
+    canceled_qty: int
+    rejected_qty: int
+
+
 class BrokerGateway(Protocol):
     def get_balance(self) -> BrokerBalance: ...
+    def get_price(self, symbol: str) -> int: ...
+    def place_order(self, symbol: str, side: str, qty: int, limit_price: int | None) -> OrderAck: ...
+    def cancel_order(self, ack: OrderAck) -> None: ...
+    def daily_orders(self, day: dt.date) -> list[BrokerOrder]: ...
 
 
 def recon_items(ledger: Ledger, broker: BrokerBalance) -> list[ReconItem]:

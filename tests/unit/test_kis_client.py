@@ -125,3 +125,72 @@ def test_recon_flags_position_missing_on_one_side(ledger):
     results = reconcile(d("11-02"), recon_items(ledger, broker))
     assert [(r.item, r.key, r.internal, r.broker) for r in results if r.status is Status.BREAK] == [
         ("POSITION_QTY", "Z", 0, 5), ("BOOK_COST", "Z", 0, 50_000)]
+
+
+class FakeKisRoutes:
+    """Route by path; record every call."""
+
+    def __init__(self, routes):
+        self.routes, self.calls = routes, []
+
+    def __call__(self, method, url, headers, body):
+        self.calls.append((method, url, headers, body))
+        if url.endswith("/oauth2/tokenP"):
+            return 200, {}, {"access_token": "tok", "access_token_token_expired": "2026-11-18 09:00:00"}
+        path = urllib.parse.urlparse(url).path
+        return self.routes[path].pop(0)
+
+
+def ok(output=None, output1=None, more=False):
+    body = {"rt_cd": "0", "msg_cd": "APBK0013", "msg1": "주문 전송 완료 되었습니다."}
+    if output is not None:
+        body["output"] = output
+    if output1 is not None:
+        body["output1"] = output1
+    return 200, {"tr_cont": "M" if more else "D"}, body
+
+
+def test_place_market_and_limit_orders(cfg):
+    fake = FakeKisRoutes({"/uapi/domestic-stock/v1/trading/order-cash": [
+        ok({"KRX_FWDG_ORD_ORGNO": "00950", "ODNO": "0000117057", "ORD_TMD": "091500"}),
+        ok({"KRX_FWDG_ORD_ORGNO": "00950", "ODNO": "0000117058", "ORD_TMD": "091501"})]})
+    c = KisClient(cfg, fake, now=lambda: NOW)
+    ack = c.place_order("069500", "BUY", 1, None)
+    c.place_order("069500", "SELL", 2, 40_000)
+    assert (ack.order_no, ack.org_no) == ("0000117057", "00950")
+    posts = [x for x in fake.calls if x[0] == "POST" and "order-cash" in x[1]]
+    assert [p[2]["tr_id"] for p in posts] == ["VTTC0012U", "VTTC0011U"]
+    assert posts[0][3]["ORD_DVSN"] == "01" and posts[0][3]["ORD_UNPR"] == "0"
+    assert posts[1][3]["ORD_DVSN"] == "00" and posts[1][3]["ORD_UNPR"] == "40000"
+    assert posts[1][3]["ORD_QTY"] == "2" and posts[1][3]["SLL_TYPE"] == "01"
+
+
+def test_cancel_uses_org_and_order_no(cfg):
+    from ministp.broker import OrderAck
+    fake = FakeKisRoutes({"/uapi/domestic-stock/v1/trading/order-rvsecncl": [ok({})]})
+    KisClient(cfg, fake, now=lambda: NOW).cancel_order(OrderAck("0000117057", "00950"))
+    _, _, headers, body = fake.calls[-1]
+    assert headers["tr_id"] == "VTTC0013U"
+    assert (body["KRX_FWDG_ORD_ORGNO"], body["ORGN_ODNO"], body["RVSE_CNCL_DVSN_CD"],
+            body["QTY_ALL_ORD_YN"]) == ("00950", "0000117057", "02", "Y")
+
+
+def test_daily_orders_parsed_across_pages(cfg):
+    r1 = {"odno": "0000117057", "pdno": "069500", "sll_buy_dvsn_cd": "02", "ord_qty": "10",
+          "tot_ccld_qty": "4", "tot_ccld_amt": "160000", "cnc_cfrm_qty": "0", "rjct_qty": "0"}
+    r2 = {**r1, "odno": "0000117058", "sll_buy_dvsn_cd": "01", "tot_ccld_qty": "0",
+          "tot_ccld_amt": "0", "cnc_cfrm_qty": "10"}
+    fake = FakeKisRoutes({"/uapi/domestic-stock/v1/trading/inquire-daily-ccld": [
+        ok(output1=[r1], more=True), ok(output1=[r2, {"odno": ""}])]})
+    orders = KisClient(cfg, fake, now=lambda: NOW, sleep=lambda s: None).daily_orders(d("11-17"))
+    assert [(o.order_no, o.side, o.filled_qty, o.filled_amount, o.canceled_qty) for o in orders] == [
+        ("0000117057", "BUY", 4, 160_000, 0), ("0000117058", "SELL", 0, 0, 10)]
+    q = urllib.parse.parse_qs(urllib.parse.urlparse(fake.calls[1][1]).query)
+    assert q["INQR_STRT_DT"] == q["INQR_END_DT"] == ["20261117"]
+    assert fake.calls[1][2]["tr_id"] == "VTTC0081R"
+
+
+def test_get_price(cfg):
+    fake = FakeKisRoutes({"/uapi/domestic-stock/v1/quotations/inquire-price": [
+        ok({"stck_prpr": "40125"})]})
+    assert KisClient(cfg, fake, now=lambda: NOW).get_price("069500") == 40_125

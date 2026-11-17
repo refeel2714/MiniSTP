@@ -8,26 +8,11 @@ for interactively with hidden input and is never written to disk.
 It issues (or reuses) a token and reads the balance. It never places orders and
 prints no keys or account numbers, so the output is safe to share.
 """
-import getpass
 import os
 import sys
 
 from ministp.broker import KisClient, KisConfig, KisError
-
-PROMPTS = [
-    ("MINISTP_KIS_APP_KEY", "모의투자 앱키"),
-    ("MINISTP_KIS_APP_SECRET", "모의투자 앱시크릿"),
-    ("MINISTP_KIS_ACCOUNT", "모의투자 계좌번호 (예: 12345678-01)"),
-]
-
-
-def ask_missing(environ: dict) -> dict:
-    """Ask for anything not set in the environment. Input is hidden and not saved."""
-    env = dict(environ)
-    for key, label in PROMPTS:
-        if not env.get(key):
-            env[key] = getpass.getpass(f"{label} (입력 내용은 화면에 표시되지 않아요): ").strip()
-    return env
+from ministp.cli import ask_missing
 
 
 def main() -> int:

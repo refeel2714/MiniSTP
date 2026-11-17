@@ -48,6 +48,7 @@ MINISTP_TEST_DATABASE_URL=postgresql://postgres:postgres@localhost:5432/ministp_
 | `risk`, `ticks` | 사전 리스크 체크, KRX 호가단위 | R-82~83 |
 | `strategies.ma_cross` | 예시 전략 (이동평균 교차) | D5 |
 | `broker` | 증권사 인터페이스, 한국투자증권 KIS 조회 클라이언트(토큰 캐시, 잔고 연속조회), 대사 항목 변환 | D1, R-70~71 |
+| `session` | 매매 세션: 리스크 체크 → OMS → 증권사 주문 → 체결 동기화(중복 없이) → 원장, 시스템 밖 주문 감지, 일일 대사 | R-40~43, R-70~74, R-83 |
 | `store` | PostgreSQL 이벤트 저장, 재생 복원, DB 수준 append-only·차대변 통제 | 03 데이터 모델, R-04, R-50 |
 
 ## 한국투자증권 모의투자 연결 확인 (본인 PC에서)
@@ -61,6 +62,14 @@ MINISTP_TEST_DATABASE_URL=postgresql://postgres:postgres@localhost:5432/ministp_
 앱키, 앱시크릿, 모의계좌번호(예: `12345678-01`)를 차례로 물어봅니다. 입력 내용은 화면에 표시되지 않고 저장되지 않습니다. `MINISTP_KIS_APP_KEY`, `MINISTP_KIS_APP_SECRET`, `MINISTP_KIS_ACCOUNT` 환경변수가 있으면 그 값을 씁니다.
 
 기본 연결 대상은 모의투자 서버입니다. 실전 서버는 `MINISTP_KIS_ENV=live`와 `MINISTP_ALLOW_LIVE=1`을 둘 다 설정해야 열립니다(Phase 4 전용). 토큰은 `~/.ministp/kis_token.json`에 캐시합니다(KIS 토큰 발급 1분당 1회 제한).
+
+### 주문 한 바퀴 확인 (장중, 모의투자 전용)
+
+```bash
+.venv/bin/python scripts/kis_order_check.py     # KODEX 200(069500) 1주 시장가 매수
+```
+
+빈 모의계좌에서 1주를 사고, 체결을 원장에 반영한 뒤 증권사 잔고와 대사 결과를 출력합니다. 실전 서버 설정에서는 실행되지 않습니다.
 
 ## 보안
 
