@@ -6,7 +6,7 @@ A mini brokerage back office for Korean equities: straight-through processing fr
 
 ## 상태
 
-Phase 0 (스펙 확정) 완료. Phase 1 (원장 코어 + 백테스트) 진행 중: 도메인 코어와 게이트 테스트 S1~S8 통과, PostgreSQL 원장 저장.
+Phase 0 (스펙 확정) 완료. Phase 1 (원장 코어 + 백테스트) 진행 중: 도메인 코어와 게이트 테스트 S1~S8 통과, PostgreSQL 원장 저장, 백테스트 엔진.
 
 ## 문서
 
@@ -44,6 +44,9 @@ MINISTP_TEST_DATABASE_URL=postgresql://postgres:postgres@localhost:5432/ministp_
 | `accounting` | 계정과목 v1, 차대변 검증 분개 | D4, R-50 |
 | `oms` | 주문 상태 머신, 킬 스위치 | R-40~43 |
 | `recon` | 일일 대사, 원인 후보 | R-70~74 |
+| `strategy`, `backtest` | 전략 인터페이스, 이벤트 기반 일봉 백테스트 (다음 봉 시가 체결, 슬리피지, 호가단위) | R-80~84 |
+| `risk`, `ticks` | 사전 리스크 체크, KRX 호가단위 | R-82~83 |
+| `strategies.ma_cross` | 예시 전략 (이동평균 교차) | D5 |
 | `store` | PostgreSQL 이벤트 저장, 재생 복원, DB 수준 append-only·차대변 통제 | 03 데이터 모델, R-04, R-50 |
 
 ## 보안
