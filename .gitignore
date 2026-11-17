@@ -22,3 +22,4 @@ strategies/private/
 # Local data
 data/local/
 *.sqlite
+.venv/
