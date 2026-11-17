@@ -52,11 +52,10 @@ MINISTP_TEST_DATABASE_URL=postgresql://postgres:postgres@localhost:5432/ministp_
 키는 저장소에 넣지 않고 환경변수로만 전달합니다. 아래 스크립트는 조회만 하고 주문은 내지 않으며, 키와 계좌번호를 출력하지 않습니다.
 
 ```bash
-export MINISTP_KIS_APP_KEY=...        # 모의투자 앱키
-export MINISTP_KIS_APP_SECRET=...     # 모의투자 앱시크릿
-export MINISTP_KIS_ACCOUNT=12345678-01  # 모의투자 계좌번호 (8자리-상품코드)
-.venv/bin/python scripts/kis_smoke.py
+.venv/bin/python scripts/kis_smoke.py      # Windows: .venv\Scripts\python scripts\kis_smoke.py
 ```
+
+앱키, 앱시크릿, 모의계좌번호(예: `12345678-01`)를 차례로 물어봅니다. 입력 내용은 화면에 표시되지 않고 저장되지 않습니다. `MINISTP_KIS_APP_KEY`, `MINISTP_KIS_APP_SECRET`, `MINISTP_KIS_ACCOUNT` 환경변수가 있으면 그 값을 씁니다.
 
 기본 연결 대상은 모의투자 서버입니다. 실전 서버는 `MINISTP_KIS_ENV=live`와 `MINISTP_ALLOW_LIVE=1`을 둘 다 설정해야 열립니다(Phase 4 전용). 토큰은 `~/.ministp/kis_token.json`에 캐시합니다(KIS 토큰 발급 1분당 1회 제한).
 
