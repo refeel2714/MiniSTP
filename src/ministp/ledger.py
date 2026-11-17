@@ -10,7 +10,7 @@ from decimal import Decimal
 from enum import StrEnum
 
 from .accounting import Account, Cr, Dr, JournalEntry, entry
-from .calendar import BusinessCalendar
+from .calendar import BusinessCalendar, SettlementCycle
 from .fees import FeeSchedule
 from .instruments import Instrument
 from .money import round2, truncate_won
@@ -131,8 +131,10 @@ class _State:
 
 
 class Ledger:
-    def __init__(self, calendar: BusinessCalendar, fees: FeeSchedule, instruments: dict[str, Instrument]):
+    def __init__(self, calendar: BusinessCalendar, fees: FeeSchedule, instruments: dict[str, Instrument],
+                 settlement_cycle: SettlementCycle = SettlementCycle.t_plus(2)):
         self.calendar = calendar
+        self.settlement_cycle = settlement_cycle
         self.fees = fees
         self.instruments = instruments
         self._events: list[Event] = []
@@ -205,7 +207,8 @@ class Ledger:
     def pending_settlement_net(self) -> int:
         return sum(s.signed for s in self._s.settlements.values() if not s.settled)
 
-    def expected_cash_d2(self) -> int:
+    def projected_cash(self) -> int:
+        """Cash after every booked trade settles (증권사 D+2 예수금, D+1 after a T+1 cutover)."""
         return self.cash_balance() + self.pending_settlement_net()
 
     @property
@@ -213,8 +216,9 @@ class Ledger:
         return self._s.units
 
     @classmethod
-    def replay(cls, events, calendar, fees, instruments) -> "Ledger":
-        led = cls(calendar, fees, instruments)
+    def replay(cls, events, calendar, fees, instruments,
+               settlement_cycle: SettlementCycle = SettlementCycle.t_plus(2)) -> "Ledger":
+        led = cls(calendar, fees, instruments, settlement_cycle)
         for ev in events:
             led._record(ev)
         return led
@@ -250,7 +254,7 @@ class Ledger:
         gross = ev.qty * ev.price
         is_sell = ev.side is Side.SELL
         c = self.fees.costs(inst, is_sell, gross)
-        settle_date = self.calendar.settlement_date(ev.trade_date)
+        settle_date = self.calendar.settlement_date(ev.trade_date, self.settlement_cycle)
         pos = self.position(ev.symbol)
 
         if not is_sell:

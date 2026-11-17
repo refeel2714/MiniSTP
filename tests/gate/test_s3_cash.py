@@ -23,7 +23,7 @@ def test_s3_cash_timeline(ledger):
     ledger.deposit(d("11-02"), INITIAL_DEPOSIT)
     for day in BUSINESS_DAYS:
         run_day(ledger, day, d)
-        assert (ledger.cash_balance(), ledger.expected_cash_d2()) == S3[day], day
+        assert (ledger.cash_balance(), ledger.projected_cash()) == S3[day], day
 
 
 def test_s3_cross_check(ledger):
