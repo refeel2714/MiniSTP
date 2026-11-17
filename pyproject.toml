@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "Mini brokerage back office for Korean equities: order-to-reconciliation STP with an append-only ledger."
 readme = "README.md"
 requires-python = ">=3.12"
-dependencies = []
+dependencies = ["psycopg[binary]>=3.2"]
 
 [dependency-groups]
 dev = ["pytest>=8"]
@@ -18,4 +18,7 @@ packages = ["src/ministp"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-markers = ["gate: Phase gate test derived from docs/spec/04-sample-trades.md"]
+markers = [
+    "gate: Phase gate test derived from docs/spec/04-sample-trades.md",
+    "db: needs PostgreSQL via MINISTP_TEST_DATABASE_URL",
+]

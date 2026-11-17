@@ -27,6 +27,11 @@ class ShortSellError(ValueError):
     """R-36: selling more than the trade-date position."""
 
 
+class LedgerHaltedError(RuntimeError):
+    """A listener (e.g. the DB store) failed; this in-memory ledger may no longer
+    match the durable record and must be rebuilt from it."""
+
+
 # ---------- events (immutable, append-only) ----------
 
 @dataclass(frozen=True)
@@ -139,6 +144,13 @@ class Ledger:
         self.instruments = instruments
         self._events: list[Event] = []
         self._s = _State()
+        self._listeners = []
+        self._halted: str | None = None
+
+    def subscribe(self, listener) -> None:
+        """listener(ledger, seq, event, new_journal_entries) runs after each event is applied.
+        If it raises, the ledger halts (fail closed)."""
+        self._listeners.append(listener)
 
     # ----- commands -----
 
@@ -226,8 +238,21 @@ class Ledger:
     # ----- event application -----
 
     def _record(self, ev: Event) -> None:
+        if self._halted:
+            raise LedgerHaltedError(self._halted)
+        n = len(self._s.journal)
         self._apply(ev)
         self._events.append(ev)
+        new_entries = tuple(self._s.journal[n:])
+        for listener in self._listeners:
+            try:
+                listener(self, len(self._events), ev, new_entries)
+            except Exception as exc:
+                self._halted = f"listener failed at seq {len(self._events)}: {exc!r}"
+                raise LedgerHaltedError(self._halted) from exc
+
+    def execution_result(self, exec_id: str) -> ExecutionResult:
+        return self._s.results[exec_id]
 
     def _apply(self, ev: Event) -> None:
         match ev:
