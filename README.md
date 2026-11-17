@@ -6,7 +6,7 @@ A mini brokerage back office for Korean equities: straight-through processing fr
 
 ## 상태
 
-Phase 0 (스펙 확정) 완료. Phase 1 (원장 코어 + 백테스트) 진행 예정.
+Phase 0 (스펙 확정) 완료. Phase 1 (원장 코어 + 백테스트) 진행 중: 도메인 코어와 게이트 테스트 S1~S8 통과.
 
 ## 문서
 
@@ -21,6 +21,23 @@ Phase 0 (스펙 확정) 완료. Phase 1 (원장 코어 + 백테스트) 진행 �
 | Phase 2 | OMS + 모의투자 연동 (한국투자증권 KIS) | 20영업일 연속 대사 무오류 |
 | Phase 3 | 회계·성과·대시보드 | 공개 저장소와 데모 완성 |
 | Phase 4~5 | 소액 실매매, 다자산 확장 (선택) | |
+
+## 개발
+
+```bash
+uv venv && uv pip install -e . pytest
+.venv/bin/pytest -q            # 전체
+.venv/bin/pytest -q -m gate    # 스펙 04 게이트 테스트만
+```
+
+| 모듈 | 역할 | 스펙 |
+|---|---|---|
+| `calendar` | 영업일, T+2 결제일 | R-10~11 |
+| `fees` | 수수료, 증권거래세, 농특세 | R-20~22 |
+| `ledger` | append-only 이벤트 원장, 포지션, 예수금, 결제, 분개, 평가, 기준가 | R-12~14, R-30~36, R-50~63 |
+| `accounting` | 계정과목 v1, 차대변 검증 분개 | D4, R-50 |
+| `oms` | 주문 상태 머신, 킬 스위치 | R-40~43 |
+| `recon` | 일일 대사, 원인 후보 | R-70~74 |
 
 ## 보안
 
