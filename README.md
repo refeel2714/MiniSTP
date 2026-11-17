@@ -6,7 +6,7 @@ A mini brokerage back office for Korean equities: straight-through processing fr
 
 ## 상태
 
-Phase 0 (스펙 확정) 완료. Phase 1 (원장 코어 + 백테스트) 진행 중: 도메인 코어와 게이트 테스트 S1~S8 통과.
+Phase 0 (스펙 확정) 완료. Phase 1 (원장 코어 + 백테스트) 진행 중: 도메인 코어와 게이트 테스트 S1~S8 통과, PostgreSQL 원장 저장.
 
 ## 문서
 
@@ -30,6 +30,12 @@ uv venv && uv pip install -e . pytest
 .venv/bin/pytest -q -m gate    # 스펙 04 게이트 테스트만
 ```
 
+DB 테스트는 PostgreSQL 16이 필요합니다. `MINISTP_TEST_DATABASE_URL`이 없으면 건너뜁니다. 테스트는 해당 DB의 `public` 스키마를 지우고 다시 만들므로 전용 DB를 쓰세요.
+
+```bash
+MINISTP_TEST_DATABASE_URL=postgresql://postgres:postgres@localhost:5432/ministp_test .venv/bin/pytest -q -m db
+```
+
 | 모듈 | 역할 | 스펙 |
 |---|---|---|
 | `calendar` | 영업일, T+2 결제일 | R-10~11 |
@@ -38,6 +44,7 @@ uv venv && uv pip install -e . pytest
 | `accounting` | 계정과목 v1, 차대변 검증 분개 | D4, R-50 |
 | `oms` | 주문 상태 머신, 킬 스위치 | R-40~43 |
 | `recon` | 일일 대사, 원인 후보 | R-70~74 |
+| `store` | PostgreSQL 이벤트 저장, 재생 복원, DB 수준 append-only·차대변 통제 | 03 데이터 모델, R-04, R-50 |
 
 ## 보안
 
