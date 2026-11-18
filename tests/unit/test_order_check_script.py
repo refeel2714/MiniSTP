@@ -22,13 +22,13 @@ class PaperBroker:
         if self.order is None or not self.order.filled_qty:
             pos, proj = {}, self.cash
         else:
-            pos = {"069500": BrokerPosition("069500", 1, 40_125)}
-            proj = self.cash - 40_125 - 6  # 0.015% fee, truncated
+            pos = {"069500": BrokerPosition("069500", 1, 80_540)}
+            proj = self.cash - 80_540 - 10  # 2026-11-18 실측: 12.08원 -> 10원 미만 절사
         raw = ({"output2": [{"dnca_tot_amt": str(self.cash), "prvs_rcdl_excc_amt": str(proj)}]},)
         return BrokerBalance(pos, self.cash, proj, raw)
 
     def get_price(self, symbol):
-        return 40_125
+        return 80_540
 
     def place_order(self, symbol, side, qty, limit_price):
         self.order = BrokerOrder("0000000001", symbol, side, qty, 0, 0, 0, 0)
@@ -36,14 +36,14 @@ class PaperBroker:
 
     def daily_orders(self, day):
         if self.order and not self.order.filled_qty:
-            self.order = BrokerOrder("0000000001", "069500", "BUY", 1, 1, 40_125, 0, 0)
+            self.order = BrokerOrder("0000000001", "069500", "BUY", 1, 1, 80_540, 0, 0)
         return [self.order] if self.order else []
 
 
 def test_full_loop_reconciles(capsys):
     assert script.main([], client_factory=PaperBroker, now=OPEN, sleep=lambda s: None, environ=ENV) == 0
     out = capsys.readouterr().out
-    assert "체결: 40,125원 x 1주" in out
+    assert "체결: 80,540원 x 1주" in out
     assert "BREAK" not in out
 
 

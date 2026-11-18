@@ -21,6 +21,8 @@ class Cause(StrEnum):
 
 AMOUNT_ITEMS = {"BOOK_COST", "CASH_D0", "CASH_PROJECTED"}
 COUNT_ITEMS = {"EXEC_COUNT", "EXEC_QTY"}
+CASH_ITEMS = {"CASH_D0", "CASH_PROJECTED"}
+FEE_UNIT_DIFF = 9  # 수수료 절사 단위(10원) 차이로 생길 수 있는 최대 금액
 
 
 @dataclass(frozen=True)
@@ -48,6 +50,8 @@ def candidate_cause(item: ReconItem) -> Cause:
     diff = item.broker - item.internal
     if item.item in AMOUNT_ITEMS and abs(diff) == 1:
         return Cause.ROUNDING
+    if item.item in CASH_ITEMS and abs(diff) <= FEE_UNIT_DIFF:
+        return Cause.FEE_DIFF
     if item.item in COUNT_ITEMS and diff > 0:
         return Cause.MISSING_EXEC
     return Cause.UNKNOWN
