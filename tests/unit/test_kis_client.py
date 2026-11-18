@@ -72,8 +72,8 @@ def test_missing_env_is_reported():
 
 def test_token_is_cached_across_clients(cfg):
     fake = FakeKis([])
-    KisClient(cfg, fake, now=lambda: NOW).token()
-    KisClient(cfg, fake, now=lambda: NOW).token()
+    KisClient(cfg, fake, now=lambda: NOW, sleep=lambda s: None).token()
+    KisClient(cfg, fake, now=lambda: NOW, sleep=lambda s: None).token()
     assert sum(1 for c in fake.calls if c[1].endswith("tokenP")) == 1
     _, _, _, body = fake.calls[0]
     assert body == {"grant_type": "client_credentials", "appkey": cfg.app_key,
@@ -82,7 +82,7 @@ def test_token_is_cached_across_clients(cfg):
 
 def test_expiring_token_is_renewed(cfg):
     fake = FakeKis([])
-    KisClient(cfg, fake, now=lambda: NOW).token()
+    KisClient(cfg, fake, now=lambda: NOW, sleep=lambda s: None).token()
     KisClient(cfg, fake, now=lambda: dt.datetime(2026, 11, 18, 8, 55)).token()
     assert sum(1 for c in fake.calls if c[1].endswith("tokenP")) == 2
 
@@ -103,9 +103,9 @@ def test_balance_with_continuation(cfg):
 
 
 def test_api_error_is_raised(cfg):
-    fake = FakeKis([({}, {"rt_cd": "1", "msg_cd": "EGW00201", "msg1": "초당 거래건수를 초과하였습니다."})])
-    with pytest.raises(KisError, match="EGW00201"):
-        KisClient(cfg, fake, now=lambda: NOW).get_balance()
+    fake = FakeKis([({}, {"rt_cd": "1", "msg_cd": "OPSQ0002", "msg1": "없는 서비스 코드 입니다"})])
+    with pytest.raises(KisError, match="OPSQ0002"):
+        KisClient(cfg, fake, now=lambda: NOW, sleep=lambda s: None).get_balance()
 
 
 def test_recon_items_against_ledger_on_11_04(ledger):
@@ -154,7 +154,7 @@ def test_place_market_and_limit_orders(cfg):
     fake = FakeKisRoutes({"/uapi/domestic-stock/v1/trading/order-cash": [
         ok({"KRX_FWDG_ORD_ORGNO": "00950", "ODNO": "0000117057", "ORD_TMD": "091500"}),
         ok({"KRX_FWDG_ORD_ORGNO": "00950", "ODNO": "0000117058", "ORD_TMD": "091501"})]})
-    c = KisClient(cfg, fake, now=lambda: NOW)
+    c = KisClient(cfg, fake, now=lambda: NOW, sleep=lambda s: None)
     ack = c.place_order("069500", "BUY", 1, None)
     c.place_order("069500", "SELL", 2, 40_000)
     assert (ack.order_no, ack.org_no) == ("0000117057", "00950")
@@ -168,7 +168,7 @@ def test_place_market_and_limit_orders(cfg):
 def test_cancel_uses_org_and_order_no(cfg):
     from ministp.broker import OrderAck
     fake = FakeKisRoutes({"/uapi/domestic-stock/v1/trading/order-rvsecncl": [ok({})]})
-    KisClient(cfg, fake, now=lambda: NOW).cancel_order(OrderAck("0000117057", "00950"))
+    KisClient(cfg, fake, now=lambda: NOW, sleep=lambda s: None).cancel_order(OrderAck("0000117057", "00950"))
     _, _, headers, body = fake.calls[-1]
     assert headers["tr_id"] == "VTTC0013U"
     assert (body["KRX_FWDG_ORD_ORGNO"], body["ORGN_ODNO"], body["RVSE_CNCL_DVSN_CD"],
@@ -193,4 +193,25 @@ def test_daily_orders_parsed_across_pages(cfg):
 def test_get_price(cfg):
     fake = FakeKisRoutes({"/uapi/domestic-stock/v1/quotations/inquire-price": [
         ok({"stck_prpr": "40125"})]})
-    assert KisClient(cfg, fake, now=lambda: NOW).get_price("069500") == 40_125
+    assert KisClient(cfg, fake, now=lambda: NOW, sleep=lambda s: None).get_price("069500") == 40_125
+
+
+def test_rate_limited_query_is_paced_and_retried(cfg):
+    limited = (500, {}, {"rt_cd": "1", "msg_cd": "EGW00201", "msg1": "초당 거래건수를 초과하였습니다."})
+    fake = FakeKisRoutes({"/uapi/domestic-stock/v1/quotations/inquire-price": [
+        limited, ok({"stck_prpr": "40125"})]})
+    slept, clock = [], [100.0]
+    c = KisClient(cfg, fake, now=lambda: NOW, sleep=lambda s: slept.append(s) or clock.__setitem__(0, clock[0] + s),
+                  monotonic=lambda: clock[0])
+    assert c.get_price("069500") == 40_125
+    assert 1.0 in slept                       # backoff after EGW00201
+    assert any(0 < s <= 0.6 for s in slept)   # pacing between consecutive calls
+
+
+def test_rate_limited_order_is_not_retried(cfg):
+    limited = (500, {}, {"rt_cd": "1", "msg_cd": "EGW00201", "msg1": "초당 거래건수를 초과하였습니다."})
+    fake = FakeKisRoutes({"/uapi/domestic-stock/v1/trading/order-cash": [limited]})
+    c = KisClient(cfg, fake, now=lambda: NOW, sleep=lambda s: None)
+    with pytest.raises(KisError, match="EGW00201"):
+        c.place_order("069500", "BUY", 1, None)
+    assert sum(1 for x in fake.calls if "order-cash" in x[1]) == 1

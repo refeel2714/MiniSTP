@@ -64,7 +64,11 @@ class TradingSession:
         if self.oms.halted:
             self.anomalies.append(Anomaly(day, "SUBMIT_FAILED", cid, "kill switch engaged"))
             return None
-        ref = limit_price or self.broker.get_price(symbol)
+        try:
+            ref = limit_price or self.broker.get_price(symbol)
+        except Exception as exc:
+            self.anomalies.append(Anomaly(day, "SUBMIT_FAILED", cid, f"price: {exc}"))
+            return None
         decision = check_order(self.limits, side=side, qty=qty, ref_price=ref,
                                held_qty=self.ledger.position(symbol).qty,
                                pending_sell_qty=self._pending_sell_qty(symbol),

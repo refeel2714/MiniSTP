@@ -147,3 +147,12 @@ def test_reconcile_includes_today_exec_qty(session):
     results = session.reconcile(DAY)
     assert all(x.status is Status.MATCH for x in results), [x for x in results if x.status is Status.BREAK]
     assert ("EXEC_QTY", 10, 10) in [(x.item, x.internal, x.broker) for x in results]
+
+
+def test_price_lookup_failure_does_not_crash_or_order(session):
+    def boom(symbol):
+        raise RuntimeError("EGW00201")
+    session.broker.get_price = boom
+    assert session.submit(DAY, "A", Side.BUY, 1) is None
+    assert session.broker.placed == []
+    assert "price:" in session.anomalies[-1].detail

@@ -34,6 +34,11 @@ TR_DAILY = {"paper": "VTTC0081R", "live": "TTTC0081R"}
 PRICE_PATH = "/uapi/domestic-stock/v1/quotations/inquire-price"
 TR_PRICE = "FHKST01010100"
 MAX_PAGES = 20
+# Client-side pacing. KIS answers EGW00201 ("초당 거래건수를 초과") when calls come
+# too fast; paper accounts allow far fewer calls per second than live ones.
+MIN_INTERVAL = {"paper": 0.6, "live": 0.06}
+RATE_LIMIT_CODE = "EGW00201"
+RATE_LIMIT_RETRIES = 3
 
 
 class KisError(RuntimeError):
@@ -103,11 +108,14 @@ def _int(v) -> int:
 class KisClient:
     def __init__(self, config: KisConfig, transport: Transport = urllib_transport,
                  now: Callable[[], dt.datetime] = dt.datetime.now,
-                 sleep: Callable[[float], None] = time.sleep):
+                 sleep: Callable[[float], None] = time.sleep,
+                 monotonic: Callable[[], float] = time.monotonic):
         self.cfg = config
         self._transport = transport
         self._now = now
         self._sleep = sleep
+        self._monotonic = monotonic
+        self._last_call: float | None = None
         self._token: tuple[str, dt.datetime] | None = None
 
     # ----- auth -----
@@ -138,7 +146,7 @@ class KisClient:
             if cand and cand[1] - margin > self._now():
                 self._token = cand
                 return cand[0]
-        status, _, body = self._transport("POST", f"{self.cfg.base_url}/oauth2/tokenP", {}, {
+        status, _, body = self._call("POST", f"{self.cfg.base_url}/oauth2/tokenP", {}, {
             "grant_type": "client_credentials", "appkey": self.cfg.app_key,
             "appsecret": self.cfg.app_secret})
         if status != 200 or "access_token" not in body:
@@ -147,6 +155,22 @@ class KisClient:
         self._token = (body["access_token"], expires)
         self._save_cached_token(*self._token)
         return body["access_token"]
+
+    def _call(self, method: str, url: str, headers: dict, body: dict | None,
+              retry_rate_limit: bool = True):
+        """Pace every request; retry rate-limit rejections for safe (non-order) calls."""
+        for attempt in range(RATE_LIMIT_RETRIES + 1):
+            if self._last_call is not None:
+                wait = MIN_INTERVAL[self.cfg.env] - (self._monotonic() - self._last_call)
+                if wait > 0:
+                    self._sleep(wait)
+            result = self._transport(method, url, headers, body)
+            self._last_call = self._monotonic()
+            limited = result[2].get("msg_cd") == RATE_LIMIT_CODE
+            if not (limited and retry_rate_limit and attempt < RATE_LIMIT_RETRIES):
+                return result
+            self._sleep(1.0 * (attempt + 1))
+        return result
 
     def _headers(self, tr_id: str, tr_cont: str = "") -> dict:
         return {"authorization": f"Bearer {self.token()}", "appkey": self.cfg.app_key,
@@ -160,13 +184,14 @@ class KisClient:
 
     def _get(self, path: str, tr_id: str, params: dict, tr_cont: str = "") -> tuple[dict, dict]:
         url = f"{self.cfg.base_url}{path}?{urllib.parse.urlencode(params)}"
-        status, resp_headers, body = self._transport("GET", url, self._headers(tr_id, tr_cont), None)
+        status, resp_headers, body = self._call("GET", url, self._headers(tr_id, tr_cont), None)
         self._check(tr_id, status, body)
         return resp_headers, body
 
     def _post(self, path: str, tr_id: str, body: dict) -> dict:
-        status, _, resp = self._transport("POST", f"{self.cfg.base_url}{path}",
-                                          self._headers(tr_id), body)
+        # Orders are never retried automatically: a retried order could double up.
+        status, _, resp = self._call("POST", f"{self.cfg.base_url}{path}",
+                                     self._headers(tr_id), body, retry_rate_limit=False)
         self._check(tr_id, status, resp)
         return resp
 
