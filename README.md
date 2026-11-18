@@ -6,11 +6,11 @@ A mini brokerage back office for Korean equities: straight-through processing fr
 
 ## 상태
 
-Phase 0 (스펙 확정) 완료. Phase 1 (원장 코어 + 백테스트) 진행 중: 도메인 코어와 게이트 테스트 S1~S8 통과, PostgreSQL 원장 저장, 백테스트 엔진.
+Phase 0 (스펙 확정), Phase 1 (원장 코어 + 백테스트) 완료. Phase 2 (KIS 모의투자 운영) 진행 중: 주문·체결 반영, 일일 마감과 대사, 무오류 연속일 집계.
 
 ## 문서
 
-- [스펙 v1.0](docs/spec/README.md): 결정 사항, 도메인 규칙, 데이터 모델, 손계산 샘플 거래 세트
+- [스펙](docs/spec/README.md): 결정 사항, 도메인 규칙, 데이터 모델, 손계산 샘플 거래 세트
 
 ## 로드맵
 
@@ -70,6 +70,22 @@ MINISTP_TEST_DATABASE_URL=postgresql://postgres:postgres@localhost:5432/ministp_
 ```
 
 빈 모의계좌에서 1주를 사고, 체결을 원장에 반영한 뒤 증권사 잔고와 대사 결과를 출력합니다. 실전 서버 설정에서는 실행되지 않습니다.
+
+## 모의 운영 (Phase 2, 본인 PC에서)
+
+원장과 주문, 대사 결과는 PostgreSQL에 쌓입니다. Windows에서는 [PostgreSQL 16 설치 파일](https://www.postgresql.org/download/windows/)로 설치하고, 설치 중 정한 `postgres` 계정 비밀번호를 명령 실행 때 입력합니다(`MINISTP_DATABASE_URL`을 설정하면 묻지 않습니다).
+
+```bat
+.venv\Scripts\python -m ministp db-init                       :: 처음 한 번
+.venv\Scripts\python -m ministp instrument 069500 "KODEX 200" --etf
+.venv\Scripts\python -m ministp open                          :: 처음 한 번, 미결제 거래가 없을 때
+.venv\Scripts\python -m ministp order 069500 buy 1            :: 장중, --limit 가격 으로 지정가
+.venv\Scripts\python -m ministp daily                         :: 영업일 15:40 이후
+.venv\Scripts\python -m ministp status
+.venv\Scripts\python -m ministp resolve 12 FEE_DIFF "메모"     :: 불일치 판단 기록
+```
+
+`daily`는 결제, 체결 반영, 종가 평가와 NAV, 대사를 차례로 하고 무오류 연속 영업일을 보여줍니다. 증권사 앱에서 직접 낸 주문은 원장에 들어가지 않고 이상 거래로 표시됩니다.
 
 ## 보안
 

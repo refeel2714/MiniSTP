@@ -8,7 +8,7 @@ later call the same `sync` path.
 import datetime as dt
 from dataclasses import dataclass, field
 
-from .broker.base import BrokerGateway, OrderAck, recon_items
+from .broker.base import BrokerBalance, BrokerGateway, OrderAck, recon_items
 from .ledger import ExecutionEvent, Ledger, Side
 from .oms import OrderManager, OrderStatus, OverfillError
 from .recon import ReconItem, ReconResult, reconcile
@@ -42,6 +42,9 @@ class TradingSession:
     _by_broker_no: dict[str, _Tracked] = field(default_factory=dict)
     _by_client: dict[str, _Tracked] = field(default_factory=dict)
     _seq: int = 0
+    last_balance: BrokerBalance | None = None
+    on_submit: object = None  # callable(cid, day, symbol, side, qty, limit) before the broker call
+    on_ack: object = None     # callable(cid, ack | None, detail) after it
 
     def _open_orders(self):
         closed = (OrderStatus.FILLED, OrderStatus.CANCELED, OrderStatus.REJECTED)
@@ -55,6 +58,22 @@ class TradingSession:
     def _pending_sell_qty(self, symbol: str) -> int:
         return sum(o.qty - o.filled_qty for o in self._open_orders()
                    if o.side == Side.SELL and o.symbol == symbol)
+
+    def restore(self, client_id: str, symbol: str, side: Side, qty: int, limit_price: int | None,
+                ack: OrderAck) -> None:
+        """Re-track an order placed by an earlier process, with fills already in the ledger."""
+        self.oms.create(client_id, symbol=symbol, side=side, qty=qty, limit_price=limit_price or 0)
+        self.oms.on_accepted(client_id)
+        t = _Tracked(client_id, ack)
+        prefix = f"{ack.order_no}-"
+        for e in self.ledger.events:
+            if isinstance(e, ExecutionEvent) and e.exec_id.startswith(prefix):
+                t.fills += 1
+                t.booked_qty += e.qty
+                t.booked_amount += e.qty * e.price
+                self.oms.on_fill(client_id, e.qty)
+        self._by_client[client_id] = t
+        self._by_broker_no[ack.order_no] = t
 
     def submit(self, day: dt.date, symbol: str, side: Side, qty: int,
                limit_price: int | None = None) -> str | None:
@@ -80,12 +99,18 @@ class TradingSession:
             self.oms.on_rejected(cid)
             self.anomalies.append(Anomaly(day, "SUBMIT_FAILED", cid, f"risk: {decision.reason}"))
             return None
+        if self.on_submit:
+            self.on_submit(cid, day, symbol, side, qty, limit_price)  # durable intent first
         try:
             ack = self.broker.place_order(symbol, side.value, qty, limit_price)
         except Exception as exc:  # broker said no, or network: nothing was placed we know of
             self.oms.on_rejected(cid)
             self.anomalies.append(Anomaly(day, "SUBMIT_FAILED", cid, f"broker: {exc}"))
+            if self.on_ack:
+                self.on_ack(cid, None, f"broker: {exc}")
             return None
+        if self.on_ack:
+            self.on_ack(cid, ack, "")
         self.oms.on_accepted(cid)
         t = _Tracked(cid, ack)
         self._by_client[cid] = t
@@ -141,7 +166,7 @@ class TradingSession:
 
     def reconcile(self, day: dt.date) -> list[ReconResult]:
         """R-70~71: positions, book cost, cash and today's filled quantity."""
-        bal = self.broker.get_balance()
+        bal = self.last_balance = self.broker.get_balance()
         items = recon_items(self.ledger, bal)
         broker_qty = sum(b.filled_qty for b in self.broker.daily_orders(day))
         mine = sum(e.qty for e in self.ledger.events

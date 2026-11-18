@@ -11,11 +11,12 @@ from importlib.resources import files
 import psycopg
 
 from ..accounting import Account
-from ..ledger import (DepositEvent, ExecutionEvent, Ledger, NavEvent, RevaluationEvent,
-                      SettlementEvent, Side)
+from ..ledger import (DepositEvent, ExecutionEvent, Ledger, NavEvent, OpeningPositionEvent,
+                      RevaluationEvent, SettlementEvent, Side)
 
 EVENT_TYPES = {cls.__name__: cls for cls in
-               (DepositEvent, ExecutionEvent, SettlementEvent, RevaluationEvent, NavEvent)}
+               (DepositEvent, OpeningPositionEvent, ExecutionEvent, SettlementEvent, RevaluationEvent,
+                NavEvent)}
 DATE_FIELDS = {"date", "trade_date"}
 
 
@@ -107,6 +108,11 @@ class PostgresLedgerStore:
                             "insert into cash_ledger (event_seq, date, reason, amount, ref_id)"
                             " values (%s, %s, %s, %s, %s)",
                             (seq, e.date, e.kind, ln.debit - ln.credit, e.source_id))
+            if isinstance(ev, OpeningPositionEvent):
+                self.conn.execute(
+                    "insert into position_ledger (event_seq, trade_date, symbol, exec_id,"
+                    " qty_delta, cost_delta, realized_pnl) values (%s, %s, %s, %s, %s, %s, null)",
+                    (seq, ev.date, ev.symbol, f"OPEN-{ev.symbol}", ev.qty, ev.book_cost))
             if isinstance(ev, ExecutionEvent):
                 r = ledger.execution_result(ev.exec_id)
                 buy = ev.side is Side.BUY

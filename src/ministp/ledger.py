@@ -41,6 +41,18 @@ class DepositEvent:
 
 
 @dataclass(frozen=True)
+class OpeningPositionEvent:
+    """A holding that existed before the ledger started (spec R-05).
+
+    Booked at the broker's purchase amount, funded by contributed capital, so
+    NAV starts at 1,000 on cash + book cost."""
+    date: dt.date
+    symbol: str
+    qty: int
+    book_cost: int
+
+
+@dataclass(frozen=True)
 class ExecutionEvent:
     exec_id: str
     trade_date: dt.date
@@ -68,7 +80,7 @@ class NavEvent:
     closes: tuple[tuple[str, int], ...]
 
 
-Event = DepositEvent | ExecutionEvent | SettlementEvent | RevaluationEvent | NavEvent
+Event = DepositEvent | OpeningPositionEvent | ExecutionEvent | SettlementEvent | RevaluationEvent | NavEvent
 
 
 # ---------- read models ----------
@@ -159,6 +171,18 @@ class Ledger:
             raise ValueError("deposit must be positive")
         self._record(DepositEvent(date, amount))
 
+    def open_position(self, date: dt.date, symbol: str, qty: int, book_cost: int) -> None:
+        """Only before any trade: the ledger's starting holdings (R-05)."""
+        if any(isinstance(e, (ExecutionEvent, NavEvent)) for e in self._events):
+            raise ValueError("opening positions must come before any execution or NAV")
+        if symbol not in self.instruments:
+            raise ValueError(f"unknown instrument {symbol}")
+        if self.position(symbol).qty:
+            raise ValueError(f"{symbol} already has an opening position")
+        if qty <= 0 or book_cost <= 0:
+            raise ValueError("qty and book_cost must be positive")
+        self._record(OpeningPositionEvent(date, symbol, qty, book_cost))
+
     def execute(self, exec_id: str, trade_date: dt.date, symbol: str, side: Side,
                 qty: int, price: int) -> ExecutionResult:
         if exec_id in self._s.results:
@@ -169,6 +193,12 @@ class Ledger:
             raise ShortSellError(f"{symbol}: sell {qty} > held {self.position(symbol).qty}")
         self._record(ExecutionEvent(exec_id, trade_date, symbol, side, qty, price))
         return self._s.results[exec_id]
+
+    def next_settlement_date(self, up_to: dt.date) -> dt.date | None:
+        """Earliest unsettled settlement date on or before `up_to`."""
+        due = [s.settle_date for s in self._s.settlements.values()
+               if not s.settled and s.settle_date <= up_to]
+        return min(due) if due else None
 
     def settle_due(self, date: dt.date) -> list[str]:
         due = sorted(
@@ -258,6 +288,8 @@ class Ledger:
         match ev:
             case DepositEvent():
                 self._apply_deposit(ev)
+            case OpeningPositionEvent():
+                self._apply_opening(ev)
             case ExecutionEvent():
                 self._apply_execution(ev)
             case SettlementEvent():
@@ -273,6 +305,14 @@ class Ledger:
         self._s.journal.append(entry(ev.date, "DEPOSIT", "",
                                      Dr(Account.CASH, ev.amount),
                                      Cr(Account.CONTRIBUTED_CAPITAL, ev.amount)))
+
+    def _apply_opening(self, ev: OpeningPositionEvent) -> None:
+        self._s.positions[ev.symbol] = Position(ev.qty, ev.book_cost)
+        nav = self._s.last_nav or INITIAL_NAV
+        self._s.units += truncate_won(Decimal(ev.book_cost) / nav * 1000)
+        self._s.journal.append(entry(ev.date, "OPENING", ev.symbol,
+                                     Dr(Account.FVPL_STOCK, ev.book_cost),
+                                     Cr(Account.CONTRIBUTED_CAPITAL, ev.book_cost)))
 
     def _apply_execution(self, ev: ExecutionEvent) -> None:
         inst = self.instruments[ev.symbol]
