@@ -1,0 +1,200 @@
+"""MiniSTP command line, run on the owner's PC.
+
+    python -m ministp db-init                     # 처음 한 번: DB와 테이블 만들기
+    python -m ministp instrument 069500 "KODEX 200" --etf
+    python -m ministp open                        # 처음 한 번: 증권사 잔고를 원장 시작값으로
+    python -m ministp order 069500 buy 1          # 장중: 시장가 주문 (--limit 가격)
+    python -m ministp daily                       # 매 영업일 장 마감 후(15:40~): 결제, NAV, 대사
+    python -m ministp status                      # 보유, 예수금, NAV, 무오류 연속일
+    python -m ministp resolve 12 FEE_DIFF "메모"   # 불일치 판단 기록 (새 행으로 추가)
+
+Paper (모의투자) only until Phase 4. Keys are asked for and never saved.
+"""
+import argparse
+import datetime as dt
+import getpass
+import os
+import sys
+import time
+import urllib.parse
+
+import psycopg
+
+from .broker import KisClient, KisConfig, KisError
+from .cli import ask_missing, krx_calendar
+from .fees import FeeSchedule
+from .instruments import AssetType, Instrument, Market
+from .ledger import NavEvent, Side
+from .oms import OrderStatus
+from .ops import (OpsError, add_instrument, clean_streak, daily_close, load_books, open_books,
+                  place_order, resolve_break)
+from .recon import Cause, Status
+from .store import PostgresLedgerStore
+
+GATE_DAYS = 20
+DB_NAME = "ministp"
+MARKET_OPEN, MARKET_CLOSE, DAILY_FROM = dt.time(9, 0), dt.time(15, 20), dt.time(15, 40)
+
+
+def database_url(environ) -> str:
+    url = environ.get("MINISTP_DATABASE_URL")
+    if url:
+        return url
+    pw = getpass.getpass("PostgreSQL postgres 계정 비밀번호 (화면에 표시되지 않아요): ").strip()
+    return f"postgresql://postgres:{urllib.parse.quote(pw, safe='')}@localhost:5432/{DB_NAME}"
+
+
+def _broker(environ, client_factory):
+    cfg = KisConfig.from_env(ask_missing(environ))
+    if cfg.env != "paper":
+        raise OpsError("Phase 4 전까지는 모의투자 서버에서만 실행해요.")
+    return client_factory(cfg)
+
+
+def _print_recon(report) -> None:
+    for r in report.results:
+        mark = "OK   " if r.status is Status.MATCH else "BREAK"
+        print(f"  {mark} {r.item:15} {r.key:10} 내부 {r.internal:>15,}  증권사 {r.broker:>15,}"
+              + (f"  차이 {r.diff:,} ({r.cause})" if r.status is Status.BREAK else ""))
+    for a in report.anomalies:
+        print(f"  이상: {a.kind} {a.ref} {a.detail}")
+
+
+def run(argv, *, environ=os.environ, client_factory=KisClient, connect=psycopg.connect,
+        now=dt.datetime.now, sleep=time.sleep) -> int:
+    ap = argparse.ArgumentParser(prog="python -m ministp")
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    sub.add_parser("db-init")
+    p = sub.add_parser("instrument")
+    p.add_argument("symbol"), p.add_argument("name")
+    kind = p.add_mutually_exclusive_group(required=True)
+    kind.add_argument("--etf", action="store_true"), kind.add_argument("--stock", action="store_true")
+    p.add_argument("--kosdaq", action="store_true")
+    sub.add_parser("open")
+    p = sub.add_parser("order")
+    p.add_argument("symbol"), p.add_argument("side", choices=["buy", "sell"])
+    p.add_argument("qty", type=int), p.add_argument("--limit", type=int)
+    p = sub.add_parser("daily")
+    p.add_argument("--date", type=dt.date.fromisoformat, help="지난 영업일을 다시 대사할 때")
+    sub.add_parser("status")
+    p = sub.add_parser("resolve")
+    p.add_argument("result_id", type=int), p.add_argument("cause", choices=[c.value for c in Cause])
+    p.add_argument("note")
+    args = ap.parse_args(argv)
+
+    started = now()
+    today = started.date()
+    calendar = krx_calendar()
+    fees = FeeSchedule.kis_paper()
+    url = database_url(environ)
+
+    try:
+        if args.cmd == "db-init":
+            _create_database(url, connect)
+            with connect(url, autocommit=True) as conn:
+                PostgresLedgerStore(conn).init_schema()
+            print("DB 준비 완료.")
+            return 0
+
+        with connect(url, autocommit=True) as conn:
+            if args.cmd == "instrument":
+                market = Market.KOSDAQ if args.kosdaq else Market.KOSPI
+                asset = AssetType.ETF if args.etf else AssetType.STOCK
+                add_instrument(conn, Instrument(args.symbol, args.name, market, asset))
+                print(f"등록: {args.symbol} {args.name} ({market.value} {asset.value})")
+                return 0
+
+            if args.cmd == "resolve":
+                rid = resolve_break(conn, args.result_id, Cause(args.cause), args.note)
+                print(f"판단 기록 완료 (행 {rid}).")
+                return 0
+
+            books = load_books(conn, calendar, fees)
+
+            if args.cmd == "status":
+                led = books.ledger
+                print(f"예수금 D+0 {led.cash_balance():,}  결제 후 {led.projected_cash():,}")
+                for sym, pos in led.positions().items():
+                    print(f"  {sym} {books.instruments[sym].name}: {pos.qty}주, 매입금액 {pos.book_cost:,}")
+                navs = [e for e in led.events if isinstance(e, NavEvent)]
+                if navs:
+                    row = led._nav_row(navs[-1].date, dict(navs[-1].closes))
+                    print(f"최근 NAV {row.date}: 순자산 {row.net_assets:,}, 기준가 {row.nav_per_1000}")
+                last = navs[-1].date if navs else today
+                print(f"무오류 연속 영업일: {clean_streak(conn, calendar, last)} / {GATE_DAYS}")
+                return 0
+
+            broker = _broker(environ, client_factory)
+
+            if args.cmd == "open":
+                open_books(books, broker, today)
+                led = books.ledger
+                print(f"원장 시작: 예수금 {led.cash_balance():,}, 보유 {len(led.positions())}종목")
+                for sym, pos in led.positions().items():
+                    print(f"  {sym}: {pos.qty}주, 매입금액 {pos.book_cost:,}")
+                return 0
+
+            if args.cmd == "order":
+                if not (MARKET_OPEN <= started.time() <= MARKET_CLOSE) or not calendar.is_business_day(today):
+                    print("장중(영업일 09:00~15:20)에만 주문해요.")
+                    return 2
+                polls = iter(range(15))  # up to ~30 seconds
+
+                def wait() -> bool:
+                    if next(polls, None) is None:
+                        return False
+                    sleep(2)
+                    return True
+
+                session, cid = place_order(books, broker, today, args.symbol,
+                                           Side(args.side.upper()), args.qty, args.limit, wait=wait)
+                if cid is None:
+                    print(f"주문 실패: {session.anomalies[-1].detail}")
+                    return 1
+                o = session.oms.orders[cid]
+                print(f"주문 {cid}: {o.status}, 체결 {o.filled_qty}/{o.qty}주")
+                for eid in session.executions_of(cid):
+                    r = books.ledger.execution_result(eid)
+                    print(f"  체결 {eid}: {r.gross:,}원, 수수료 {r.commission:,}, 세금 "
+                          f"{r.tx_tax + r.rural_tax:,}, 결제일 {r.settle_date}")
+                if o.status is not OrderStatus.FILLED:
+                    print("아직 다 체결되지 않았어요. 남은 체결은 장 마감 후 daily가 반영해요.")
+                return 0
+
+            if args.cmd == "daily":
+                day = args.date or today
+                if not calendar.is_business_day(day):
+                    print(f"{day}는 영업일이 아니에요.")
+                    return 2
+                if args.date is None and started.time() < DAILY_FROM:
+                    print("장 마감 후(15:40 이후)에 실행해 주세요.")
+                    return 2
+                report = daily_close(books, broker, day)
+                print(f"[{day}] 결제 {len(report.settled)}건, 신규 체결 {len(report.booked)}건")
+                if report.nav:
+                    print(f"NAV: 순자산 {report.nav.net_assets:,}, 기준가 {report.nav.nav_per_1000}")
+                for n in report.notes:
+                    print(n)
+                print("대사 결과:")
+                _print_recon(report)
+                streak = clean_streak(conn, calendar, day)
+                verdict = "무오류" if report.clean else "불일치 있음"
+                print(f"{verdict}. 무오류 연속 영업일 {streak} / {GATE_DAYS}")
+                return 0 if report.clean else 3
+    except (OpsError, KisError) as e:
+        print(f"오류: {e}")
+        return 1
+    return 0
+
+
+def _create_database(url: str, connect) -> None:
+    info = psycopg.conninfo.conninfo_to_dict(url)
+    name = info.get("dbname", DB_NAME)
+    admin = psycopg.conninfo.make_conninfo(url, dbname="postgres")
+    with connect(admin, autocommit=True) as conn:
+        if not conn.execute("select 1 from pg_database where datname = %s", (name,)).fetchone():
+            conn.execute(f'create database "{name}"')
+
+
+if __name__ == "__main__":
+    sys.exit(run(sys.argv[1:]))

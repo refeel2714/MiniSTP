@@ -22,6 +22,8 @@
 | order_events | order_id, event_type, status_after, payload(jsonb), occurred_at | R-40~43 |
 | executions | exec_id, order_id, broker_exec_no, symbol, side, qty, price, gross_amount, executed_at, trade_date | 증권사 체결번호 unique |
 
+Phase 2 구현(v1.4)은 위 설계를 단순화했다. 주문 생성 정보는 `oms_orders`(client_id, trade_date, symbol, side, qty, limit_price), 증권사 접수 결과는 `oms_order_acks`(client_id, outcome, order_no, org_no, detail)에 저장한다(R-44). 체결은 `ledger_events`의 ExecutionEvent(exec_id = `주문번호-순번`)와 `position_ledger`로 남는다. 종목 정보는 `instruments`(symbol, name, market, asset_type)에 등록한다.
+
 ## 원장
 
 | 테이블 | 주요 컬럼 | 비고 |
@@ -48,8 +50,8 @@
 
 | 테이블 | 주요 컬럼 | 비고 |
 |---|---|---|
-| broker_snapshots | date, source_api, raw(jsonb), fetched_at | 증권사 응답 원본 |
-| recon_results | date, item, key(종목 등), internal_value, broker_value, diff, status(MATCH/BREAK), cause_code, note, supersedes_id | R-70~74 |
+| broker_snapshots | snapshot_id, date, kind(OPENING_BALANCE/DAILY_RECON), payload(jsonb), taken_at | 증권사 응답 원본. 대사 실행 1회 = 1행 |
+| recon_results | run_id(→broker_snapshots), date, item, key(종목 등), internal_value, broker_value, diff, status(MATCH/BREAK/RESOLVED), cause_code, note, supersedes_id | R-70~74 |
 
 ## 불변 조건 (게이트 테스트로 상시 검증)
 

@@ -99,3 +99,22 @@ def test_small_cash_break_is_fee_diff_candidate():
     assert r.cause is Cause.FEE_DIFF
     [r] = reconcile(dt.date(2026, 11, 18), [ReconItem("CASH_PROJECTED", "", 99_919_400, 99_919_450)])
     assert r.cause is Cause.UNKNOWN
+
+
+def test_opening_position_funds_capital_and_units(ledger):
+    """R-05: holdings that predate the ledger enter at broker book cost."""
+    from ministp.accounting import Account
+    from ministp.ledger import Ledger, Side
+    ledger.deposit(d("11-02"), 1_000_000)
+    ledger.open_position(d("11-02"), "E", 1, 80_540)
+    assert ledger.position("E").book_cost == 80_540
+    assert ledger.account_balance(Account.FVPL_STOCK) == 80_540
+    assert ledger.account_balance(Account.CONTRIBUTED_CAPITAL) == 1_080_540
+    assert ledger.units == 1_080_540
+    assert ledger.nav(d("11-02"), {"E": 80_540}).nav_per_1000 == 1000
+    with pytest.raises(ValueError):
+        ledger.open_position(d("11-02"), "A", 1, 50_000)  # NAV already struck
+    r = ledger.execute("X1", d("11-03"), "E", Side.SELL, 1, 81_000)
+    assert r.cost_of_sale == 80_540
+    again = Ledger.replay(ledger.events, ledger.calendar, ledger.fees, ledger.instruments)
+    assert again.journal == ledger.journal

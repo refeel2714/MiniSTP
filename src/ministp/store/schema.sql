@@ -52,6 +52,61 @@ create table if not exists cash_ledger (
     ref_id    text not null
 );
 
+-- Operations (Phase 2): instruments, orders, broker snapshots, reconciliation.
+create table if not exists instruments (
+    symbol     text primary key,
+    name       text not null,
+    market     text not null check (market in ('KOSPI', 'KOSDAQ')),
+    asset_type text not null check (asset_type in ('STOCK', 'ETF'))
+);
+
+-- R-40: the order intent is stored before it is sent, the broker's answer after.
+create table if not exists oms_orders (
+    client_id   text primary key,
+    trade_date  date not null,
+    symbol      text not null references instruments (symbol),
+    side        text not null check (side in ('BUY', 'SELL')),
+    qty         bigint not null check (qty > 0),
+    limit_price bigint,
+    created_at  timestamptz not null default now()
+);
+
+create table if not exists oms_order_acks (
+    client_id  text primary key references oms_orders (client_id),
+    outcome    text not null check (outcome in ('ACCEPTED', 'REJECTED')),
+    order_no   text unique,
+    org_no     text,
+    detail     text,
+    created_at timestamptz not null default now(),
+    check ((outcome = 'ACCEPTED') = (order_no is not null))
+);
+
+-- R-70: broker answers are stored as received, before comparing.
+create table if not exists broker_snapshots (
+    snapshot_id bigserial primary key,
+    date        date not null,
+    kind        text not null,
+    payload     jsonb not null,
+    taken_at    timestamptz not null default now()
+);
+
+-- R-72~73: one row per item per run; a later judgement is a new row (supersedes_id).
+create table if not exists recon_results (
+    id             bigserial primary key,
+    run_id         bigint not null references broker_snapshots (snapshot_id),
+    date           date not null,
+    item           text not null,
+    key            text not null,
+    internal_value bigint not null,
+    broker_value   bigint not null,
+    diff           bigint not null,
+    status         text not null check (status in ('MATCH', 'BREAK', 'RESOLVED')),
+    cause_code     text,
+    note           text,
+    supersedes_id  bigint references recon_results (id),
+    created_at     timestamptz not null default now()
+);
+
 -- R-04: no UPDATE / DELETE / TRUNCATE on ledger tables.
 create or replace function ministp_forbid_change() returns trigger language plpgsql as $$
 begin
@@ -78,7 +133,8 @@ do $$
 declare t text;
 begin
     foreach t in array array['ledger_events', 'journal_entries', 'journal_lines',
-                             'position_ledger', 'cash_ledger'] loop
+                             'position_ledger', 'cash_ledger', 'instruments', 'oms_orders',
+                             'oms_order_acks', 'broker_snapshots', 'recon_results'] loop
         if not exists (select 1 from pg_trigger where tgname = t || '_append_only') then
             execute format('create trigger %I before update or delete on %I
                             for each row execute function ministp_forbid_change()',
