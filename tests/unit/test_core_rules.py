@@ -80,3 +80,22 @@ def test_settlement_cycle_validation():
         SettlementCycle(())
     with pytest.raises(LookupError):
         SettlementCycle.t_plus(1, d("11-09")).days_for(d("11-06"))
+
+
+def test_kis_paper_commission_truncates_below_10_won():
+    """2026-11-18 KIS 모의 실측: 069500 1주 80,540원 매수 수수료 10원 (0.015% = 12.08원)."""
+    from ministp.fees import FeeSchedule
+    from ministp.instruments import AssetType, Instrument, Market
+    etf = Instrument("069500", "KODEX 200", Market.KOSPI, AssetType.ETF)
+    assert FeeSchedule.spec_v1().costs(etf, False, 80_540).commission == 12
+    assert FeeSchedule.kis_paper().costs(etf, False, 80_540).commission == 10
+    assert FeeSchedule.kis_paper().costs(etf, False, 1_000_000).commission == 150
+
+
+def test_small_cash_break_is_fee_diff_candidate():
+    import datetime as dt
+    from ministp.recon import Cause, ReconItem, reconcile
+    [r] = reconcile(dt.date(2026, 11, 18), [ReconItem("CASH_PROJECTED", "", 99_919_448, 99_919_450)])
+    assert r.cause is Cause.FEE_DIFF
+    [r] = reconcile(dt.date(2026, 11, 18), [ReconItem("CASH_PROJECTED", "", 99_919_400, 99_919_450)])
+    assert r.cause is Cause.UNKNOWN

@@ -58,7 +58,7 @@ def main(argv=None, client_factory=KisClient, now=dt.datetime.now, sleep=time.sl
 
     inst = Instrument(args.symbol, args.symbol, Market.KOSDAQ if args.kosdaq else Market.KOSPI,
                       AssetType.STOCK if args.stock else AssetType.ETF)
-    ledger = Ledger(krx_calendar(), FeeSchedule.spec_v1(), {args.symbol: inst})
+    ledger = Ledger(krx_calendar(), FeeSchedule.kis_paper(), {args.symbol: inst})
     ledger.deposit(today, bal.cash_d0)  # opening balance = broker cash
     session = TradingSession(ledger, client)
 
@@ -78,7 +78,7 @@ def main(argv=None, client_factory=KisClient, now=dt.datetime.now, sleep=time.sl
 
     r = ledger.execution_result(session.executions_of(cid)[0])
     print(f"체결: {r.gross // args.qty:,}원 x {args.qty}주 = {r.gross:,}원, "
-          f"원장 수수료(0.015% 가정) {r.commission:,}원, 결제일 {r.settle_date}")
+          f"원장 수수료(0.015%, 10원 미만 절사) {r.commission:,}원, 결제일 {r.settle_date}")
 
     sleep(1)
     results = session.reconcile(today)
@@ -94,7 +94,7 @@ def main(argv=None, client_factory=KisClient, now=dt.datetime.now, sleep=time.sl
               + (f"  차이 {x.diff:,} ({x.cause})" if x.status is Status.BREAK else ""))
     for a in session.anomalies:
         print(f"  이상: {a.kind} {a.detail}")
-    print("CASH_PROJECTED 차이가 수수료만큼이면 모의계좌 수수료율이 0.015%와 다르다는 뜻이에요.")
+    print("CASH_PROJECTED가 어긋나면 모의계좌 수수료율이 0.015%와 다르다는 뜻이에요.")
     return 0
 
 
