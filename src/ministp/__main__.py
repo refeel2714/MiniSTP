@@ -184,7 +184,21 @@ def run(argv, *, environ=os.environ, client_factory=KisClient, connect=psycopg.c
     except (OpsError, KisError) as e:
         print(f"오류: {e}")
         return 1
+    except psycopg.OperationalError as e:
+        print(db_error_hint(str(e)))
+        return 1
     return 0
+
+
+def db_error_hint(message: str) -> str:
+    """Windows PostgreSQL sends Korean messages that the console shows garbled; explain plainly."""
+    if "password" in message or "28P01" in message:
+        return ("DB 접속 실패: postgres 계정 비밀번호가 맞지 않아요. PostgreSQL 설치 중 정한 비밀번호를 "
+                "넣어 주세요 (pgAdmin 마스터 비밀번호와 다를 수 있어요). 한/영 전환 상태도 확인해 주세요.")
+    if "refused" in message.lower() or "10061" in message:
+        return ("DB 접속 실패: PostgreSQL 서버가 실행 중이 아니에요. Windows 서비스(services.msc)에서 "
+                "postgresql 서비스를 시작해 주세요.")
+    return f"DB 접속 실패: {message}"
 
 
 def _create_database(url: str, connect) -> None:
