@@ -119,7 +119,7 @@ def session_for(books: Books, broker: BrokerGateway, day: dt.date) -> TradingSes
     rows = _stored_orders(books.conn, day)
     for cid, sym, side, qty, limit, outcome, order_no, org_no in rows:
         if outcome == "ACCEPTED":
-            session.restore(cid, sym, Side(side), qty, limit, OrderAck(order_no, org_no))
+            session.restore(day, cid, sym, Side(side), qty, limit, OrderAck(order_no, org_no))
         elif outcome is None:
             # intent stored but no answer recorded: the process died around the broker call
             session.anomalies.append(Anomaly(day, "UNACKED_ORDER", cid,

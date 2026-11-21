@@ -58,7 +58,7 @@ def test_market_order_fill_is_booked_once(session):
     assert session.broker.placed == [("A", "BUY", 10, None)]
     assert session.oms.orders[cid].status is OrderStatus.SUBMITTED
     session.broker.fill("0000000001", 10, 50_100)
-    assert session.sync(DAY) == ["0000000001-1"]
+    assert session.sync(DAY) == ["20261102-0000000001-1"]
     assert session.sync(DAY) == []  # idempotent
     p = session.ledger.position("A")
     assert (p.qty, p.book_cost) == (10, 501_000)
@@ -70,7 +70,7 @@ def test_partial_fills_at_different_prices_are_booked_separately(session):
     session.broker.fill("0000000001", 4, 50_000)
     session.sync(DAY)
     session.broker.fill("0000000001", 6, 49_950)
-    assert session.sync(DAY) == ["0000000001-2"]
+    assert session.sync(DAY) == ["20261102-0000000001-2"]
     assert session.ledger.position("A").book_cost == 4 * 50_000 + 6 * 49_950
 
 
@@ -140,7 +140,7 @@ def test_reconcile_includes_today_exec_qty(session):
     session.submit(DAY, "A", Side.BUY, 10)
     session.broker.fill("0000000001", 10, 50_000)
     session.sync(DAY)
-    r = session.ledger.execution_result("0000000001-1")
+    r = session.ledger.execution_result("20261102-0000000001-1")
     b = session.broker
     b.positions = {"A": BrokerPosition("A", 10, 500_000)}
     b.cash_projected = 10_000_000 - r.net
