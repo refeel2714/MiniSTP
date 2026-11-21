@@ -50,6 +50,8 @@ MINISTP_TEST_DATABASE_URL=postgresql://postgres:postgres@localhost:5432/ministp_
 | `strategies.ma_cross` | 예시 전략 (이동평균 교차) | D5 |
 | `broker` | 증권사 인터페이스, 한국투자증권 KIS 조회 클라이언트(토큰 캐시, 잔고 연속조회), 대사 항목 변환 | D1, R-70~71 |
 | `session` | 매매 세션: 리스크 체크 → OMS → 증권사 주문 → 체결 동기화(중복 없이) → 원장, 시스템 밖 주문 감지, 일일 대사 | R-40~43, R-70~74, R-83 |
+| `ops` | 원장 시작값, 주문 기록, 일일 마감·대사, 무오류 연속일, 장중 IBOR 실행기(체결통보 즉시 반영, 조회 보완, 장중 대사) | R-05, R-44, R-74~75, D6 |
+| `broker.kis_ws` | 실시간 체결통보 수신(접속키, 구독, AES 복호화, PINGPONG, 재연결) | D6 |
 | `store` | PostgreSQL 이벤트 저장, 재생 복원, DB 수준 append-only·차대변 통제 | 03 데이터 모델, R-04, R-50 |
 
 ## 한국투자증권 모의투자 연결 확인 (본인 PC에서)
@@ -80,11 +82,14 @@ MINISTP_TEST_DATABASE_URL=postgresql://postgres:postgres@localhost:5432/ministp_
 .venv\Scripts\python -m ministp db-init                       :: 처음 한 번
 .venv\Scripts\python -m ministp instrument 069500 "KODEX 200" --etf
 .venv\Scripts\python -m ministp open                          :: 처음 한 번, 미결제 거래가 없을 때
-.venv\Scripts\python -m ministp order 069500 buy 1            :: 장중, --limit 가격 으로 지정가
+.venv\Scripts\python -m ministp run                           :: 장중 상시 실행 (실시간 체결 반영 + 주문 콘솔)
+.venv\Scripts\python -m ministp order 069500 buy 1            :: run 없이 주문 1건만, --limit 가격 으로 지정가
 .venv\Scripts\python -m ministp daily                         :: 영업일 15:40 이후
 .venv\Scripts\python -m ministp status
 .venv\Scripts\python -m ministp resolve 12 FEE_DIFF "메모"     :: 불일치 판단 기록
 ```
+
+`run`은 한국투자증권 실시간 체결통보(WebSocket)를 받아 체결 즉시 원장(IBOR)에 반영하고, 끊기면 1분마다 조회로 보완하며, 5분마다 장중 대사를 남깁니다. 창에 `buy 069500 1`, `sell 069500 1 81000`, `status`, `recon`, `quit`을 입력해 씁니다. HTS ID(체결통보 구독 키)를 처음에 물어봅니다. 15:30에 스스로 끝나고, 원장을 쓰는 명령은 한 번에 하나만 실행됩니다.
 
 `daily`는 결제, 체결 반영, 종가 평가와 NAV, 대사를 차례로 하고 무오류 연속 영업일을 보여줍니다. 증권사 앱에서 직접 낸 주문은 원장에 들어가지 않고 이상 거래로 표시됩니다.
 
