@@ -1,0 +1,26 @@
+id: STP-2100
+title: 일일 대사 결과
+purpose: 대사 항목별 내부 값과 증권사 값, 불일치와 그에 대한 판단 이력을 함께 봐요. 판단 기록은 resolve 명령으로만 해요.
+conditions:
+  - {name: date_from, type: date, label: 시작일}
+  - {name: date_to, type: date, label: 종료일}
+  - {name: kind, type: select, source: broker_snapshots.kind, options: [DAILY_RECON, INTRADAY_RECON], default: DAILY_RECON}
+  - {name: only_breaks, type: bool, label: 불일치만}
+grids:
+  - id: results
+    title: 대사 결과
+    tx: STP2100R01
+    columns:
+      - {name: date, source: recon_results.date, format: date}
+      - {name: item, source: recon_results.item, format: code}
+      - {name: key, source: recon_results.key, format: code}
+      - {name: internal_value, source: recon_results.internal_value, format: money}
+      - {name: broker_value, source: recon_results.broker_value, format: money}
+      - {name: diff, source: recon_results.diff, format: money}
+      - {name: status, source: recon_results.status, format: code, color: status}
+      - {name: cause_code, source: recon_results.cause_code, format: code}
+      - {name: resolved_cause, label: 판단 원인, format: code}
+      - {name: resolved_note, label: 판단 메모}
+      - {name: resolved_at, label: 판단 시각, format: datetime}
+      - {name: taken_at, source: broker_snapshots.taken_at, format: datetime}
+      - {name: id, source: recon_results.id, format: number}

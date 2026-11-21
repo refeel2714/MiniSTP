@@ -157,8 +157,36 @@ def nav_series(ledger: Ledger, date_from: dt.date | None = None, date_to: dt.dat
                     "nav_per_1000"), rows)
 
 
+# ---------- STP-1100 잔고 (IBOR) ----------
+
+def holdings(conn: psycopg.Connection, day: dt.date | None = None) -> Dataset:
+    """종목별 보유: 수량, 장부금액, 오늘 체결 수량, 마지막 변동 시각."""
+    return _q(conn, """
+        select p.symbol, i.name as instrument_name, i.asset_type, p.qty, p.book_cost,
+               coalesce(t.today_qty, 0) as today_qty, t.last_change
+          from positions_v p
+          join instruments i on i.symbol = p.symbol
+          left join lateral (select sum(x.qty_delta) filter (where x.trade_date = %(d)s) as today_qty,
+                                    max(e.recorded_at) as last_change
+                               from position_ledger x join ledger_events e on e.seq = x.event_seq
+                              where x.symbol = p.symbol) t on true
+         where p.qty <> 0
+         order by p.book_cost desc""", {"d": day or dt.date.today()})
+
+
+def cash_summary(ledger: Ledger, open_orders) -> Dataset:
+    """예수금 D+0, 결제 후 예수금, 미체결 매수 예약, 주문가능금액 (R-37과 같은 계산)."""
+    from .capacity import pending_buy_value
+    reserved, unpriced = pending_buy_value(open_orders, {})
+    projected = ledger.projected_cash()
+    return Dataset(("cash_d0", "projected_cash", "pending_buy_value", "unpriced_buy_orders", "available_cash"),
+                   ((ledger.cash_balance(), projected, reserved, unpriced, projected - reserved),))
+
+
 # Transaction id -> service. Ids follow the screen numbers (화면번호 + R + 일련번호).
 TRANSACTIONS = {
+    "STP1100R01": holdings,
+    "STP1100R02": cash_summary,
     "STP3100R01": ledger_events,
     "STP3100R02": event_trace,
     "STP3100R03": trial_balance,
