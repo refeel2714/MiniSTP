@@ -10,7 +10,8 @@ Phase 0 (스펙 확정), Phase 1 (원장 코어 + 백테스트) 완료. Phase 2 
 
 ## 문서
 
-- [스펙](docs/spec/README.md): 결정 사항, 도메인 규칙, 데이터 모델, 손계산 샘플 거래 세트
+- [스펙](docs/spec/README.md)
+- [ERD와 데이터 사전](docs/erd/ERD.md): 전 테이블·컬럼 한글 명칭, 스키마에서 자동 생성. 스키마를 바꾸면 `-- ERD version`과 [변경 이력](docs/erd/HISTORY.md)을 올리고 `scripts/gen_erd.py`로 `ERD.md`와 `erd.html`을 다시 만들어요(테스트가 강제).: 결정 사항, 도메인 규칙, 데이터 모델, 손계산 샘플 거래 세트
 
 ## 로드맵
 

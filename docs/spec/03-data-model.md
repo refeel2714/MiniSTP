@@ -1,5 +1,8 @@
 # 03. 데이터 모델
 
+
+> 실제 구현된 테이블·컬럼과 한글 명칭은 [ERD와 데이터 사전](../erd/ERD.md)이 기준이에요. 이 문서는 설계 의도를 설명해요.
+
 공통 규칙
 - 모든 테이블은 `id`(bigserial), `created_at`(timestamptz)을 가진다.
 - `*_ledger`, `*_events`, `journal_*`, `recon_results`, `broker_snapshots`는 append-only다. UPDATE와 DELETE를 막는 트리거를 둔다.
