@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "Mini brokerage back office for Korean equities: order-to-reconciliation STP with an append-only ledger."
 readme = "README.md"
 requires-python = ">=3.12"
-dependencies = ["psycopg[binary]>=3.2"]
+dependencies = ["psycopg[binary]>=3.2", "websockets>=13", "cryptography>=42"]
 
 [dependency-groups]
 dev = ["pytest>=8"]

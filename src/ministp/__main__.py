@@ -3,7 +3,8 @@
     python -m ministp db-init                     # 처음 한 번: DB와 테이블 만들기
     python -m ministp instrument 069500 "KODEX 200" --etf
     python -m ministp open                        # 처음 한 번: 증권사 잔고를 원장 시작값으로
-    python -m ministp order 069500 buy 1          # 장중: 시장가 주문 (--limit 가격)
+    python -m ministp run                         # 장중: 실시간 체결 반영 + 주문 콘솔 (IBOR)
+    python -m ministp order 069500 buy 1          # 장중: 시장가 주문 1건 (--limit 가격)
     python -m ministp daily                       # 매 영업일 장 마감 후(15:40~): 결제, NAV, 대사
     python -m ministp status                      # 보유, 예수금, NAV, 무오류 연속일
     python -m ministp resolve 12 FEE_DIFF "메모"   # 불일치 판단 기록 (새 행으로 추가)
@@ -14,7 +15,9 @@ import argparse
 import datetime as dt
 import getpass
 import os
+import queue
 import sys
+import threading
 import time
 import urllib.parse
 
@@ -26,7 +29,7 @@ from .fees import FeeSchedule
 from .instruments import AssetType, Instrument, Market
 from .ledger import NavEvent, Side
 from .oms import OrderStatus
-from .ops import (OpsError, add_instrument, clean_streak, daily_close, load_books, open_books,
+from .ops import (IntradayRunner, OpsError, acquire_writer, add_instrument, clean_streak, daily_close, load_books, open_books,
                   place_order, resolve_break)
 from .recon import Cause, Status
 from .store import PostgresLedgerStore
@@ -61,7 +64,7 @@ def _print_recon(report) -> None:
 
 
 def run(argv, *, environ=os.environ, client_factory=KisClient, connect=psycopg.connect,
-        now=dt.datetime.now, sleep=time.sleep) -> int:
+        now=dt.datetime.now, sleep=time.sleep, feed_factory=None, console=None) -> int:
     ap = argparse.ArgumentParser(prog="python -m ministp")
     sub = ap.add_subparsers(dest="cmd", required=True)
     sub.add_parser("db-init")
@@ -71,6 +74,7 @@ def run(argv, *, environ=os.environ, client_factory=KisClient, connect=psycopg.c
     kind.add_argument("--etf", action="store_true"), kind.add_argument("--stock", action="store_true")
     p.add_argument("--kosdaq", action="store_true")
     sub.add_parser("open")
+    sub.add_parser("run")
     p = sub.add_parser("order")
     p.add_argument("symbol"), p.add_argument("side", choices=["buy", "sell"])
     p.add_argument("qty", type=int), p.add_argument("--limit", type=int)
@@ -104,6 +108,9 @@ def run(argv, *, environ=os.environ, client_factory=KisClient, connect=psycopg.c
                 print(f"등록: {args.symbol} {args.name} ({market.value} {asset.value})")
                 return 0
 
+            if args.cmd in ("open", "order", "daily", "run", "resolve"):
+                acquire_writer(conn)
+
             if args.cmd == "resolve":
                 rid = resolve_break(conn, args.result_id, Cause(args.cause), args.note)
                 print(f"판단 기록 완료 (행 {rid}).")
@@ -133,6 +140,12 @@ def run(argv, *, environ=os.environ, client_factory=KisClient, connect=psycopg.c
                 for sym, pos in led.positions().items():
                     print(f"  {sym}: {pos.qty}주, 매입금액 {pos.book_cost:,}")
                 return 0
+
+            if args.cmd == "run":
+                if not (MARKET_OPEN <= started.time() <= MARKET_CLOSE) or not calendar.is_business_day(today):
+                    print("장중(영업일 09:00~15:20)에 실행해 주세요.")
+                    return 2
+                return _run_intraday(books, broker, today, environ, feed_factory, console, now)
 
             if args.cmd == "order":
                 if not (MARKET_OPEN <= started.time() <= MARKET_CLOSE) or not calendar.is_business_day(today):
@@ -199,6 +212,40 @@ def db_error_hint(message: str) -> str:
         return ("DB 접속 실패: PostgreSQL 서버가 실행 중이 아니에요. Windows 서비스(services.msc)에서 "
                 "postgresql 서비스를 시작해 주세요.")
     return f"DB 접속 실패: {message}"
+
+
+RUN_UNTIL = dt.time(15, 30)
+
+
+def _run_intraday(books, broker, today, environ, feed_factory, console, now) -> int:
+    """Fill notices and console commands share one queue; the runner is the only writer."""
+    events = queue.Queue()
+    hts_id = environ.get("MINISTP_KIS_HTS_ID") or input("HTS ID (체결통보 구독용, 저장하지 않아요): ").strip()
+    if feed_factory is None:
+        from .broker.kis_ws import NoticeFeed
+
+        def feed_factory(q):
+            return NoticeFeed(broker.cfg.env, hts_id, broker.approval_key, q)
+    feed = feed_factory(events)
+    feed.start()
+    if console is None:
+        def console(q):
+            def read():
+                while True:
+                    try:
+                        line = input()
+                    except EOFError:
+                        q.put(("stop",))
+                        return
+                    q.put(("command", line, dt.datetime.now()))
+            threading.Thread(target=read, daemon=True, name="console").start()
+    console(events)
+    runner = IntradayRunner(books, broker, today, events, now=now)
+    try:
+        runner.run(until=RUN_UNTIL)
+    finally:
+        feed.stop()
+    return 0
 
 
 def _create_database(url: str, connect) -> None:

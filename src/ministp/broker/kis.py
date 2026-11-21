@@ -156,6 +156,15 @@ class KisClient:
         self._save_cached_token(*self._token)
         return body["access_token"]
 
+    def approval_key(self) -> str:
+        """WebSocket 접속키 (실시간 체결통보용). Valid for a day; requested per connection."""
+        status, _, body = self._call("POST", f"{self.cfg.base_url}/oauth2/Approval", {}, {
+            "grant_type": "client_credentials", "appkey": self.cfg.app_key,
+            "secretkey": self.cfg.app_secret})
+        if status != 200 or "approval_key" not in body:
+            raise KisError(f"approval key request failed ({status}): {body.get('msg1') or ''}")
+        return body["approval_key"]
+
     def _call(self, method: str, url: str, headers: dict, body: dict | None,
               retry_rate_limit: bool = True):
         """Pace every request; retry rate-limit rejections for safe (non-order) calls."""
