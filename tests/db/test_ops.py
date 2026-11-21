@@ -153,7 +153,7 @@ def test_order_daily_settle_and_streak(conn, broker):
     broker.orders[day] = {}
     session, cid = place_order(books(conn), broker, day, "069500", Side.BUY, 2, wait=wait)
     assert cid == "S20261120-0001"
-    assert session.executions_of(cid) == ["0000000001-1"]
+    assert session.executions_of(cid) == ["20261120-0000000001-1"]
     assert conn.execute("select outcome, order_no from oms_order_acks").fetchall() == [
         ("ACCEPTED", "0000000001")]
 
@@ -173,7 +173,7 @@ def test_order_daily_settle_and_streak(conn, broker):
     assert daily_close(books(conn), broker, D("2026-11-23")).settled == []
     broker.set_day(D("2026-11-24"))
     rep = daily_close(books(conn), broker, D("2026-11-24"))
-    assert rep.settled == ["0000000001-1"] and rep.clean
+    assert rep.settled == ["20261120-0000000001-1"] and rep.clean
     assert clean_streak(conn, CAL, D("2026-11-24")) == 3
     assert books(conn).store.verify(books(conn).ledger) == []
 
@@ -186,7 +186,7 @@ def test_fill_after_order_command_is_booked_by_daily(conn, broker):
     _, cid = place_order(books(conn), broker, day, "069500", Side.BUY, 1, limit_price=80_000)
     broker.fill("0000000001", 80_000)  # fills later in the day
     rep = daily_close(books(conn), broker, day)
-    assert rep.booked == ["0000000001-1"] and rep.clean
+    assert rep.booked == ["20261120-0000000001-1"] and rep.clean
 
 
 def test_break_then_owner_resolves(conn, broker):
@@ -261,3 +261,33 @@ def test_capacity_from_the_db_matches_the_session(conn, broker):
     assert cap.pending_buy_value == 2 * 80_000
     assert cap.held_qty == 2 and cap.sellable_qty == 2
     assert cap == session.capacity("069500", 80_540)
+
+
+def test_broker_reuses_order_numbers_on_the_next_day(conn, broker):
+    """KIS order numbers restart each business day: day 2's 0000000001 is a new order."""
+    d1, d2 = D("2026-11-20"), D("2026-11-23")
+    broker.set_day(d1)
+    open_books(books(conn), broker, d1)
+    broker.orders[d1] = {}
+    place_order(books(conn), broker, d1, "069500", Side.BUY, 1, limit_price=80_000)
+    broker.fill("0000000001", 80_000)
+    assert daily_close(books(conn), broker, d1).booked == ["20261120-0000000001-1"]
+
+    broker.set_day(d2)
+    broker.orders[d2] = {}
+    session, cid = place_order(books(conn), broker, d2, "069500", Side.BUY, 2, limit_price=80_000)
+    assert session.oms.orders[cid].filled_qty == 0       # day 1's fill is not this order's
+    broker.fill("0000000001", 80_000)
+    rep = daily_close(books(conn), broker, d2)
+    assert rep.booked == ["20261123-0000000001-1"] and rep.clean, rep.results
+    assert books(conn).ledger.position("069500").qty == 1 + 1 + 2
+    assert conn.execute("select count(*) from oms_order_acks where order_no = '0000000001'").fetchone()[0] == 2
+
+
+def test_db_init_upgrades_a_v1_0_database(conn):
+    from ministp.store import PostgresLedgerStore
+    conn.execute("alter table oms_order_acks add constraint oms_order_acks_order_no_key unique (order_no)")
+    PostgresLedgerStore(conn).init_schema()          # what `db-init` runs
+    names = {r[0] for r in conn.execute("select conname from pg_constraint"
+                                        " where conrelid = 'oms_order_acks'::regclass")}
+    assert "oms_order_acks_order_no_key" not in names

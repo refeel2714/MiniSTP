@@ -16,6 +16,11 @@ from .capacity import OpenOrder, capacity, check
 from .risk import RiskLimits
 
 
+def exec_prefix(day: dt.date, order_no: str) -> str:
+    """Execution ids are `YYYYMMDD-주문번호-순번`: brokers reuse order numbers on other days."""
+    return f"{day:%Y%m%d}-{order_no}-"
+
+
 @dataclass(frozen=True)
 class Anomaly:
     day: dt.date
@@ -27,6 +32,7 @@ class Anomaly:
 @dataclass
 class _Tracked:
     client_id: str
+    day: dt.date
     ack: OrderAck
     booked_qty: int = 0
     booked_amount: int = 0
@@ -59,15 +65,15 @@ class TradingSession:
     def capacity(self, symbol: str, ref_price: int, ref_prices: dict[str, int] | None = None):
         return capacity(self.ledger, self.open_orders(), symbol, ref_price, self.limits, ref_prices)
 
-    def restore(self, client_id: str, symbol: str, side: Side, qty: int, limit_price: int | None,
+    def restore(self, day: dt.date, client_id: str, symbol: str, side: Side, qty: int, limit_price: int | None,
                 ack: OrderAck) -> None:
-        """Re-track an order placed by an earlier process, with fills already in the ledger."""
+        """Re-track an order placed earlier today by another process, with fills already in the ledger."""
         self.oms.create(client_id, symbol=symbol, side=side, qty=qty, limit_price=limit_price or 0)
         self.oms.on_accepted(client_id)
-        t = _Tracked(client_id, ack)
-        prefix = f"{ack.order_no}-"
+        t = _Tracked(client_id, day, ack)
+        prefix = exec_prefix(day, ack.order_no)
         for e in self.ledger.events:
-            if isinstance(e, ExecutionEvent) and e.exec_id.startswith(prefix):
+            if isinstance(e, ExecutionEvent) and e.trade_date == day and e.exec_id.startswith(prefix):
                 t.fills += 1
                 t.booked_qty += e.qty
                 t.booked_amount += e.qty * e.price
@@ -107,14 +113,14 @@ class TradingSession:
         if self.on_ack:
             self.on_ack(cid, ack, "")
         self.oms.on_accepted(cid)
-        t = _Tracked(cid, ack)
+        t = _Tracked(cid, day, ack)
         self._by_client[cid] = t
         self._by_broker_no[ack.order_no] = t
         return cid
 
     def executions_of(self, client_id: str) -> list[str]:
         t = self._by_client[client_id]
-        return [f"{t.ack.order_no}-{i}" for i in range(1, t.fills + 1)]
+        return [f"{exec_prefix(t.day, t.ack.order_no)}{i}" for i in range(1, t.fills + 1)]
 
     def cancel(self, client_id: str) -> None:
         self.oms.request_cancel(client_id)
@@ -144,7 +150,7 @@ class TradingSession:
                     self.anomalies.append(Anomaly(day, "OVERFILL", b.order_no, str(exc)))
                     raise
                 t.fills += 1
-                exec_id = f"{b.order_no}-{t.fills}"
+                exec_id = f"{exec_prefix(day, b.order_no)}{t.fills}"
                 self.ledger.execute(exec_id, day, b.symbol, Side(b.side), dq, da // dq)
                 t.booked_qty, t.booked_amount = b.filled_qty, b.filled_amount
                 booked.append(exec_id)
