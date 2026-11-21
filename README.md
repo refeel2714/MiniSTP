@@ -54,6 +54,7 @@ MINISTP_TEST_DATABASE_URL=postgresql://postgres:postgres@localhost:5432/ministp_
 | `ops` | 원장 시작값, 주문 기록, 일일 마감·대사, 무오류 연속일, 장중 IBOR 실행기(체결통보 즉시 반영, 조회 보완, 장중 대사) | R-05, R-44, R-74~75, D6 |
 | `broker.kis_ws` | 실시간 체결통보 수신(접속키, 구독, AES 복호화, PINGPONG, 재연결) | D6 |
 | `store` | PostgreSQL 이벤트 저장, 재생 복원, DB 수준 append-only·차대변 통제 | 03 데이터 모델, R-04, R-50 |
+| `queries` | 조회 서비스 계층: 화면이 호출할 조회 트랜잭션(원장 목록·추적, 시산표, 대사 이력, 주문 블로터, 기준가 추이). DB 읽기만 하고 DB 컬럼명 그대로 Dataset으로 반환 | 화면 기획서 |
 
 ## 한국투자증권 모의투자 연결 확인 (본인 PC에서)
 
