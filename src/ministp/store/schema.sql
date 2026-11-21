@@ -1,5 +1,5 @@
 -- MiniSTP ledger schema (spec 03).
--- ERD version: 1.0  (bump on every schema change, then run scripts/gen_erd.py) Append-only tables are enforced in the DB,
+-- ERD version: 1.1  (bump on every schema change, then run scripts/gen_erd.py) Append-only tables are enforced in the DB,
 -- not just in application code.
 
 create table if not exists accounts_chart (
@@ -75,12 +75,16 @@ create table if not exists oms_orders (
 create table if not exists oms_order_acks (
     client_id  text primary key references oms_orders (client_id),
     outcome    text not null check (outcome in ('ACCEPTED', 'REJECTED')),
-    order_no   text unique,
+    order_no   text,
     org_no     text,
     detail     text,
     created_at timestamptz not null default now(),
     check ((outcome = 'ACCEPTED') = (order_no is not null))
 );
+-- v1.1: broker order numbers restart every business day, so they are unique only
+-- within a day (client_id, which carries the date, is the key). Drops the v1.0 constraint.
+alter table oms_order_acks drop constraint if exists oms_order_acks_order_no_key;
+create index if not exists oms_order_acks_order_no_idx on oms_order_acks (order_no);
 
 -- R-70: broker answers are stored as received, before comparing.
 create table if not exists broker_snapshots (
@@ -233,7 +237,7 @@ comment on column oms_orders.created_at is '생성 시각';
 comment on table oms_order_acks is '주문 접수 결과 (증권사 응답)';
 comment on column oms_order_acks.client_id is '내부 주문번호';
 comment on column oms_order_acks.outcome is '결과 (ACCEPTED 접수 / REJECTED 거부)';
-comment on column oms_order_acks.order_no is '증권사 주문번호';
+comment on column oms_order_acks.order_no is '증권사 주문번호 (영업일마다 다시 시작될 수 있음)';
 comment on column oms_order_acks.org_no is '주문조직번호 (취소 시 필요)';
 comment on column oms_order_acks.detail is '거부 사유';
 comment on column oms_order_acks.created_at is '기록 시각';

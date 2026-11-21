@@ -1,6 +1,6 @@
 # MiniSTP ERD
 
-ERD 버전: v1.0 · 스키마 해시: `c47db189f7b8`
+ERD 버전: v1.1 · 스키마 해시: `b21ca7d4877d`
 
 이 문서는 `scripts/gen_erd.py`가 `src/ministp/store/schema.sql`로 만든 DB에서 읽어 생성해요. 직접 고치지 말고 스키마의 한글 주석(COMMENT)을 고친 뒤 다시 생성하세요. 모든 원장 테이블은 append-only(수정·삭제 불가)예요.
 
@@ -70,7 +70,7 @@ erDiagram
     oms_order_acks {
         text client_id PK,FK "내부 주문번호"
         text outcome "결과 (ACCEPTED 접수 / REJECTED 거부)"
-        text order_no UK "증권사 주문번호"
+        text order_no "증권사 주문번호 (영업일마다 다시 시작될 수 있음)"
         text org_no "주문조직번호 (취소 시 필요)"
         text detail "거부 사유"
         timestamptz created_at "기록 시각"
@@ -200,7 +200,7 @@ erDiagram
 |---|---|---|---|---|
 | `client_id` | 내부 주문번호 | text | Y | PK, FK → oms_orders.client_id |
 | `outcome` | 결과 (ACCEPTED 접수 / REJECTED 거부) | text | Y |  |
-| `order_no` | 증권사 주문번호 | text |  | UK |
+| `order_no` | 증권사 주문번호 (영업일마다 다시 시작될 수 있음) | text |  |  |
 | `org_no` | 주문조직번호 (취소 시 필요) | text |  |  |
 | `detail` | 거부 사유 | text |  |  |
 | `created_at` | 기록 시각 | timestamp with time zone | Y |  |
@@ -261,3 +261,4 @@ erDiagram
 | 버전 | 일자 | 변경 내용 |
 |---|---|---|
 | v1.0 | 2026-11-21 | 최초 공개. 원장(이벤트·분개·보유·예수금), 계정과목, 종목, 주문 의도·접수, 증권사 응답 원본, 대사 결과 11개 테이블과 뷰 3개. 전 컬럼 한글 명칭. |
+| v1.1 | 2026-11-21 | `oms_order_acks.order_no` 유일 제약 제거(증권사 주문번호는 영업일마다 다시 시작될 수 있음, 조회용 인덱스로 대체). 체결 ID를 `YYYYMMDD-주문번호-순번`으로 변경. |
