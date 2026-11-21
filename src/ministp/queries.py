@@ -136,7 +136,7 @@ def order_blotter(conn: psycopg.Connection, day: dt.date) -> Dataset:
                                     sum((e.payload->>'qty')::bigint * (e.payload->>'price')::bigint) as filled_amount
                                from ledger_events e
                               where e.event_type = 'ExecutionEvent' and a.order_no is not null
-                                and e.payload->>'exec_id' like a.order_no || '-%%') f on true
+                                and e.payload->>'exec_id' like to_char(o.trade_date, 'YYYYMMDD') || '-' || a.order_no || '-%%') f on true
           left join lateral (select count(*) as notices, max((s.payload->>'booking_ms')::int) as max_booking_ms
                                from broker_snapshots s
                               where s.kind = 'FILL_NOTICE' and s.date = o.trade_date

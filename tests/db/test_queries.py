@@ -33,7 +33,7 @@ def test_trace_from_an_execution_to_its_journal(conn, broker):
     lines = {(r["account_code"], r["debit"], r["credit"]) for r in t.journal.records()}
     assert (STOCK, 160_000, 0) in lines and all(r["account_name"] for r in t.journal.records())
     assert [(r["exec_id"], r["qty_delta"], r["cost_delta"]) for r in t.positions.records()] == [
-        ("0000000001-1", 2, 160_000)]
+        ("20261120-0000000001-1", 2, 160_000)]
     assert len(t.cash) == 0          # cash moves on settlement day, not trade day
 
 
