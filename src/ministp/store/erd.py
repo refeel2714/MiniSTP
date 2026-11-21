@@ -171,9 +171,129 @@ def _esc(s: str) -> str:
     return (s or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")
 
 
+# ---------- relationship diagram (inline SVG, no script) ----------
+
+# Bands of the diagram, each a list of four columns of tables (left to right = data flow).
+LAYOUT = [
+    ("원장 · 기준정보", [["ledger_events"], ["journal_entries", "position_ledger", "cash_ledger"],
+                     ["journal_lines"], ["accounts_chart"]]),
+    ("주문", [["instruments"], ["oms_orders"], ["oms_order_acks"], []]),
+    ("증권사 응답과 대사", [["broker_snapshots"], ["recon_results"], [], []]),
+]
+BOX_W, COL_GAP, MARGIN = 232, 84, 28
+HEAD_H, ROW_H, MORE_H, BOX_GAP, BAND_TOP, BAND_PAD = 54, 40, 28, 28, 44, 22
+NCOLS = 4
+SVG_W = MARGIN * 2 + NCOLS * BOX_W + (NCOLS - 1) * COL_GAP
+
+
+def _short(s: str, n: int) -> str:
+    s = (s or "").split(" (")[0]
+    return s if len(s) <= n else s[: n - 1] + "…"
+
+
+def _key_cols(info: dict) -> list[dict]:
+    fk_cols = {f["column"] for f in info["fks"]}
+    return [c for c in info["columns"] if c["pk"] or c["unique"] or c["name"] in fk_cols]
+
+
+def render_svg(catalog: dict) -> str:
+    tables = {k: v for k, v in catalog.items() if v["kind"] == "table"}
+    placed = {t for _, cols in LAYOUT for col in cols for t in col}
+    extra = [t for t in tables if t not in placed]
+    layout = [(name, [[t for t in col if t in tables] for col in cols]) for name, cols in LAYOUT]
+    for i in range(0, len(extra), NCOLS):
+        chunk = extra[i:i + NCOLS]
+        layout.append(("기타", [[t] for t in chunk] + [[] for _ in range(NCOLS - len(chunk))]))
+
+    box, rows = {}, {}  # table -> (x, y, h); (table, column) -> y center
+    out, y = [], MARGIN
+    for band, cols in layout:
+        if not any(cols):
+            continue
+        heights = []
+        for ci, col in enumerate(cols):
+            yy = y + BAND_TOP
+            for t in col:
+                keys = _key_cols(tables[t])
+                more = len(tables[t]["columns"]) - len(keys)
+                h = HEAD_H + ROW_H * len(keys) + (MORE_H if more else 0)
+                box[t] = (MARGIN + ci * (BOX_W + COL_GAP), yy, h)
+                for i, c in enumerate(keys):
+                    rows[(t, c["name"])] = yy + HEAD_H + ROW_H * i + ROW_H / 2
+                yy += h + BOX_GAP
+            heights.append(yy - BOX_GAP - y)
+        band_h = max(heights) + BAND_PAD
+        out.append(f'<rect class="band" x="8" y="{y - 12}" width="{SVG_W - 16}" height="{band_h + 12}" rx="10"/>'
+                   f'<text class="band-t" x="{MARGIN}" y="{y + 14}">{_esc(band)}</text>')
+        y += band_h + 24
+    height = y
+
+    edges = []
+    for t, info in tables.items():
+        for f in info["fks"]:
+            p, c = f["ref_table"], t
+            if p not in box or c not in box:
+                continue
+            py, cy = rows.get((p, f["ref_column"]), box[p][1] + HEAD_H / 2), rows[(c, f["column"])]
+            (px, _, _), (cx, _, _) = box[p], box[c]
+            if p == c:  # self reference: loop on the right side
+                r = px + BOX_W
+                d = f"M{r},{py} h14 a8,8 0 0 1 8,8 V{cy - 8} a8,8 0 0 1 -8,8 h-14"
+            elif cx > px:
+                a, b = px + BOX_W, cx
+                m = (a + b) / 2
+                d = f"M{a},{py} C{m},{py} {m},{cy} {b},{cy}"
+            elif cx < px:
+                a, b = px, cx + BOX_W
+                m = (a + b) / 2
+                d = f"M{a},{py} C{m},{py} {m},{cy} {b},{cy}"
+            else:  # same column, different box: loop on the left side
+                d = f"M{px},{py} h-14 a8,8 0 0 0 -8,8 V{cy - 8} a8,8 0 0 0 8,8 h14"
+            label = f'{p}.{f["ref_column"]} → {c}.{f["column"]}'
+            edges.append(f'<path class="edge" d="{d}" marker-start="url(#one)" marker-end="url(#many)">'
+                         f"<title>{_esc(label)}</title></path>")
+
+    boxes = []
+    fk_of = {t: {f["column"]: f for f in info["fks"]} for t, info in tables.items()}
+    for t, (x, by, h) in box.items():
+        info = tables[t]
+        keys = _key_cols(info)
+        more = len(info["columns"]) - len(keys)
+        g = [f'<g class="node"><a href="#t-{t}"><title>{_esc(t)} {_esc(info["comment"])}</title>',
+             f'<rect class="box" x="{x}" y="{by}" width="{BOX_W}" height="{h}" rx="8"/>',
+             f'<path class="head" d="M{x},{by + 8} a8,8 0 0 1 8,-8 h{BOX_W - 16} a8,8 0 0 1 8,8 '
+             f'v{HEAD_H - 8} h-{BOX_W} z"/>',
+             f'<text class="tn" x="{x + 14}" y="{by + 22}">{_esc(t)}</text>',
+             f'<text class="tk" x="{x + 14}" y="{by + 42}">{_esc(_short(info["comment"], 16))}</text>']
+        for i, c in enumerate(keys):
+            ry = by + HEAD_H + ROW_H * i
+            kind = "pk" if c["pk"] else ("fk" if c["name"] in fk_of[t] else "uk")
+            tag = {"pk": "PK", "fk": "FK", "uk": "UK"}[kind]
+            if i:
+                g.append(f'<line class="sep" x1="{x + 12}" x2="{x + BOX_W - 12}" y1="{ry}" y2="{ry}"/>')
+            g.append(f'<rect class="chip {kind}" x="{x + 12}" y="{ry + 12}" width="26" height="16" rx="3"/>'
+                     f'<text class="chip-t {kind}" x="{x + 25}" y="{ry + 24}">{tag}</text>'
+                     f'<text class="cn" x="{x + 46}" y="{ry + 18}">{_esc(c["name"])}</text>'
+                     f'<text class="ck" x="{x + 46}" y="{ry + 33}">{_esc(_short(c["comment"], 15))}</text>')
+        if more:
+            g.append(f'<text class="more" x="{x + 14}" y="{by + h - 10}">외 {more}개 컬럼</text>')
+        g.append("</a></g>")
+        boxes.append("".join(g))
+
+    defs = ('<defs>'
+            '<marker id="one" viewBox="0 0 12 16" refX="1" refY="8" markerWidth="12" markerHeight="16" '
+            'markerUnits="userSpaceOnUse" orient="auto">'
+            '<path class="mk" d="M5,2 V14 M9,2 V14"/></marker>'
+            '<marker id="many" viewBox="0 0 16 16" refX="15" refY="8" markerWidth="16" markerHeight="16" '
+            'markerUnits="userSpaceOnUse" orient="auto">'
+            '<path class="mk" d="M1,8 H15 M15,1 L3,8 L15,15 M1,2 V14"/></marker></defs>')
+    return (f'<svg class="erd" viewBox="0 0 {SVG_W} {height}" width="{SVG_W}" height="{height}" '
+            f'role="img" aria-label="MiniSTP 테이블 관계도">{defs}{"".join(out)}'
+            f'{"".join(edges)}{"".join(boxes)}</svg>')
+
+
 def render_html(catalog: dict, version: str, digest: str, history_rows: list[tuple[str, str, str]]) -> str:
-    md = render(catalog, version, digest, "")
-    mermaid = md.split("```mermaid\n", 1)[1].split("```", 1)[0]
+    diagram = render_svg(catalog)
     views = [k for k, v in catalog.items() if v["kind"] == "view"]
     groups = GROUPS + [("조회 뷰", "원장에서 계산해 보여주는 읽기 전용 화면.", views)]
     known = {t for _, _, ts in groups for t in ts}
@@ -220,18 +340,21 @@ def render_html(catalog: dict, version: str, digest: str, history_rows: list[tup
 :root {{
   --bg: #f6f7f5; --surface: #ffffff; --fg: #1c2321; --muted: #5d6763; --line: #dde2df;
   --accent: #1f6f5c; --accent-soft: #e3f0eb; --pk: #8a5a00; --pk-soft: #fbf0d9; --fk: #2b5d9a; --fk-soft: #e4ecf7;
+  --band: #f1f4f2; --box-line: #b9c3be; --edge: #2b5d9a;
   --sans: "IBM Plex Sans KR", "Apple SD Gothic Neo", "Malgun Gothic", system-ui, sans-serif;
   --mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Consolas, monospace;
 }}
 @media (prefers-color-scheme: dark) {{ :root:not([data-theme="light"]) {{
   --bg: #121615; --surface: #1a201e; --fg: #e4e9e6; --muted: #9aa6a1; --line: #2c3532;
-  --accent: #5cc1a3; --accent-soft: #1d332c; --pk: #e7b65a; --pk-soft: #33291a; --fk: #8db4e8; --fk-soft: #1d2836; color-scheme: dark }} }}
+  --accent: #5cc1a3; --accent-soft: #1d332c; --pk: #e7b65a; --pk-soft: #33291a; --fk: #8db4e8; --fk-soft: #1d2836;
+  --band: #161b1a; --box-line: #44504b; --edge: #8db4e8; color-scheme: dark }} }}
 :root[data-theme="dark"] {{
   --bg: #121615; --surface: #1a201e; --fg: #e4e9e6; --muted: #9aa6a1; --line: #2c3532;
-  --accent: #5cc1a3; --accent-soft: #1d332c; --pk: #e7b65a; --pk-soft: #33291a; --fk: #8db4e8; --fk-soft: #1d2836; color-scheme: dark }}
+  --accent: #5cc1a3; --accent-soft: #1d332c; --pk: #e7b65a; --pk-soft: #33291a; --fk: #8db4e8; --fk-soft: #1d2836;
+  --band: #161b1a; --box-line: #44504b; --edge: #8db4e8; color-scheme: dark }}
 * {{ box-sizing: border-box }}
 body {{ background: var(--bg); color: var(--fg); font: 15px/1.6 var(--sans); }}
-.wrap {{ max-width: 1040px; margin: 0 auto; padding-block: 40px 64px;
+.wrap {{ max-width: 1240px; margin: 0 auto; padding-block: 40px 64px;
   padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); }}
 h1 {{ font-size: 28px; font-weight: 600; margin: 0; letter-spacing: -0.01em; text-wrap: balance }}
 h2 {{ font-size: 19px; font-weight: 600; margin: 48px 0 12px }}
@@ -242,9 +365,30 @@ a {{ color: var(--fk) }}
 .stamp {{ display: flex; flex-wrap: wrap; gap: 8px 16px; margin: 12px 0 0; color: var(--muted); font-size: 13px }}
 .stamp b {{ color: var(--fg); font-weight: 600 }}
 .badge {{ background: var(--accent-soft); color: var(--accent); padding: 2px 10px; border-radius: 99px; font-weight: 600 }}
-.intro {{ max-width: 68ch; color: var(--muted); margin: 16px 0 0 }}
-.diagram {{ background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 16px; overflow-x: auto }}
-.diagram pre {{ margin: 0; min-width: 900px }}
+.intro {{ max-width: 72ch; color: var(--muted); margin: 16px 0 0 }}
+.diagram {{ background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 8px; overflow-x: auto }}
+.erd {{ display: block; width: 100%; min-width: 1000px; height: auto; font-family: var(--sans) }}
+.erd .band {{ fill: var(--band) }}
+.erd .band-t {{ fill: var(--accent); font-size: 15px; font-weight: 600 }}
+.erd .box {{ fill: var(--surface); stroke: var(--box-line); stroke-width: 1.5 }}
+.erd .head {{ fill: var(--accent-soft) }}
+.erd .node:hover .box, .erd .node a:focus-visible .box {{ stroke: var(--accent); stroke-width: 2.5 }}
+.erd a:focus {{ outline: none }}
+.erd .tn {{ font: 600 15px var(--mono); fill: var(--fg) }}
+.erd .tk {{ font-size: 13px; fill: var(--muted) }}
+.erd .cn {{ font: 500 13.5px var(--mono); fill: var(--fg) }}
+.erd .ck {{ font-size: 12px; fill: var(--muted) }}
+.erd .more {{ font-size: 12px; fill: var(--muted) }}
+.erd .sep {{ stroke: var(--line) }}
+.erd .chip.pk {{ fill: var(--pk-soft) }} .erd .chip.fk {{ fill: var(--fk-soft) }} .erd .chip.uk {{ fill: var(--accent-soft) }}
+.erd .chip-t {{ font: 600 10.5px var(--mono); text-anchor: middle }}
+.erd .chip-t.pk {{ fill: var(--pk) }} .erd .chip-t.fk {{ fill: var(--fk) }} .erd .chip-t.uk {{ fill: var(--accent) }}
+.erd .edge {{ fill: none; stroke: var(--edge); stroke-width: 2 }}
+.erd .edge:hover {{ stroke-width: 3.5 }}
+.erd .mk {{ fill: none; stroke: var(--edge); stroke-width: 2 }}
+.legend {{ display: flex; flex-wrap: wrap; align-items: center; gap: 6px; color: var(--muted); font-size: 13px; margin: 0 0 10px }}
+.legend .k {{ margin-left: 6px }} .legend .k:first-child {{ margin-left: 0 }}
+.rel {{ font-family: var(--mono); color: var(--edge); font-weight: 600; margin-left: 6px }}
 .toc {{ display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 6px }}
 .toc a {{ display: flex; flex-direction: column; padding: 8px 12px; border: 1px solid var(--line); border-radius: 6px;
   text-decoration: none; color: var(--fg); background: var(--surface) }}
@@ -276,8 +420,8 @@ footer {{ margin-top: 40px; color: var(--muted); font-size: 13px }}
   <p class="intro">백오피스 연계 매매 시스템의 PostgreSQL 스키마예요. DB에서 직접 읽어 만들었고, 한글 명칭은 DB 주석(COMMENT)이라 pgAdmin에서도 똑같이 보여요. 원장 테이블은 모두 수정·삭제가 막혀 있고(append-only), 정정은 새 행으로 남겨요.</p>
 
   <h2>관계도</h2>
-  <div class="diagram"><pre class="mermaid">
-{mermaid}</pre></div>
+  <p class="legend"><span class="k pk">PK</span> 기본키 <span class="k fk">FK</span> 외래키 <span class="k uk">UK</span> 유일키 <span class="rel">‖──&lt;</span> 1 : N (한 행이 여러 행에 연결) · 키 컬럼만 그렸고, 상자를 누르면 전체 컬럼으로 이동해요.</p>
+  <div class="diagram">{diagram}</div>
 
   <h2>테이블 목록</h2>
   <nav class="toc" aria-label="테이블 목록">{toc}</nav>

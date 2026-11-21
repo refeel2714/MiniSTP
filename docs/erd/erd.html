@@ -7,18 +7,21 @@
 :root {
   --bg: #f6f7f5; --surface: #ffffff; --fg: #1c2321; --muted: #5d6763; --line: #dde2df;
   --accent: #1f6f5c; --accent-soft: #e3f0eb; --pk: #8a5a00; --pk-soft: #fbf0d9; --fk: #2b5d9a; --fk-soft: #e4ecf7;
+  --band: #f1f4f2; --box-line: #b9c3be; --edge: #2b5d9a;
   --sans: "IBM Plex Sans KR", "Apple SD Gothic Neo", "Malgun Gothic", system-ui, sans-serif;
   --mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Consolas, monospace;
 }
 @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
   --bg: #121615; --surface: #1a201e; --fg: #e4e9e6; --muted: #9aa6a1; --line: #2c3532;
-  --accent: #5cc1a3; --accent-soft: #1d332c; --pk: #e7b65a; --pk-soft: #33291a; --fk: #8db4e8; --fk-soft: #1d2836; color-scheme: dark } }
+  --accent: #5cc1a3; --accent-soft: #1d332c; --pk: #e7b65a; --pk-soft: #33291a; --fk: #8db4e8; --fk-soft: #1d2836;
+  --band: #161b1a; --box-line: #44504b; --edge: #8db4e8; color-scheme: dark } }
 :root[data-theme="dark"] {
   --bg: #121615; --surface: #1a201e; --fg: #e4e9e6; --muted: #9aa6a1; --line: #2c3532;
-  --accent: #5cc1a3; --accent-soft: #1d332c; --pk: #e7b65a; --pk-soft: #33291a; --fk: #8db4e8; --fk-soft: #1d2836; color-scheme: dark }
+  --accent: #5cc1a3; --accent-soft: #1d332c; --pk: #e7b65a; --pk-soft: #33291a; --fk: #8db4e8; --fk-soft: #1d2836;
+  --band: #161b1a; --box-line: #44504b; --edge: #8db4e8; color-scheme: dark }
 * { box-sizing: border-box }
 body { background: var(--bg); color: var(--fg); font: 15px/1.6 var(--sans); }
-.wrap { max-width: 1040px; margin: 0 auto; padding-block: 40px 64px;
+.wrap { max-width: 1240px; margin: 0 auto; padding-block: 40px 64px;
   padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); }
 h1 { font-size: 28px; font-weight: 600; margin: 0; letter-spacing: -0.01em; text-wrap: balance }
 h2 { font-size: 19px; font-weight: 600; margin: 48px 0 12px }
@@ -29,9 +32,30 @@ a { color: var(--fk) }
 .stamp { display: flex; flex-wrap: wrap; gap: 8px 16px; margin: 12px 0 0; color: var(--muted); font-size: 13px }
 .stamp b { color: var(--fg); font-weight: 600 }
 .badge { background: var(--accent-soft); color: var(--accent); padding: 2px 10px; border-radius: 99px; font-weight: 600 }
-.intro { max-width: 68ch; color: var(--muted); margin: 16px 0 0 }
-.diagram { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 16px; overflow-x: auto }
-.diagram pre { margin: 0; min-width: 900px }
+.intro { max-width: 72ch; color: var(--muted); margin: 16px 0 0 }
+.diagram { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 8px; overflow-x: auto }
+.erd { display: block; width: 100%; min-width: 1000px; height: auto; font-family: var(--sans) }
+.erd .band { fill: var(--band) }
+.erd .band-t { fill: var(--accent); font-size: 15px; font-weight: 600 }
+.erd .box { fill: var(--surface); stroke: var(--box-line); stroke-width: 1.5 }
+.erd .head { fill: var(--accent-soft) }
+.erd .node:hover .box, .erd .node a:focus-visible .box { stroke: var(--accent); stroke-width: 2.5 }
+.erd a:focus { outline: none }
+.erd .tn { font: 600 15px var(--mono); fill: var(--fg) }
+.erd .tk { font-size: 13px; fill: var(--muted) }
+.erd .cn { font: 500 13.5px var(--mono); fill: var(--fg) }
+.erd .ck { font-size: 12px; fill: var(--muted) }
+.erd .more { font-size: 12px; fill: var(--muted) }
+.erd .sep { stroke: var(--line) }
+.erd .chip.pk { fill: var(--pk-soft) } .erd .chip.fk { fill: var(--fk-soft) } .erd .chip.uk { fill: var(--accent-soft) }
+.erd .chip-t { font: 600 10.5px var(--mono); text-anchor: middle }
+.erd .chip-t.pk { fill: var(--pk) } .erd .chip-t.fk { fill: var(--fk) } .erd .chip-t.uk { fill: var(--accent) }
+.erd .edge { fill: none; stroke: var(--edge); stroke-width: 2 }
+.erd .edge:hover { stroke-width: 3.5 }
+.erd .mk { fill: none; stroke: var(--edge); stroke-width: 2 }
+.legend { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; color: var(--muted); font-size: 13px; margin: 0 0 10px }
+.legend .k { margin-left: 6px } .legend .k:first-child { margin-left: 0 }
+.rel { font-family: var(--mono); color: var(--edge); font-weight: 600; margin-left: 6px }
 .toc { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 6px }
 .toc a { display: flex; flex-direction: column; padding: 8px 12px; border: 1px solid var(--line); border-radius: 6px;
   text-decoration: none; color: var(--fg); background: var(--surface) }
@@ -63,108 +87,8 @@ footer { margin-top: 40px; color: var(--muted); font-size: 13px }
   <p class="intro">백오피스 연계 매매 시스템의 PostgreSQL 스키마예요. DB에서 직접 읽어 만들었고, 한글 명칭은 DB 주석(COMMENT)이라 pgAdmin에서도 똑같이 보여요. 원장 테이블은 모두 수정·삭제가 막혀 있고(append-only), 정정은 새 행으로 남겨요.</p>
 
   <h2>관계도</h2>
-  <div class="diagram"><pre class="mermaid">
-erDiagram
-    accounts_chart {
-        text code PK "계정코드"
-        text name "계정명"
-        char1 normal_side "정상잔액 방향 (D 차변 / C 대변)"
-    }
-    ledger_events {
-        bigint seq PK "이벤트 순번"
-        text event_type "이벤트 유형"
-        jsonb payload "이벤트 내용"
-        timestamptz recorded_at "기록 시각"
-    }
-    journal_entries {
-        bigint entry_id PK "전표 번호"
-        bigint event_seq FK "원장 이벤트 순번"
-        date date "회계일"
-        text kind "전표 유형"
-        text source_id "원천 참조 (체결번호 등)"
-        bigint reverses_entry_id FK "역분개 대상 전표 번호"
-    }
-    journal_lines {
-        bigint line_id PK "라인 번호"
-        bigint entry_id FK "전표 번호"
-        text account_code FK "계정코드"
-        bigint debit "차변 금액"
-        bigint credit "대변 금액"
-    }
-    position_ledger {
-        bigint id PK "행 번호"
-        bigint event_seq FK "원장 이벤트 순번"
-        date trade_date "매매일"
-        text symbol "종목코드"
-        text exec_id UK "체결 ID (기초 보유는 OPEN-종목코드)"
-        bigint qty_delta "수량 증감"
-        bigint cost_delta "장부금액 증감"
-        bigint realized_pnl "실현손익"
-    }
-    cash_ledger {
-        bigint id PK "행 번호"
-        bigint event_seq FK "원장 이벤트 순번"
-        date date "일자"
-        text reason "사유 (입금, 결제 등)"
-        bigint amount "금액 (+입금 / −출금)"
-        text ref_id "참조 ID"
-    }
-    instruments {
-        text symbol PK "종목코드"
-        text name "종목명"
-        text market "시장 (KOSPI / KOSDAQ)"
-        text asset_type "자산 유형 (STOCK / ETF)"
-    }
-    oms_orders {
-        text client_id PK "내부 주문번호"
-        date trade_date "주문일"
-        text symbol FK "종목코드"
-        text side "매매구분 (BUY / SELL)"
-        bigint qty "주문수량"
-        bigint limit_price "지정가 (없으면 시장가)"
-        timestamptz created_at "생성 시각"
-    }
-    oms_order_acks {
-        text client_id PK,FK "내부 주문번호"
-        text outcome "결과 (ACCEPTED 접수 / REJECTED 거부)"
-        text order_no UK "증권사 주문번호"
-        text org_no "주문조직번호 (취소 시 필요)"
-        text detail "거부 사유"
-        timestamptz created_at "기록 시각"
-    }
-    broker_snapshots {
-        bigint snapshot_id PK "스냅샷 번호"
-        date date "기준일"
-        text kind "유형 (OPENING_BALANCE / DAILY_RECON / INTRADAY_RECON / FILL_NOTICE)"
-        jsonb payload "응답 원본"
-        timestamptz taken_at "수신 시각"
-    }
-    recon_results {
-        bigint id PK "행 번호"
-        bigint run_id FK "대사 실행 스냅샷 번호"
-        date date "기준일"
-        text item "대사 항목"
-        text key "항목 키 (종목코드 등)"
-        bigint internal_value "내부(원장) 값"
-        bigint broker_value "증권사 값"
-        bigint diff "차이 (절대값)"
-        text status "상태 (MATCH 일치 / BREAK 불일치 / RESOLVED 해결)"
-        text cause_code "원인 코드"
-        text note "판단 메모"
-        bigint supersedes_id FK "해결 대상 행 번호"
-        timestamptz created_at "기록 시각"
-    }
-    ledger_events ||--o{ journal_entries : "event_seq"
-    journal_entries ||--o{ journal_entries : "reverses_entry_id"
-    journal_entries ||--o{ journal_lines : "entry_id"
-    accounts_chart ||--o{ journal_lines : "account_code"
-    ledger_events ||--o{ position_ledger : "event_seq"
-    ledger_events ||--o{ cash_ledger : "event_seq"
-    instruments ||--o{ oms_orders : "symbol"
-    oms_orders ||--o{ oms_order_acks : "client_id"
-    broker_snapshots ||--o{ recon_results : "run_id"
-    recon_results ||--o{ recon_results : "supersedes_id"
-</pre></div>
+  <p class="legend"><span class="k pk">PK</span> 기본키 <span class="k fk">FK</span> 외래키 <span class="k uk">UK</span> 유일키 <span class="rel">‖──&lt;</span> 1 : N (한 행이 여러 행에 연결) · 키 컬럼만 그렸고, 상자를 누르면 전체 컬럼으로 이동해요.</p>
+  <div class="diagram"><svg class="erd" viewBox="0 0 1236 1284" width="1236" height="1284" role="img" aria-label="MiniSTP 테이블 관계도"><defs><marker id="one" viewBox="0 0 12 16" refX="1" refY="8" markerWidth="12" markerHeight="16" markerUnits="userSpaceOnUse" orient="auto"><path class="mk" d="M5,2 V14 M9,2 V14"/></marker><marker id="many" viewBox="0 0 16 16" refX="15" refY="8" markerWidth="16" markerHeight="16" markerUnits="userSpaceOnUse" orient="auto"><path class="mk" d="M1,8 H15 M15,1 L3,8 L15,15 M1,2 V14"/></marker></defs><rect class="band" x="8" y="16" width="1220" height="700" rx="10"/><text class="band-t" x="28" y="42">원장 · 기준정보</text><rect class="band" x="8" y="728" width="1220" height="240" rx="10"/><text class="band-t" x="28" y="754">주문</text><rect class="band" x="8" y="980" width="1220" height="280" rx="10"/><text class="band-t" x="28" y="1006">증권사 응답과 대사</text><path class="edge" d="M260,146.0 C302.0,146.0 302.0,186.0 344,186.0" marker-start="url(#one)" marker-end="url(#many)"><title>ledger_events.seq → journal_entries.event_seq</title></path><path class="edge" d="M576,146.0 h14 a8,8 0 0 1 8,8 V218.0 a8,8 0 0 1 -8,8 h-14" marker-start="url(#one)" marker-end="url(#many)"><title>journal_entries.entry_id → journal_entries.reverses_entry_id</title></path><path class="edge" d="M576,146.0 C618.0,146.0 618.0,186.0 660,186.0" marker-start="url(#one)" marker-end="url(#many)"><title>journal_entries.entry_id → journal_lines.entry_id</title></path><path class="edge" d="M976,146.0 C934.0,146.0 934.0,226.0 892,226.0" marker-start="url(#one)" marker-end="url(#many)"><title>accounts_chart.code → journal_lines.account_code</title></path><path class="edge" d="M260,146.0 C302.0,146.0 302.0,416.0 344,416.0" marker-start="url(#one)" marker-end="url(#many)"><title>ledger_events.seq → position_ledger.event_seq</title></path><path class="edge" d="M260,146.0 C302.0,146.0 302.0,646.0 344,646.0" marker-start="url(#one)" marker-end="url(#many)"><title>ledger_events.seq → cash_ledger.event_seq</title></path><path class="edge" d="M260,858.0 C302.0,858.0 302.0,898.0 344,898.0" marker-start="url(#one)" marker-end="url(#many)"><title>instruments.symbol → oms_orders.symbol</title></path><path class="edge" d="M576,858.0 C618.0,858.0 618.0,858.0 660,858.0" marker-start="url(#one)" marker-end="url(#many)"><title>oms_orders.client_id → oms_order_acks.client_id</title></path><path class="edge" d="M260,1110.0 C302.0,1110.0 302.0,1150.0 344,1150.0" marker-start="url(#one)" marker-end="url(#many)"><title>broker_snapshots.snapshot_id → recon_results.run_id</title></path><path class="edge" d="M576,1110.0 h14 a8,8 0 0 1 8,8 V1182.0 a8,8 0 0 1 -8,8 h-14" marker-start="url(#one)" marker-end="url(#many)"><title>recon_results.id → recon_results.supersedes_id</title></path><g class="node"><a href="#t-ledger_events"><title>ledger_events 원장 이벤트 (모든 기록의 원천, 수정·삭제 불가)</title><rect class="box" x="28" y="72" width="232" height="122" rx="8"/><path class="head" d="M28,80 a8,8 0 0 1 8,-8 h216 a8,8 0 0 1 8,8 v46 h-232 z"/><text class="tn" x="42" y="94">ledger_events</text><text class="tk" x="42" y="114">원장 이벤트</text><rect class="chip pk" x="40" y="138" width="26" height="16" rx="3"/><text class="chip-t pk" x="53" y="150">PK</text><text class="cn" x="74" y="144">seq</text><text class="ck" x="74" y="159">이벤트 순번</text><text class="more" x="42" y="184">외 3개 컬럼</text></a></g><g class="node"><a href="#t-journal_entries"><title>journal_entries 분개 전표</title><rect class="box" x="344" y="72" width="232" height="202" rx="8"/><path class="head" d="M344,80 a8,8 0 0 1 8,-8 h216 a8,8 0 0 1 8,8 v46 h-232 z"/><text class="tn" x="358" y="94">journal_entries</text><text class="tk" x="358" y="114">분개 전표</text><rect class="chip pk" x="356" y="138" width="26" height="16" rx="3"/><text class="chip-t pk" x="369" y="150">PK</text><text class="cn" x="390" y="144">entry_id</text><text class="ck" x="390" y="159">전표 번호</text><line class="sep" x1="356" x2="564" y1="166" y2="166"/><rect class="chip fk" x="356" y="178" width="26" height="16" rx="3"/><text class="chip-t fk" x="369" y="190">FK</text><text class="cn" x="390" y="184">event_seq</text><text class="ck" x="390" y="199">원장 이벤트 순번</text><line class="sep" x1="356" x2="564" y1="206" y2="206"/><rect class="chip fk" x="356" y="218" width="26" height="16" rx="3"/><text class="chip-t fk" x="369" y="230">FK</text><text class="cn" x="390" y="224">reverses_entry_id</text><text class="ck" x="390" y="239">역분개 대상 전표 번호</text><text class="more" x="358" y="264">외 3개 컬럼</text></a></g><g class="node"><a href="#t-position_ledger"><title>position_ledger 보유수량 원장 (매매일 기준)</title><rect class="box" x="344" y="302" width="232" height="202" rx="8"/><path class="head" d="M344,310 a8,8 0 0 1 8,-8 h216 a8,8 0 0 1 8,8 v46 h-232 z"/><text class="tn" x="358" y="324">position_ledger</text><text class="tk" x="358" y="344">보유수량 원장</text><rect class="chip pk" x="356" y="368" width="26" height="16" rx="3"/><text class="chip-t pk" x="369" y="380">PK</text><text class="cn" x="390" y="374">id</text><text class="ck" x="390" y="389">행 번호</text><line class="sep" x1="356" x2="564" y1="396" y2="396"/><rect class="chip fk" x="356" y="408" width="26" height="16" rx="3"/><text class="chip-t fk" x="369" y="420">FK</text><text class="cn" x="390" y="414">event_seq</text><text class="ck" x="390" y="429">원장 이벤트 순번</text><line class="sep" x1="356" x2="564" y1="436" y2="436"/><rect class="chip uk" x="356" y="448" width="26" height="16" rx="3"/><text class="chip-t uk" x="369" y="460">UK</text><text class="cn" x="390" y="454">exec_id</text><text class="ck" x="390" y="469">체결 ID</text><text class="more" x="358" y="494">외 5개 컬럼</text></a></g><g class="node"><a href="#t-cash_ledger"><title>cash_ledger 예수금 원장 (결제일 기준)</title><rect class="box" x="344" y="532" width="232" height="162" rx="8"/><path class="head" d="M344,540 a8,8 0 0 1 8,-8 h216 a8,8 0 0 1 8,8 v46 h-232 z"/><text class="tn" x="358" y="554">cash_ledger</text><text class="tk" x="358" y="574">예수금 원장</text><rect class="chip pk" x="356" y="598" width="26" height="16" rx="3"/><text class="chip-t pk" x="369" y="610">PK</text><text class="cn" x="390" y="604">id</text><text class="ck" x="390" y="619">행 번호</text><line class="sep" x1="356" x2="564" y1="626" y2="626"/><rect class="chip fk" x="356" y="638" width="26" height="16" rx="3"/><text class="chip-t fk" x="369" y="650">FK</text><text class="cn" x="390" y="644">event_seq</text><text class="ck" x="390" y="659">원장 이벤트 순번</text><text class="more" x="358" y="684">외 4개 컬럼</text></a></g><g class="node"><a href="#t-journal_lines"><title>journal_lines 분개 명세 (차변·대변 라인)</title><rect class="box" x="660" y="72" width="232" height="202" rx="8"/><path class="head" d="M660,80 a8,8 0 0 1 8,-8 h216 a8,8 0 0 1 8,8 v46 h-232 z"/><text class="tn" x="674" y="94">journal_lines</text><text class="tk" x="674" y="114">분개 명세</text><rect class="chip pk" x="672" y="138" width="26" height="16" rx="3"/><text class="chip-t pk" x="685" y="150">PK</text><text class="cn" x="706" y="144">line_id</text><text class="ck" x="706" y="159">라인 번호</text><line class="sep" x1="672" x2="880" y1="166" y2="166"/><rect class="chip fk" x="672" y="178" width="26" height="16" rx="3"/><text class="chip-t fk" x="685" y="190">FK</text><text class="cn" x="706" y="184">entry_id</text><text class="ck" x="706" y="199">전표 번호</text><line class="sep" x1="672" x2="880" y1="206" y2="206"/><rect class="chip fk" x="672" y="218" width="26" height="16" rx="3"/><text class="chip-t fk" x="685" y="230">FK</text><text class="cn" x="706" y="224">account_code</text><text class="ck" x="706" y="239">계정코드</text><text class="more" x="674" y="264">외 2개 컬럼</text></a></g><g class="node"><a href="#t-accounts_chart"><title>accounts_chart 계정과목</title><rect class="box" x="976" y="72" width="232" height="122" rx="8"/><path class="head" d="M976,80 a8,8 0 0 1 8,-8 h216 a8,8 0 0 1 8,8 v46 h-232 z"/><text class="tn" x="990" y="94">accounts_chart</text><text class="tk" x="990" y="114">계정과목</text><rect class="chip pk" x="988" y="138" width="26" height="16" rx="3"/><text class="chip-t pk" x="1001" y="150">PK</text><text class="cn" x="1022" y="144">code</text><text class="ck" x="1022" y="159">계정코드</text><text class="more" x="990" y="184">외 2개 컬럼</text></a></g><g class="node"><a href="#t-instruments"><title>instruments 종목 마스터</title><rect class="box" x="28" y="784" width="232" height="122" rx="8"/><path class="head" d="M28,792 a8,8 0 0 1 8,-8 h216 a8,8 0 0 1 8,8 v46 h-232 z"/><text class="tn" x="42" y="806">instruments</text><text class="tk" x="42" y="826">종목 마스터</text><rect class="chip pk" x="40" y="850" width="26" height="16" rx="3"/><text class="chip-t pk" x="53" y="862">PK</text><text class="cn" x="74" y="856">symbol</text><text class="ck" x="74" y="871">종목코드</text><text class="more" x="42" y="896">외 3개 컬럼</text></a></g><g class="node"><a href="#t-oms_orders"><title>oms_orders 주문 의도 (증권사 전송 전 기록)</title><rect class="box" x="344" y="784" width="232" height="162" rx="8"/><path class="head" d="M344,792 a8,8 0 0 1 8,-8 h216 a8,8 0 0 1 8,8 v46 h-232 z"/><text class="tn" x="358" y="806">oms_orders</text><text class="tk" x="358" y="826">주문 의도</text><rect class="chip pk" x="356" y="850" width="26" height="16" rx="3"/><text class="chip-t pk" x="369" y="862">PK</text><text class="cn" x="390" y="856">client_id</text><text class="ck" x="390" y="871">내부 주문번호</text><line class="sep" x1="356" x2="564" y1="878" y2="878"/><rect class="chip fk" x="356" y="890" width="26" height="16" rx="3"/><text class="chip-t fk" x="369" y="902">FK</text><text class="cn" x="390" y="896">symbol</text><text class="ck" x="390" y="911">종목코드</text><text class="more" x="358" y="936">외 5개 컬럼</text></a></g><g class="node"><a href="#t-oms_order_acks"><title>oms_order_acks 주문 접수 결과 (증권사 응답)</title><rect class="box" x="660" y="784" width="232" height="162" rx="8"/><path class="head" d="M660,792 a8,8 0 0 1 8,-8 h216 a8,8 0 0 1 8,8 v46 h-232 z"/><text class="tn" x="674" y="806">oms_order_acks</text><text class="tk" x="674" y="826">주문 접수 결과</text><rect class="chip pk" x="672" y="850" width="26" height="16" rx="3"/><text class="chip-t pk" x="685" y="862">PK</text><text class="cn" x="706" y="856">client_id</text><text class="ck" x="706" y="871">내부 주문번호</text><line class="sep" x1="672" x2="880" y1="878" y2="878"/><rect class="chip uk" x="672" y="890" width="26" height="16" rx="3"/><text class="chip-t uk" x="685" y="902">UK</text><text class="cn" x="706" y="896">order_no</text><text class="ck" x="706" y="911">증권사 주문번호</text><text class="more" x="674" y="936">외 4개 컬럼</text></a></g><g class="node"><a href="#t-broker_snapshots"><title>broker_snapshots 증권사 응답 원본 (대사 실행, 체결통보, 원장 시작)</title><rect class="box" x="28" y="1036" width="232" height="122" rx="8"/><path class="head" d="M28,1044 a8,8 0 0 1 8,-8 h216 a8,8 0 0 1 8,8 v46 h-232 z"/><text class="tn" x="42" y="1058">broker_snapshots</text><text class="tk" x="42" y="1078">증권사 응답 원본</text><rect class="chip pk" x="40" y="1102" width="26" height="16" rx="3"/><text class="chip-t pk" x="53" y="1114">PK</text><text class="cn" x="74" y="1108">snapshot_id</text><text class="ck" x="74" y="1123">스냅샷 번호</text><text class="more" x="42" y="1148">외 4개 컬럼</text></a></g><g class="node"><a href="#t-recon_results"><title>recon_results 대사 결과 (판단은 새 행으로 추가)</title><rect class="box" x="344" y="1036" width="232" height="202" rx="8"/><path class="head" d="M344,1044 a8,8 0 0 1 8,-8 h216 a8,8 0 0 1 8,8 v46 h-232 z"/><text class="tn" x="358" y="1058">recon_results</text><text class="tk" x="358" y="1078">대사 결과</text><rect class="chip pk" x="356" y="1102" width="26" height="16" rx="3"/><text class="chip-t pk" x="369" y="1114">PK</text><text class="cn" x="390" y="1108">id</text><text class="ck" x="390" y="1123">행 번호</text><line class="sep" x1="356" x2="564" y1="1130" y2="1130"/><rect class="chip fk" x="356" y="1142" width="26" height="16" rx="3"/><text class="chip-t fk" x="369" y="1154">FK</text><text class="cn" x="390" y="1148">run_id</text><text class="ck" x="390" y="1163">대사 실행 스냅샷 번호</text><line class="sep" x1="356" x2="564" y1="1170" y2="1170"/><rect class="chip fk" x="356" y="1182" width="26" height="16" rx="3"/><text class="chip-t fk" x="369" y="1194">FK</text><text class="cn" x="390" y="1188">supersedes_id</text><text class="ck" x="390" y="1203">해결 대상 행 번호</text><text class="more" x="358" y="1228">외 10개 컬럼</text></a></g></svg></div>
 
   <h2>테이블 목록</h2>
   <nav class="toc" aria-label="테이블 목록"><a href="#t-ledger_events"><code>ledger_events</code><span>원장 이벤트</span></a><a href="#t-journal_entries"><code>journal_entries</code><span>분개 전표</span></a><a href="#t-journal_lines"><code>journal_lines</code><span>분개 명세</span></a><a href="#t-position_ledger"><code>position_ledger</code><span>보유수량 원장</span></a><a href="#t-cash_ledger"><code>cash_ledger</code><span>예수금 원장</span></a><a href="#t-accounts_chart"><code>accounts_chart</code><span>계정과목</span></a><a href="#t-instruments"><code>instruments</code><span>종목 마스터</span></a><a href="#t-oms_orders"><code>oms_orders</code><span>주문 의도</span></a><a href="#t-oms_order_acks"><code>oms_order_acks</code><span>주문 접수 결과</span></a><a href="#t-broker_snapshots"><code>broker_snapshots</code><span>증권사 응답 원본</span></a><a href="#t-recon_results"><code>recon_results</code><span>대사 결과</span></a><a href="#t-account_balances_v"><code>account_balances_v</code><span>계정별 잔액</span></a><a href="#t-positions_v"><code>positions_v</code><span>종목별 보유 현황</span></a><a href="#t-cash_balance_v"><code>cash_balance_v</code><span>예수금 잔액</span></a></nav>
