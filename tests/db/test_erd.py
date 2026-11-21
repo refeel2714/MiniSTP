@@ -37,7 +37,7 @@ def test_missing_comment_is_reported(conn):
 
 def test_schema_change_needs_a_version_bump(conn, monkeypatch):
     committed = (DOCS / "ERD.md").read_text(encoding="utf-8")
-    changed = ("-- ERD version: 1.0\ncreate table t (x int);\n"
+    changed = (f"-- ERD version: {erd.schema_version(erd.schema_sql())}\ncreate table t (x int);\n"
                "comment on table t is 't'; comment on column t.x is 'x';")
     monkeypatch.setattr(erd, "schema_sql", lambda: changed)
     with pytest.raises(erd.ErdError, match="버전"):
