@@ -24,6 +24,14 @@ Phase 0 (스펙 확정), Phase 1 (원장 코어 + 백테스트) 완료. Phase 2 
 | Phase 3 | 계정계 확장: 다계좌(고객/자기 구분), 주문가능금액·증거금, 권리 처리(배당·분할), ABOR 일 마감(`DayClosed`), 감사 로그, 대시보드(IBOR 실시간 + ABOR 기준가) | 공개 저장소와 데모 완성 |
 | Phase 4~5 | 소액 실매매, 다자산 확장 (선택) | |
 
+## 샘플 DB (데모용)
+
+```bash
+python -m ministp sample-db            # ministp_sample DB에 영업일 40일치 생성 (--days로 조절)
+```
+
+운영 DB(`ministp`)와 별개의 `ministp_sample` DB를 만들고, 매번 지우고 다시 만듭니다. 같은 시드면 항상 같은 데이터가 나옵니다. 종목 3개(KODEX 200, TIGER 미국S&P500, 삼성전자), 부분 체결, 미체결 취소, 수수료 차이 불일치와 판단 기록이 들어 있습니다. 가격은 가상 시세입니다.
+
 ## 개발
 
 ```bash
@@ -54,6 +62,7 @@ MINISTP_TEST_DATABASE_URL=postgresql://postgres:postgres@localhost:5432/ministp_
 | `ops` | 원장 시작값, 주문 기록, 일일 마감·대사, 무오류 연속일, 장중 IBOR 실행기(체결통보 즉시 반영, 조회 보완, 장중 대사) | R-05, R-44, R-74~75, D6 |
 | `broker.kis_ws` | 실시간 체결통보 수신(접속키, 구독, AES 복호화, PINGPONG, 재연결) | D6 |
 | `store` | PostgreSQL 이벤트 저장, 재생 복원, DB 수준 append-only·차대변 통제 | 03 데이터 모델, R-04, R-50 |
+| `sample`, `broker.sim` | 데모·화면 개발용 샘플 DB: 가상 모의계좌로 영업일 수십 일을 실제 운영 코드(원장 시작, 주문, 마감 대사, 판단 기록) 그대로 돌려 생성. 이름에 `sample`이 없는 DB는 거부 | 화면 기획서 |
 
 ## 한국투자증권 모의투자 연결 확인 (본인 PC에서)
 
