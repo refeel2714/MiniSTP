@@ -12,7 +12,8 @@ from .broker.base import BrokerBalance, BrokerGateway, OrderAck, recon_items
 from .ledger import ExecutionEvent, Ledger, Side
 from .oms import OrderManager, OrderStatus, OverfillError
 from .recon import ReconItem, ReconResult, reconcile
-from .risk import RiskLimits, check_order
+from .capacity import OpenOrder, capacity, check
+from .risk import RiskLimits
 
 
 @dataclass(frozen=True)
@@ -51,13 +52,12 @@ class TradingSession:
         return [o for o in (self.oms.orders[t.client_id] for t in self._by_client.values())
                 if o.status not in closed]
 
-    def _pending_buy_value(self, ref: dict[str, int]) -> int:
-        return sum((o.qty - o.filled_qty) * (o.limit_price or ref.get(o.symbol, 0))
-                   for o in self._open_orders() if o.side == Side.BUY)
+    def open_orders(self) -> list[OpenOrder]:
+        return [OpenOrder(o.order_id, o.symbol, Side(o.side), o.qty - o.filled_qty, o.limit_price or None)
+                for o in self._open_orders()]
 
-    def _pending_sell_qty(self, symbol: str) -> int:
-        return sum(o.qty - o.filled_qty for o in self._open_orders()
-                   if o.side == Side.SELL and o.symbol == symbol)
+    def capacity(self, symbol: str, ref_price: int, ref_prices: dict[str, int] | None = None):
+        return capacity(self.ledger, self.open_orders(), symbol, ref_price, self.limits, ref_prices)
 
     def restore(self, client_id: str, symbol: str, side: Side, qty: int, limit_price: int | None,
                 ack: OrderAck) -> None:
@@ -88,12 +88,7 @@ class TradingSession:
         except Exception as exc:
             self.anomalies.append(Anomaly(day, "SUBMIT_FAILED", cid, f"price: {exc}"))
             return None
-        decision = check_order(self.limits, side=side, qty=qty, ref_price=ref,
-                               held_qty=self.ledger.position(symbol).qty,
-                               pending_sell_qty=self._pending_sell_qty(symbol),
-                               buying_power=self.ledger.projected_cash(),
-                               pending_buy_value=self._pending_buy_value({symbol: ref}),
-                               halted=self.oms.halted)
+        decision = check(self.capacity(symbol, ref), side, qty, self.limits, self.oms.halted)
         self.oms.create(cid, symbol=symbol, side=side, qty=qty, limit_price=limit_price or 0)
         if not decision.ok:
             self.oms.on_rejected(cid)
