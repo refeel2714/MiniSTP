@@ -8,6 +8,7 @@
     python -m ministp daily                       # 매 영업일 장 마감 후(15:40~): 결제, NAV, 대사
     python -m ministp status                      # 보유, 예수금, NAV, 무오류 연속일
     python -m ministp resolve 12 FEE_DIFF "메모"   # 불일치 판단 기록 (새 행으로 추가)
+    python -m ministp sample-db                   # 데모용 샘플 DB(ministp_sample) 만들기, 운영 DB와 별개
 
 Paper (모의투자) only until Phase 4. Keys are asked for and never saved.
 """
@@ -84,6 +85,8 @@ def run(argv, *, environ=os.environ, client_factory=KisClient, connect=psycopg.c
     p = sub.add_parser("resolve")
     p.add_argument("result_id", type=int), p.add_argument("cause", choices=[c.value for c in Cause])
     p.add_argument("note")
+    p = sub.add_parser("sample-db")
+    p.add_argument("--days", type=int, default=40, help="시뮬레이션할 영업일 수")
     args = ap.parse_args(argv)
 
     started = now()
@@ -99,6 +102,9 @@ def run(argv, *, environ=os.environ, client_factory=KisClient, connect=psycopg.c
                 PostgresLedgerStore(conn).init_schema()
             print("DB 준비 완료.")
             return 0
+
+        if args.cmd == "sample-db":
+            return _sample_db(url, environ, connect, calendar, args.days)
 
         with connect(url, autocommit=True) as conn:
             if args.cmd == "instrument":
@@ -245,6 +251,28 @@ def _run_intraday(books, broker, today, environ, feed_factory, console, now) -> 
         runner.run(until=RUN_UNTIL)
     finally:
         feed.stop()
+    return 0
+
+
+SAMPLE_DB = "ministp_sample"
+
+
+def _sample_db(url: str, environ, connect, calendar, days: int) -> int:
+    from .sample import SampleError, build_sample
+    sample_url = environ.get("MINISTP_SAMPLE_DATABASE_URL") or psycopg.conninfo.make_conninfo(url, dbname=SAMPLE_DB)
+    _create_database(sample_url, connect)
+    with connect(sample_url, autocommit=True) as conn:
+        try:
+            s = build_sample(conn, calendar, FeeSchedule.kis_paper(), days=days)
+        except SampleError as e:
+            print(f"오류: {e}")
+            return 1
+        print(f"샘플 DB '{conn.info.dbname}' 생성: {s.first_day} ~ {s.last_day} 영업일 {s.days}일, "
+              f"주문 {s.orders}건(취소 {s.canceled}), 체결 {s.fills}건, 불일치 판단 {s.breaks_resolved}건, "
+              f"무오류 연속 {s.streak}일")
+        for n in s.notes:
+            print(f"  {n}")
+    print("운영 DB(ministp)는 건드리지 않았어요. pgAdmin에서 ministp_sample을 열어 보세요.")
     return 0
 
 
