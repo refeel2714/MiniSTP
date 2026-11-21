@@ -241,6 +241,28 @@ def test_cli_end_to_end(conn, broker, capsys):
     assert "069500 KODEX 200: 2주" in out
 
 
+def test_capacity_from_the_db_matches_the_session(conn, broker):
+    from ministp.ops import order_capacity, session_for, stored_open_orders
+    day = D("2026-11-20")
+    broker.set_day(day)
+    open_books(books(conn), broker, day)
+    broker.orders[day] = {}
+    place_order(books(conn), broker, day, "069500", Side.BUY, 3, limit_price=80_000)
+    broker.fill("0000000001", 80_000)              # 1 of 3 ... partially
+    o = broker.orders[day]["0000000001"]
+    broker.orders[day]["0000000001"] = BrokerOrder(o.order_no, o.symbol, o.side, o.qty,
+                                                   1, 80_000, 0, 0)
+    session = session_for(books(conn), broker, day)
+    session.sync(day)
+
+    b = books(conn)                                  # a fresh read, as a screen would do
+    assert [(x.client_id, x.remaining_qty) for x in stored_open_orders(b, day)] == [("S20261120-0001", 2)]
+    cap = order_capacity(b, day, "069500", 80_540)
+    assert cap.pending_buy_value == 2 * 80_000
+    assert cap.held_qty == 2 and cap.sellable_qty == 2
+    assert cap == session.capacity("069500", 80_540)
+
+
 def test_broker_reuses_order_numbers_on_the_next_day(conn, broker):
     """KIS order numbers restart each business day: day 2's 0000000001 is a new order."""
     d1, d2 = D("2026-11-20"), D("2026-11-23")

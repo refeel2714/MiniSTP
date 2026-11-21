@@ -257,6 +257,16 @@ class Ledger:
     def units(self) -> int:
         return self._s.units
 
+    def nav_history(self) -> list[NavRow]:
+        """Every recorded NAV as it stood on its own day (replays the events in order)."""
+        led = Ledger(self.calendar, self.fees, self.instruments, self.settlement_cycle)
+        rows = []
+        for ev in self._events:
+            led._record(ev)
+            if isinstance(ev, NavEvent):
+                rows.append(led._nav_row(ev.date, dict(ev.closes)))
+        return rows
+
     @classmethod
     def replay(cls, events, calendar, fees, instruments,
                settlement_cycle: SettlementCycle = SettlementCycle.t_plus(2)) -> "Ledger":

@@ -21,6 +21,7 @@ from psycopg.types.json import Jsonb
 
 from .broker.base import BrokerGateway, OrderAck
 from .calendar import BusinessCalendar
+from .capacity import Capacity, OpenOrder, capacity, pending_buy_value
 from .fees import FeeSchedule
 from .instruments import AssetType, Instrument, Market
 from .ledger import ExecutionEvent, Ledger, NavEvent, Side
@@ -140,6 +141,22 @@ def session_for(books: Books, broker: BrokerGateway, day: dt.date) -> TradingSes
 
     session.on_submit, session.on_ack = on_submit, on_ack
     return session
+
+
+def stored_open_orders(books: Books, day: dt.date) -> list[OpenOrder]:
+    """Today's live orders as the DB and ledger know them (주문 의도 + 접수 - 반영된 체결).
+
+    Cancels made outside MiniSTP show up only after a broker sync, so this errs on
+    the safe side: it may still reserve cash for an order the broker already dropped.
+    """
+    return session_for(books, None, day).open_orders()
+
+
+def order_capacity(books: Books, day: dt.date, symbol: str, ref_price: int,
+                   ref_prices: dict[str, int] | None = None) -> Capacity:
+    """주문가능 for one symbol from the DB, for screens (조회 전용, no broker call)."""
+    return capacity(books.ledger, stored_open_orders(books, day), symbol, ref_price,
+                    ref_prices=ref_prices)
 
 
 def place_order(books: Books, broker: BrokerGateway, day: dt.date, symbol: str, side: Side,
@@ -404,9 +421,10 @@ class IntradayRunner:
 
     def print_status(self) -> None:
         led = self.books.ledger
-        reserved = self.session._pending_buy_value({})
+        reserved, unpriced = pending_buy_value(self.session.open_orders(), {})
         self.out(f"IBOR  예수금 D+0 {led.cash_balance():,}  결제 후 {led.projected_cash():,}  "
-                 f"미체결 매수 예약 {reserved:,}  주문가능 {led.projected_cash() - reserved:,}")
+                 f"미체결 매수 예약 {reserved:,}  주문가능 {led.projected_cash() - reserved:,}"
+                 + (f"  (시장가 매수 {unpriced}건은 가격 미정이라 예약에서 빠짐)" if unpriced else ""))
         for sym, pos in led.positions().items():
             self.out(f"  {sym}: {pos.qty}주, 매입금액 {pos.book_cost:,}")
         open_orders = self.session._open_orders()

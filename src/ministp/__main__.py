@@ -28,7 +28,7 @@ from .broker import KisClient, KisConfig, KisError
 from .cli import ask_missing, krx_calendar
 from .fees import FeeSchedule
 from .instruments import AssetType, Instrument, Market
-from .ledger import NavEvent, Side
+from .ledger import Side
 from .oms import OrderStatus
 from .ops import (IntradayRunner, OpsError, acquire_writer, add_instrument, clean_streak, daily_close, load_books, open_books,
                   place_order, resolve_break)
@@ -129,9 +129,9 @@ def run(argv, *, environ=os.environ, client_factory=KisClient, connect=psycopg.c
                 print(f"예수금 D+0 {led.cash_balance():,}  결제 후 {led.projected_cash():,}")
                 for sym, pos in led.positions().items():
                     print(f"  {sym} {books.instruments[sym].name}: {pos.qty}주, 매입금액 {pos.book_cost:,}")
-                navs = [e for e in led.events if isinstance(e, NavEvent)]
+                navs = led.nav_history()
                 if navs:
-                    row = led._nav_row(navs[-1].date, dict(navs[-1].closes))
+                    row = navs[-1]
                     print(f"최근 NAV {row.date}: 순자산 {row.net_assets:,}, 기준가 {row.nav_per_1000}")
                 last = navs[-1].date if navs else today
                 print(f"무오류 연속 영업일: {clean_streak(conn, calendar, last)} / {GATE_DAYS}")
