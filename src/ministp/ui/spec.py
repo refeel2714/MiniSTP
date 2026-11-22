@@ -88,6 +88,11 @@ def screen_markdown(screen: Screen, catalog: dict, lookups=None) -> str:
         if g.view == "calendar":
             facts.append(f"- 표시: 달력 (하루가 한 칸, 날짜 `{g.calendar['date']}`, 칸 색 `{g.calendar['state']}`)."
                          " 달마다 한 덩어리로 오래된 달부터 그리고, 나머지 열은 칸에 마우스를 올리면 보여요. 칸을 누르면 그날이 골라져요 (←→ 하루, ↑↓ 한 주)")
+        if g.view == "taccount":
+            t = g.taccount
+            facts.append(f"- 표시: T계정 (계정 `{t['account']}`마다 T 하나, 차변 `{t['debit']}`은 왼쪽, 대변 `{t['credit']}`은 오른쪽)."
+                         + (f" 전표(`{t['entry']}`)마다 묶고" if t.get("entry") else " 한 묶음으로 그리고")
+                         + " 그 아래에 차변 합계, 대변 합계와 대차 일치 여부를 보여요. 나머지 열은 묶음의 머리말에 나오고, 오른쪽 위에서 표로 바꿔 볼 수 있어요")
         if g.totals:
             facts.append(f"- 합계: {', '.join(f'`{t}`' for t in g.totals)}")
         if g.meta:

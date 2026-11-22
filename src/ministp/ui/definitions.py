@@ -32,8 +32,11 @@ STEP_STATES = {"done", "now", "stop", "wait"}
 MAX_STEPS = 6
 PILL_COLORS = {"status", "side", "verdict"}
 # 그리드 보기: grid 표 · cards 한 행 요약 카드 · calendar 달력(하루가 한 칸, 칸 색은 상태 열의 색 규칙)
-VIEWS = {"grid", "cards", "calendar"}
-VIEW_NAMES = {"cards": "카드", "calendar": "달력"}
+#            · taccount T계정(분개 한 줄이 계정의 차변은 왼쪽, 대변은 오른쪽에. 표로 바꿔 볼 수 있음)
+VIEWS = {"grid", "cards", "calendar", "taccount"}
+VIEW_NAMES = {"cards": "카드", "calendar": "달력", "taccount": "T계정"}
+TACCOUNT_NEEDS = {"account", "debit", "credit"}       # view: taccount 에 꼭 적는 열
+TACCOUNT_KEYS = TACCOUNT_NEEDS | {"name", "entry"}     # name: 계정명 열 · entry: 전표를 가르는 열
 LOADS = {"search", "open", "master", "input"}
 LAYOUTS = {"stack", "split"}   # stack: grids one under another · split: 목록 왼쪽, 상세 오른쪽
 MAX_DETAILS = 3                # a split screen shows at most this many detail grids next to its list
@@ -120,8 +123,9 @@ class Grid:
     master: str | None = None
     link: dict[str, str] = field(default_factory=dict)   # tx param -> master column
     totals: list[str] = field(default_factory=list)
-    view: str = "grid"          # VIEWS: grid | cards (one-row summaries) | calendar (a cell a day)
+    view: str = "grid"          # VIEWS: grid | cards (one-row summaries) | calendar (a cell a day) | taccount
     calendar: dict | None = None  # view: calendar: {date: column, state: column}; the rest show on hover
+    taccount: dict | None = None  # view: taccount: {account, debit, credit[, name][, entry]}: columns of this grid
     meta: dict[str, str] = field(default_factory=dict)   # tx meta key -> label
     drill: dict | None = None   # {screen: STP-xxxx, params: {cond: column}}
     chart: dict | None = None   # {x: column, y: column}: a line over the rows
@@ -290,6 +294,30 @@ def _calendar_problems(g: Grid, gw: str) -> list[str]:
     return errs
 
 
+def _taccount_problems(g: Grid, s: Screen, gw: str) -> list[str]:
+    if g.view != "taccount":
+        return [f"{gw}: taccount는 T계정 보기(view: taccount)에만 써요"] if g.taccount else []
+    t = g.taccount or {}
+    if not TACCOUNT_NEEDS <= set(t) <= TACCOUNT_KEYS:
+        return [f"{gw}: T계정 보기는 taccount에 account(계정 열), debit(차변 열), credit(대변 열)을 적어요"
+                " (name 계정명 열, entry 전표를 가르는 열은 있으면)"]
+    errs = []
+    cols = {c.name: c for c in g.columns}
+    for role, name in t.items():
+        if name not in cols:
+            errs.append(f"{gw}: T계정의 {role} 열 {name}가 이 그리드에 없어요")
+        elif role in ("debit", "credit") and cols[name].format != "money":
+            errs.append(f"{gw}: T계정의 {role} 열 {name}는 금액(money) 형식이어야 해요")
+    if len(set(t.values())) != len(t):
+        errs.append(f"{gw}: T계정의 열은 서로 달라야 해요")
+    if g.chart or g.drill:
+        errs.append(f"{gw}: T계정 보기에는 차트·화면 이동을 쓰지 않아요")
+    # a T shows an account, not a row: nothing can hang on a picked row
+    if any(b.needs_row for b in g.actions) or any(x.master == g.id for x in s.grids):
+        errs.append(f"{gw}: T계정 보기는 행을 고르지 않아요. 고른 행에 쓰는 버튼이나 이 그리드를 목록으로 삼는 상세를 둘 수 없어요")
+    return errs
+
+
 def lookup_problems(lookups: dict[str, Lookup], catalog: dict) -> list[str]:
     """찾기 팝업 definitions against the schema catalog and the read transactions."""
     errs = []
@@ -420,6 +448,7 @@ def validate(screens: dict[str, Screen], catalog: dict, lookups: dict[str, Looku
             if g.view not in VIEWS:
                 errs.append(f"{gw}: view는 {sorted(VIEWS)} 중 하나")
             errs += _calendar_problems(g, gw)
+            errs += _taccount_problems(g, s, gw)
             errs += _button_problems(g, s, gw, catalog, lookups)
             if not isinstance(g.weight, int) or not 1 <= g.weight <= 5:
                 errs.append(f"{gw}: weight(높이 비중)는 1~5 사이 정수")

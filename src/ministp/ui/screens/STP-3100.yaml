@@ -2,7 +2,7 @@ id: STP-3100
 title: 원장·분개 조회
 layout: split
 left: 36
-purpose: 왼쪽에서 원장 이벤트 하나를 고르면 그 이벤트가 만든 분개, 보유수량 변동, 예수금 변동을 오른쪽에 보여줘요. 원장이 틀리지 않는다는 걸 숫자로 따라가 확인하는 화면이에요.
+purpose: 왼쪽에서 원장 이벤트 하나를 고르면 그 이벤트가 만든 분개, 보유수량 변동, 예수금 변동을 오른쪽에 보여줘요. 분개는 차변을 왼쪽, 대변을 오른쪽에 둔 T계정으로 그리고 대차가 맞는지를 바로 아래에 보여줘요(표로도 바꿔 볼 수 있어요). 원장이 틀리지 않는다는 걸 숫자로 따라가 확인하는 화면이에요.
 conditions:
   - {name: date_from, type: date, label: 시작일}
   - {name: date_to, type: date, label: 종료일}
@@ -28,6 +28,8 @@ grids:
     dataset: journal
     load: master
     weight: 2
+    view: taccount
+    taccount: {entry: entry_id, account: account_code, name: account_name, debit: debit, credit: credit}
     master: events
     link: {seq: seq}
     totals: [debit, credit]

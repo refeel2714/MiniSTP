@@ -609,6 +609,7 @@
     let changed = new Map();   // row key -> Set of changed columns ("*" = new row), shown once
     let previous = new Map();  // row key -> the row before this fill (numbers roll from here)
     let loaded = false;
+    let mode = g.view;         // a T계정 grid can be turned into a table and back (the button next to the count)
     const keyCol = g.key || g.columns[0].name;
     const rowKey = g.view === "cards" ? () => "card" : r => String(r[keyCol]);   // cards show one row
     const count = h("span", { class: "count" });
@@ -616,6 +617,9 @@
     const aboutBox = h("span", { class: "about", title: "목록에서 고른 행" });
     const body = h("div", { class: "gbody" });
     const chartBox = g.chart ? h("div", { class: "chart" }) : null;
+    const modes = g.view === "taccount" ? [["taccount", "T계정"], ["grid", "표"]].map(([m, text]) =>
+      h("button", { type: "button", "aria-pressed": m === mode ? "true" : "false", "data-m": m,
+        onclick: () => { if (m !== mode) { mode = m; modes.forEach(b => b.setAttribute("aria-pressed", b.dataset.m === m ? "true" : "false")); if (loaded) morph(body, apply); } } }, text)) : null;
     // 처리 버튼 live at the top right of their grid.
     const acts = (g.actions || []).map(b => ({ b, btn: h("button", { type: "button", class: "act",
       onclick: () => onAction(b, b.needs_row ? view[sel] : null) }, b.label) }));
@@ -623,6 +627,7 @@
       h("div", { class: "phead" }, h("h2", { text: g.title }), aboutBox,
         g.live ? h("span", { class: "livechip", title: "DB가 바뀌면 자동으로 다시 조회해요" }, "실시간") : null,
         metaBox, count,
+        modes ? h("div", { class: "seg", role: "group", "aria-label": "보기" }, modes) : null,
         h("span", { class: "txid", title: "조회 트랜잭션", text: g.tx }),
         acts.length ? h("div", { class: "acts" }, acts.map(a => a.btn)) : null),
       chartBox, body);
@@ -725,8 +730,47 @@
           return (num ? x - y : String(x).localeCompare(String(y), "ko")) * sortDir;
         });
       }
-      count.textContent = g.view === "grid" ? `${nf.format(rows.length)}건` : "";
-      g.view === "cards" ? renderCards() : g.view === "calendar" ? renderCalendar() : renderTable();
+      count.textContent = g.view === "grid" || g.view === "taccount" ? `${nf.format(rows.length)}건` : "";
+      mode === "cards" ? renderCards() : mode === "calendar" ? renderCalendar() : mode === "taccount" ? renderTAccounts() : renderTable();
+    }
+
+    // T계정 보기: a journal the way it is taught. A T an account, 차변 on the left and 대변 on the right,
+    // a block a 전표; under each block both sums and whether they agree. The columns that are not the
+    // account or an amount are the block's heading. The amounts are the rows': nothing is worked out but the sums.
+    function renderTAccounts() {
+      if (!rows.length) return body.replaceChildren(h("div", { class: "empty", text: "조회된 내역이 없어요" }));
+      const t = g.taccount, col = n => g.columns.find(c => c.name === n);
+      const facts = g.columns.filter(c => ![t.account, t.name, t.debit, t.credit].includes(c.name));
+      const blocks = new Map();
+      for (const r of view) {
+        const k = t.entry ? String(r[t.entry]) : "";
+        if (!blocks.has(k)) blocks.set(k, []);
+        blocks.get(k).push(r);
+      }
+      const amount = v => fmt(v, "money");
+      const side = (label, values) => h("div", { class: "tside" }, h("div", { class: "tl", text: label }),
+        values.map(v => h("div", { class: "tv", text: amount(v) })));
+      body.replaceChildren(h("div", { class: "tview" }, [...blocks.values()].map(lines => {
+        const accounts = new Map();
+        for (const r of lines) {
+          const k = String(r[t.account]);
+          if (!accounts.has(k)) accounts.set(k, { name: t.name ? r[t.name] : null, dr: [], cr: [] });
+          if (Number(r[t.debit])) accounts.get(k).dr.push(r[t.debit]);
+          if (Number(r[t.credit])) accounts.get(k).cr.push(r[t.credit]);
+        }
+        const dr = lines.reduce((a, r) => a + (Number(r[t.debit]) || 0), 0);
+        const cr = lines.reduce((a, r) => a + (Number(r[t.credit]) || 0), 0);
+        const shown = facts.filter(c => lines[0][c.name] !== null && lines[0][c.name] !== undefined && lines[0][c.name] !== "");
+        return h("section", { class: "tentry", "aria-label": t.entry ? `${col(t.entry).label} ${lines[0][t.entry]}` : g.title },
+          shown.length ? h("div", { class: "tfacts" }, shown.map(c => h("span", {}, c.label, h("b", { text: fmt(lines[0][c.name], c.format) })))) : null,
+          h("div", { class: "taccs" }, [...accounts].map(([code, a]) => h("div", { class: "tacc", role: "group",
+            "aria-label": `${a.name || code} 차변 ${a.dr.map(amount).join(", ") || "없음"}, 대변 ${a.cr.map(amount).join(", ") || "없음"}` },
+            h("h3", {}, a.name || code, a.name ? h("span", { text: code }) : null),
+            h("div", { class: "tsides" }, side("차변", a.dr), side("대변", a.cr))))),
+          h("div", { class: "tsum" },
+            h("span", {}, "차변 합계", h("b", { text: amount(dr) })), h("span", {}, "대변 합계", h("b", { text: amount(cr) })),
+            h("span", { class: "pill " + (dr === cr ? "st-ok" : "st-bad"), text: dr === cr ? "차대 일치" : `차대 불일치 ${amount(dr - cr)}` })));
+      })));
     }
 
     function flashed(r, col) {

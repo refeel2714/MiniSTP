@@ -205,6 +205,30 @@ button.day:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--panel), 0 
 .err { color: var(--bad); background: var(--bad-bg); text-align: left; }
 .status { margin-top: 10px; color: var(--muted); font: 11px ui-monospace, Consolas, monospace; min-height: 1em; }
 
+/* T계정 보기: 계정마다 T 하나, 차변 왼쪽 · 대변 오른쪽 */
+.seg { display: flex; margin: -1px 0; border: 1px solid var(--line-strong); border-radius: 5px; overflow: hidden; }
+.seg button { font: inherit; font-size: 11px; height: 18px; padding: 0 9px; border: 0; background: var(--panel); color: var(--muted); cursor: pointer; }
+.seg button + button { border-left: 1px solid var(--line-strong); }
+.seg button[aria-pressed="true"] { background: var(--head); color: var(--ink); font-weight: 600; }
+.seg button:focus-visible { outline: 2px solid var(--sel-line); outline-offset: -2px; }
+.tview { display: flex; flex-direction: column; gap: 16px; padding: 12px 14px 14px; }
+.tentry { display: flex; flex-direction: column; gap: 12px; }
+.tentry + .tentry { padding-top: 14px; border-top: 1px dashed var(--line-strong); }
+.tfacts { display: flex; flex-wrap: wrap; gap: 3px 16px; font-size: 12px; color: var(--muted); }
+.tfacts b { margin-left: 5px; color: var(--ink); font-weight: 600; }
+.taccs { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 16px 20px; }
+.tacc h3 { display: flex; justify-content: center; align-items: baseline; gap: 6px; margin: 0; padding: 0 4px 5px;
+  font-size: 13px; font-weight: 650; border-bottom: 2px solid var(--muted); }
+.tacc h3 span { font: 11px ui-monospace, "Cascadia Mono", Consolas, monospace; color: var(--muted); }
+.tsides { display: grid; grid-template-columns: 1fr 1fr; min-height: 58px; }
+.tside { padding: 4px 8px 6px; text-align: right; }
+.tside + .tside { border-left: 2px solid var(--muted); }
+.tl { margin-bottom: 3px; text-align: center; font-size: 11px; color: var(--muted); }
+.tv { font-weight: 600; }
+.tsum { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 22px; padding-top: 9px; border-top: 1px solid var(--line); }
+.tsum b { margin-left: 6px; }
+.tsum .pill { margin-left: auto; }
+
 /* home */
 .home .lead { color: var(--muted); max-width: 760px; }
 .tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 10px; margin-top: 16px; }
