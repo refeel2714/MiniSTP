@@ -373,9 +373,9 @@ def capacity_by_symbol(books, day: dt.date) -> Dataset:
             continue
         cap = order_capacity(books, day, sym, price, closes)
         rows.append((sym, inst.name, price, close_day, cap.available_cash, cap.max_buy_qty, cap.held_qty,
-                     cap.pending_sell_qty, cap.sellable_qty))
+                     cap.pending_sell_qty, cap.sellable_qty, inst.asset_type.value))
     return Dataset(("symbol", "instrument_name", "ref_price", "price_date", "available_cash", "max_buy_qty",
-                    "held_qty", "pending_sell_qty", "sellable_qty"), tuple(rows))
+                    "held_qty", "pending_sell_qty", "sellable_qty", "asset_type"), tuple(rows))
 
 
 def order_check(books, day: dt.date, symbol: str, side: str, qty: int, limit_price: int | None,
@@ -498,11 +498,11 @@ def pending_settlements(books) -> Dataset:
     for s in books.ledger.pending_settlements():
         e = execs.get(s.exec_id)
         sym = e.symbol if e else None
-        name = books.instruments[sym].name if sym in books.instruments else None
-        rows.append((s.exec_id, s.trade_date, s.settle_date, sym, name, s.side.value, e.qty if e else None,
-                     s.signed))
-    return Dataset(("exec_id", "trade_date", "settle_date", "symbol", "instrument_name", "side", "qty", "amount"),
-                   tuple(rows))
+        inst = books.instruments.get(sym)
+        rows.append((s.exec_id, s.trade_date, s.settle_date, sym, inst.name if inst else None, s.side.value,
+                     e.qty if e else None, s.signed, inst.asset_type.value if inst else None))
+    return Dataset(("exec_id", "trade_date", "settle_date", "symbol", "instrument_name", "side", "qty", "amount",
+                    "asset_type"), tuple(rows))
 
 
 def fee_rules(fees) -> Dataset:

@@ -33,7 +33,8 @@ grids:
     drill: {screen: STP-1300, params: {symbol: symbol}}
     columns:
       - {name: symbol, source: instruments.symbol, format: code}
-      - {name: instrument_name, source: instruments.name}
+      - {name: instrument_name, source: instruments.name, display: badge, code: symbol, shape: asset_type}
+      - {name: asset_type, source: instruments.asset_type, format: code}
       - {name: ref_price, label: 최근 종가, format: money}
       - {name: price_date, label: 종가 기준일, format: date}
       - {name: max_buy_qty, label: 최대 매수수량, format: number}
