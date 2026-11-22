@@ -48,6 +48,20 @@ a { color: var(--accent); }
 .env { color: var(--top-muted); font-size: 12px; white-space: nowrap; display: flex; align-items: center; gap: 6px; }
 .env .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--ok); }
 
+/* 실전 테두리: a live page is framed on every side, on every screen, before any script runs.
+   The colour is its own (not 상승 red, not 오류 red) and is used for nothing else. */
+:root { --live: #d9480f; --live-bg: #fff1e6; --live-ink: #ffffff; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --live: #ff922b; --live-bg: #3b2410; --live-ink: #1d1203; } }
+:root[data-theme="dark"] { --live: #ff922b; --live-bg: #3b2410; --live-ink: #1d1203; }
+body[data-env="live"]::before { content: ""; position: fixed; inset: 0; z-index: 30; pointer-events: none; border: 4px solid var(--live); }
+body[data-env="live"] .top { box-shadow: inset 0 -3px 0 var(--live); }
+.envchip { font-size: 11px; font-weight: 700; padding: 1px 7px; border-radius: 4px; border: 1px solid rgba(255, 255, 255, .22); color: var(--top-ink); }
+.envchip.live { background: var(--live); border-color: var(--live); color: var(--live-ink); letter-spacing: .04em; }
+body[data-env="live"] button.act:not(:disabled) { border-color: var(--live); color: var(--live); }
+body[data-env="live"] dialog.dlg:not(.lookup):not(.jump) { border-color: var(--live); box-shadow: 0 0 0 3px var(--live), 0 16px 48px rgba(0, 0, 0, .28); }
+body[data-env="live"] dialog.dlg:not(.lookup):not(.jump) button.primary { background: var(--live); color: var(--live-ink); }
+.flive { margin: 0; padding: 8px 14px; background: var(--live-bg); color: var(--live); font-weight: 600; border-bottom: 1px solid var(--line); }
+
 /* screen */
 main { padding: 14px 16px 24px; max-width: 1600px; margin: 0 auto; }
 .title { display: flex; align-items: baseline; gap: 12px; }

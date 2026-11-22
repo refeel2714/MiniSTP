@@ -474,6 +474,7 @@
       h("form", { onsubmit: submit, novalidate: true, oninput: () => { err.textContent = ""; } },
         h("div", { class: "dhead" }, h("h2", { id: "dlg-title", text: b.label }),
           h("span", { class: "txid", title: "처리 트랜잭션: " + b.title, text: b.tx })),
+        DATA.env === "live" ? h("p", { class: "flive", role: "note", text: "실전 환경이에요. 이 처리는 실전 원장에 기록돼요." }) : null,
         shows, b.note ? h("p", { class: "fnote", text: b.note }) : null,
         h("div", { class: "fields" }, fields), err,
         h("div", { class: "dfoot" }, h("button", { type: "button", class: "ghost", onclick: () => dlg.close() }, "취소"), ok)));
@@ -485,6 +486,11 @@
   }
 
   // ---------- shell ----------
+  const ENV_TITLES = {
+    sample: "샘플 DB: 연습용이라 증권사 계좌와 이어져 있지 않아요",
+    paper: "모의투자 환경 (MINISTP_KIS_ENV=paper)",
+    live: "실전 환경 (MINISTP_KIS_ENV=live): 이 화면의 숫자와 처리는 실전 원장의 것이에요",
+  };
   function topbar(screen) {
     const nav = h("nav", { class: "menu", "aria-label": "화면 목록" },
       DATA.menu.map(m => h("a", {
@@ -500,7 +506,9 @@
         ? `DB ${DATA.db} · 조회는 읽기 전용 연결, 처리 버튼을 누를 때만 쓰기 연결`
         : `DB ${DATA.db} · 읽기 전용 연결 (처리 버튼은 ui --write 로 열었을 때만)` },
         h("span", { class: "dot", id: "live-dot" }),
-        `${DATA.label || DATA.db} · 기준일 ${DATA.today} · ${DATA.writable ? "처리 가능" : "조회 전용"}`));
+        // 실전 테두리: which environment this is, said in a word next to the DB (the frame itself is CSS on body[data-env])
+        h("b", { class: "envchip " + DATA.env, title: ENV_TITLES[DATA.env], text: DATA.env_name }),
+        `${DATA.env === "sample" ? "" : DATA.db + " · "}기준일 ${DATA.today} · ${DATA.writable ? "처리 가능" : "조회 전용"}`));
   }
   // Keep the current screen's tab in view when the menu is wider than the bar.
   function revealTab() {
