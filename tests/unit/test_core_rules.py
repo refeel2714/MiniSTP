@@ -137,3 +137,21 @@ def test_tick_table_agrees_with_tick_size():
         assert tick_size(lo, a) == tick
         if hi is not None:
             assert tick_size(hi - 1, a) == tick
+
+
+def test_dates_after_the_verified_holidays_raise_instead_of_guessing():
+    """2027 is loaded so December trades can settle, but only January's closures are known:
+    a February date must not be silently counted as a business day (설 연휴가 빠져 있음)."""
+    from ministp.cli import KRX_VERIFIED_UNTIL, krx_calendar
+    cal = krx_calendar()
+    assert cal.settlement_date(dt.date(2026, 12, 30), SettlementCycle.t_plus(2)) == dt.date(2027, 1, 5)
+    assert cal.is_business_day(KRX_VERIFIED_UNTIL) is False          # 1/31은 일요일, 기한 안이라 계산됨
+    with pytest.raises(CalendarNotLoadedError, match="확인되지 않았어요"):
+        cal.is_business_day(dt.date(2027, 2, 1))
+    with pytest.raises(CalendarNotLoadedError):
+        cal.settlement_date(dt.date(2027, 1, 28), SettlementCycle.t_plus(2))   # 결제일이 2/1로 넘어감
+
+
+def test_calendar_without_a_verified_limit_is_unchanged():
+    cal = BusinessCalendar({2027}, set())
+    assert cal.verified_until is None and cal.is_business_day(dt.date(2027, 2, 1))

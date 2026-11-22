@@ -26,7 +26,12 @@ KRX_HOLIDAYS = {
     dt.date(2026, 12, 25), dt.date(2026, 12, 31),
     dt.date(2027, 1, 1),
 }
+# 2027 is loaded only so that late-December trades can settle in January. Its other
+# closures (설 연휴 in early February onwards) are not registered yet, so dates after
+# this raise instead of being taken for business days. Move it when KRX publishes
+# the 2027 holidays and they are added above.
+KRX_VERIFIED_UNTIL = dt.date(2027, 1, 31)
 
 
 def krx_calendar() -> BusinessCalendar:
-    return BusinessCalendar({2026, 2027}, KRX_HOLIDAYS)
+    return BusinessCalendar({2026, 2027}, KRX_HOLIDAYS, verified_until=KRX_VERIFIED_UNTIL)

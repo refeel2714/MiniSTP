@@ -227,6 +227,6 @@ def test_reference_data_is_read_from_what_the_ledger_uses(client):
     assert [r["status"] for r in rules] == ["적용 중"] and rules[0]["cycle"] == "T+2"
     holidays, meta = _rows(client, "STP4300R04")
     assert [h["date"] for h in holidays] == [d.isoformat() for d in CAL.holidays]
-    assert meta["until"] == f"{CAL.loaded_years[-1]}-12-31"
+    assert meta["until"] == CAL.verified_until.isoformat() == "2027-01-31"   # 휴장일이 확인된 날까지만
     ticks, _ = _rows(client, "STP4300R03")
     assert ticks[-1] == {"asset_type": "ETF", "price_from": 0, "price_below": None, "tick": 5}

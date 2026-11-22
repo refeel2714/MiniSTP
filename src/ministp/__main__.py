@@ -25,6 +25,7 @@ import urllib.parse
 import psycopg
 
 from .broker import KisClient, KisConfig, KisError
+from .calendar import CalendarNotLoadedError
 from .cli import ask_missing, krx_calendar
 from .fees import FeeSchedule
 from .instruments import AssetType, Instrument, Market
@@ -206,7 +207,7 @@ def run(argv, *, environ=os.environ, client_factory=KisClient, connect=psycopg.c
                 verdict = "무오류" if report.clean else "불일치 있음"
                 print(f"{verdict}. 무오류 연속 영업일 {streak} / {GATE_DAYS}")
                 return 0 if report.clean else 3
-    except (OpsError, KisError) as e:
+    except (OpsError, KisError, CalendarNotLoadedError) as e:
         print(f"오류: {e}")
         return 1
     except psycopg.OperationalError as e:

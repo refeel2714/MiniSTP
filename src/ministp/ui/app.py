@@ -21,7 +21,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, Str
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
-from ..calendar import BusinessCalendar
+from ..calendar import BusinessCalendar, CalendarNotLoadedError
 from ..fees import FeeSchedule
 from ..ops import OpsError
 from ..store import erd
@@ -163,7 +163,7 @@ def create_app(dsn: str, *, calendar: BusinessCalendar, fees: FeeSchedule, today
         try:
             with connect_read_only(dsn, connect) as conn:
                 result = run_tx(tx_id, TxContext(conn, calendar, fees, business_day()), params)
-        except (TxError, OpsError) as e:
+        except (TxError, OpsError, CalendarNotLoadedError) as e:
             return JSONResponse({"error": str(e)}, status_code=400)
         except psycopg.Error as e:
             return JSONResponse({"error": f"DB 오류: {e.diag.message_primary or type(e).__name__}"},
