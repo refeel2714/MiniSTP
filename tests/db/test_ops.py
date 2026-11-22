@@ -16,7 +16,7 @@ from ministp.fees import FeeSchedule
 from ministp.instruments import AssetType, Instrument, Market
 from ministp.ledger import Side
 from ministp.ops import (OpsError, add_instrument, clean_streak, daily_close, load_books,
-                         open_books, place_order, resolve_break)
+                         open_books, place_order, recon_days, resolve_break)
 from ministp.recon import Cause, Status
 
 psycopg = pytest.importorskip("psycopg")
@@ -199,10 +199,12 @@ def test_break_then_owner_resolves(conn, broker):
     assert {(r.item, r.cause) for r in breaks} == {("CASH_D0", Cause.FEE_DIFF),
                                                    ("CASH_PROJECTED", Cause.FEE_DIFF)}
     assert clean_streak(conn, CAL, day) == 0
+    assert (recon_days(conn)[day].breaks, recon_days(conn)[day].open_breaks) == (2, 2)
     ids = [i for (i,) in conn.execute("select id from recon_results where status = 'BREAK'")]
     for i in ids:
         resolve_break(conn, i, Cause.FEE_DIFF, "모의계좌 수수료 확인")
     assert clean_streak(conn, CAL, day) == 1
+    assert (recon_days(conn)[day].breaks, recon_days(conn)[day].open_breaks) == (2, 0)   # 판단은 행을 지우지 않아요
     with pytest.raises(psycopg.errors.InsufficientPrivilege):
         conn.execute("update recon_results set status = 'MATCH'")
 
