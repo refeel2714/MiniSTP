@@ -104,3 +104,33 @@ def test_live_stream_sends_a_change_only_when_the_head_moves():
         return [c async for c in live_events(lambda: next(heads), interval=1, keepalive=2, sleep=no_sleep, limit=2)]
     out = asyncio.run(collect())
     assert out == ['event: change\ndata: {"seq": 1}\n\n', ": keep-alive\n\n", 'event: change\ndata: {"seq": 2}\n\n']
+
+
+def test_split_layout_is_one_list_on_the_left_and_a_few_details_on_the_right():
+    """좌우 구성: 목록 왼쪽, 상세 오른쪽. A screen does not get to hold everything."""
+    from ministp.ui.definitions import MAX_DETAILS, split_sides
+    cols = [Column("qty", "positions_v.qty")]
+
+    def split(details, **kw):
+        grids = [Grid("m", "목록", "STP1100R01", cols, load="open")]
+        grids += [Grid(f"d{i}", "상세", "STP1100R01", cols, load="master", master="m") for i in range(details)]
+        return {"STP-1100": Screen("STP-1100", "잔고", "", [], grids, layout="split", **kw)}
+
+    assert validate(split(2), CATALOG) == []
+    assert any("상세가 딸린 목록 그리드가 하나" in e for e in validate(split(0), CATALOG))
+    assert any(f"{MAX_DETAILS}개까지" in e for e in validate(split(MAX_DETAILS + 1), CATALOG))
+    assert any("25~75" in e for e in validate(split(1, left=90), CATALOG))
+    tall = split(2)
+    tall["STP-1100"].grids[1].weight = 9
+    assert any("weight" in e for e in validate(tall, CATALOG))
+    odd = split(1)
+    odd["STP-1100"].layout = "tabs"
+    assert any("layout은" in e for e in validate(odd, CATALOG))
+
+    shipped = load_screens()
+    for sid, on_left, on_right, under in [("STP-3100", ["events"], ["journal", "positions", "cash"], ["trial"]),
+                                          ("STP-4100", ["instruments"], ["events"], [])]:
+        assert shipped[sid].layout == "split"
+        left, right, below = split_sides(shipped[sid])
+        assert ([g.id for g in left], [g.id for g in right], [g.id for g in below]) == (on_left, on_right, under)
+    assert shipped["STP-1100"].layout == "stack"
