@@ -79,6 +79,13 @@ def test_every_transaction_answers_for_the_account_it_is_asked_about(client, con
             " where r.account_id = %s and b.kind = 'DAILY_RECON' and r.supersedes_id is null group by 1", (acct,)).fetchall())
         assert {d["date"]: d["items"] for d in days if d["items"] is not None} == ran
         assert cal["meta"]["clean_streak"] == summary[0]["clean_streak"]
+    # 주문과 그 결제도 계좌별: 남의 계좌 주문은 이 계좌에서 없는 주문
+    day, cid = conn.execute("select trade_date, client_id from oms_orders where account_id = 'A0002' order by created_at limit 1").fetchone()
+    mine, _ = rows(client, "STP1200R01", "A0002", {"day": day.isoformat()})
+    assert cid in {o["client_id"] for o in mine} and all(len(o["progress"]) == 4 for o in mine)
+    assert client.post("/api/tx/STP1200R02", json={"params": {"client_id": cid}, "account": "A0002"}).status_code == 200
+    other = client.post("/api/tx/STP1200R02", json={"params": {"client_id": cid}, "account": "A0003"})
+    assert other.status_code == 400 and "없는 주문" in other.json()["error"]
     _, body = rows(client, "STP1100R01")                          # no account given: the default one
     assert body["account"] == "A0001"
 
