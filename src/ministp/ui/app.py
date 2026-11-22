@@ -32,7 +32,8 @@ from ..fees import FeeSchedule
 from ..ops import OpsError, acquire_writer
 from ..store import erd
 from .actions import ActionContext, ActionError, run_action
-from .definitions import DefinitionError, load_lookups, load_screens, lookup_problems, resolve, validate
+from .definitions import (DefinitionError, jump_targets, load_lookups, load_screens, lookup_problems, resolve,
+                          validate)
 from .spec import screen_markdown
 from .transactions import TxContext, TxError, run_tx
 
@@ -122,6 +123,7 @@ def create_app(dsn: str, *, calendar: BusinessCalendar, fees: FeeSchedule, today
         raise DefinitionError("화면 정의가 DB 스키마와 맞지 않아요:\n  " + "\n  ".join(problems))
     resolved = {sid: resolve(s, catalog, lookups) for sid, s in screens.items()}
     menu = [{"id": s.id, "title": s.title} for s in screens.values()]
+    jump = jump_targets(screens, catalog, lookups)   # 바로 가기 창: 화면 말고 찾을 수 있는 코드와 그 코드로 열 화면
     business_day = today if callable(today) else (lambda: today or dt.date.today())
 
     app = FastAPI(title="STP-UI", docs_url=None, redoc_url=None, openapi_url=None)
@@ -139,7 +141,7 @@ def create_app(dsn: str, *, calendar: BusinessCalendar, fees: FeeSchedule, today
     app.mount("/static", StaticFiles(directory=str(files("ministp.ui").joinpath("static"))), name="static")
 
     def shell_data(screen_id: str | None) -> str:
-        data = {"menu": menu, "today": business_day().isoformat(), "db": db_name, "label": label,
+        data = {"menu": menu, "jump": jump, "today": business_day().isoformat(), "db": db_name, "label": label,
                 "writable": write_dsn is not None, "token": token if write_dsn else "",
                 "screen": resolved.get(screen_id) if screen_id else None}
         # Embedded as JSON in a non-executed script tag; '<' escaped so no value can close the tag.

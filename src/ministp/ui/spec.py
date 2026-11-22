@@ -6,7 +6,7 @@ index adds 영향도 (which screens show a DB column), so a schema change shows
 at once which screens it touches.
 """
 from .actions import ACTIONS
-from .definitions import Screen, column_comment, load_lookups, resolve, short, split_sides, usages
+from .definitions import Screen, column_comment, jump_targets, load_lookups, resolve, short, split_sides, usages
 from .transactions import TRANSACTIONS
 
 LOAD_TEXT = {"search": "조회 버튼", "open": "화면 열 때 + 조회 버튼", "master": "목록(마스터)에서 행 선택",
@@ -155,6 +155,14 @@ def index_markdown(screens: dict[str, Screen], catalog: dict) -> str:
         txs = ", ".join(dict.fromkeys([*(f"`{g.tx}`" for g in s.grids),
                                        *(f"`{b.tx}`" for g in s.grids for b in g.actions)]))
         out.append(f"| [{s.id}]({s.id}.md) | {s.title} | {len(s.grids)} | {txs} |")
+    out += ["", "## 바로 가기 창 (Ctrl+K)", "",
+            "어느 화면에서나 Ctrl+K로 열어 화면번호나 화면명을 넣고 Enter로 옮겨 가요. "
+            "조회조건이 찾기 팝업으로 받는 코드는 그 코드로 화면을 바로 열 수 있어요(여러 화면이 받으면 다음 단계에서 화면을 골라요).",
+            "", "| 찾는 것 | 목록을 주는 트랜잭션 | 열 수 있는 화면 (넘기는 조회조건) |", "|---|---|---|",
+            f"| 화면 | - | 화면 {len(screens)}개 모두 |"]
+    for j in jump_targets(screens, catalog):
+        into = ", ".join(f"{t['id']} {t['title']}(`{t['param']}`)" for t in j["into"])
+        out.append(f"| {j['title'].removesuffix('찾기').strip()} | `{j['tx']}` | {into} |")
     out += ["", "## 영향도: DB 컬럼 → 화면", "",
             "스키마를 바꾸기 전에 이 표에서 그 컬럼을 쓰는 화면을 확인해요.", "",
             "| DB 컬럼 | 한글명 | 쓰는 화면·그리드 |", "|---|---|---|"]

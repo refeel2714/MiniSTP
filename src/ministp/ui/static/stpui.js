@@ -8,7 +8,7 @@
  * 찾기 팝업 to pick it from a list.
  * Keys: Enter in a condition = 조회, ↑/↓ moves the row (in a calendar ←/→ a day, ↑/↓ a week), Enter or double-click on
  * a row = move to the linked screen, Ctrl+Enter anywhere = 조회, F2 in an input
- * with a 찾기 button = open the list.
+ * with a 찾기 button = open the list, Ctrl+K anywhere = 바로 가기 창 (a screen, or a code and the screen to open for it).
  */
 (function () {
   "use strict";
@@ -286,6 +286,134 @@
     }).catch(e => box.replaceChildren(h("div", { class: "err", role: "alert", text: e.message })));
   }
 
+  // ---------- 바로 가기 창 (Ctrl+K) ----------
+  // One box that goes anywhere: a screen by its number or name, or a code a screen can be opened for
+  // (종목 and the like: whatever a 조회조건 picks from a 찾기 팝업). A code that more than one screen
+  // takes asks which screen next. Nothing here knows a screen: the list comes from the definitions.
+  const jumpRows = {};                       // 찾기 목록 이름 -> rows, read once per page
+  const squash = v => String(v ?? "").toLowerCase().replace(/\s+/g, "");
+  function rank(q, ...texts) {               // lower is closer; -1 is no match
+    let best = -1;
+    texts.forEach((t, i) => {
+      const at = squash(t).indexOf(q);
+      if (at < 0) return;
+      const score = (at === 0 ? 0 : 10) + i;
+      if (best < 0 || score < best) best = score;
+    });
+    return best;
+  }
+  function openJump() {
+    if (document.querySelector("dialog[open]")) return;
+    const here = DATA.screen ? DATA.screen.id : null;
+    let items = [], sel = 0, picked = null, typed = "";   // picked: the code whose screen is being chosen
+    const input = h("input", { type: "text", class: "lkfilter", autocomplete: "off", spellcheck: "false",   // text, not search: Esc closes at once
+      role: "combobox", "aria-expanded": "true", "aria-controls": "jump-list", "aria-label": "바로 가기" });
+    const crumb = h("div", { class: "jcrumb" });
+    const box = h("div", { class: "jbody", id: "jump-list", role: "listbox", "aria-label": "바로 가기" });
+    const hint = h("span", { class: "hint" });
+    const dlg = h("dialog", { class: "dlg jump", "aria-label": "바로 가기" }, crumb, input, box, h("div", { class: "dfoot" }, hint));
+
+    const screenRow = (m, note) => ({
+      el: [h("span", { class: "sid", text: m.id }), h("span", { class: "jt", text: m.title }),
+        note || m.id === here ? h("span", { class: "jnote", text: note || "지금 화면" }) : null],
+      go: () => { location.href = "/screen/" + m.id; },
+    });
+    const mark = (lk, row) => badge(row, { name: lk.shows || lk.value, code: lk.value,
+      shape: lk.columns.some(c => c.name === "asset_type") ? "asset_type" : null });
+    const open = (lk, row, t) => { location.href = `/screen/${t.id}?${t.param}=${encodeURIComponent(row[lk.value])}`; };
+
+    function build() {
+      const q = squash(input.value);
+      if (picked) {                                           // which screen to open for the code
+        const { lk, row } = picked;
+        crumb.replaceChildren(mark(lk, row), h("span", { text: "이 코드로 열 화면을 고르세요" }));
+        input.placeholder = "화면번호나 화면명";
+        hint.textContent = "↑↓ 이동 · Enter 열기 · Esc 뒤로";
+        return [{ title: null, rows: lk.into.filter(t => !q || rank(q, t.id, t.id.slice(4), t.title) >= 0).map(t => ({
+          el: [h("span", { class: "sid", text: t.id }), h("span", { class: "jt", text: t.title }),
+            t.id === here ? h("span", { class: "jnote", text: "지금 화면" }) : null],
+          go: () => open(lk, row, t), here: t.id === here })) }];
+      }
+      crumb.replaceChildren();
+      input.placeholder = "화면번호, 화면명, 종목코드나 종목명";
+      hint.textContent = "↑↓ 이동 · Enter 열기 · Esc 닫기 · Ctrl+K 어디서나";
+      const groups = [];
+      const screens = DATA.menu.map(m => [q ? rank(q, m.id, m.id.slice(4), m.title) : 0, m]).filter(x => x[0] >= 0);
+      if (q) screens.sort((a, b) => a[0] - b[0]);
+      if (screens.length) groups.push({ title: "화면", rows: screens.map(x => screenRow(x[1])) });
+      for (const lk of DATA.jump) {
+        const rows = jumpRows[lk.name];
+        const what = lk.title.replace(/\s*찾기$/, "");
+        if (!q) continue;
+        if (!rows) { groups.push({ title: what, note: "불러오는 중이에요", rows: [] }); continue; }
+        const hit = rows.map(r => [rank(q, r[lk.value], lk.shows ? r[lk.shows] : ""), r]).filter(x => x[0] >= 0)
+          .sort((a, b) => a[0] - b[0]);
+        if (!hit.length) continue;
+        groups.push({ title: what, note: hit.length > 8 ? `${nf.format(hit.length)}건 중 8건` : null,
+          rows: hit.slice(0, 8).map(x => ({
+            el: [mark(lk, x[1]), h("span", { class: "jnote",
+              text: lk.into.length === 1 ? `${lk.into[0].id} ${lk.into[0].title}` : `화면 ${lk.into.length}곳 ›` })],
+            go: () => { if (lk.into.length === 1) open(lk, x[1], lk.into[0]); else pick(lk, x[1]); } })) });
+      }
+      return groups;
+    }
+    function render(keep) {
+      const groups = build();
+      items = groups.flatMap(g => g.rows);
+      const at = items.findIndex(it => it.here);
+      sel = keep ? Math.max(0, Math.min(sel, items.length - 1)) : (picked && at >= 0 ? at : 0);
+      let i = 0;
+      box.replaceChildren(...groups.flatMap(g => [
+        g.title ? h("div", { class: "jgroup" }, g.title, g.note ? h("span", { text: g.note }) : null) : null,
+        ...g.rows.map(it => { const n = i++; return h("div", { class: "jitem", role: "option", id: "jump-" + n,
+          onclick: () => { sel = n; go(); } }, it.el); }),
+      ]).filter(Boolean));
+      if (!items.length) {
+        box.append(h("div", { class: "jempty", text: squash(input.value) ? "맞는 화면이나 코드가 없어요" : "열 수 있는 화면이 없어요" }));
+      } else if (!picked && !squash(input.value) && DATA.jump.length) {
+        box.append(h("div", { class: "jtip", text: `코드나 이름을 넣으면 ${DATA.jump.map(lk => lk.title.replace(/\s*찾기$/, "")).join(", ")}도 찾아요` }));
+      }
+      show();
+    }
+    function show() {
+      box.querySelectorAll(".jitem").forEach((el, i) => {
+        el.classList.toggle("sel", i === sel); el.setAttribute("aria-selected", i === sel ? "true" : "false");
+      });
+      const el = box.querySelectorAll(".jitem")[sel];
+      if (el) { el.scrollIntoView({ block: "nearest" }); input.setAttribute("aria-activedescendant", el.id); }
+      else input.removeAttribute("aria-activedescendant");
+    }
+    function go() { const it = items[sel]; if (it) it.go(); }
+    function pick(lk, row) { typed = input.value; picked = { lk, row }; input.value = ""; render(); input.focus(); }
+    function back() { picked = null; input.value = typed; render(); input.focus(); }
+
+    input.addEventListener("input", () => render());
+    input.addEventListener("keydown", e => {
+      if (e.isComposing) return;                              // 한글 조합 중의 Enter는 글자를 끝내는 키
+      if (e.key === "ArrowDown") { e.preventDefault(); sel = Math.min(sel + 1, items.length - 1); show(); }
+      else if (e.key === "ArrowUp") { e.preventDefault(); sel = Math.max(sel - 1, 0); show(); }
+      else if (e.key === "Enter") { e.preventDefault(); go(); }
+      else if (e.key === "Backspace" && picked && input.value === "") { e.preventDefault(); back(); }
+    });
+    dlg.addEventListener("cancel", e => { if (picked) { e.preventDefault(); back(); } });   // Esc: one step back first
+    dlg.addEventListener("click", e => { if (e.target === dlg) dlg.close(); });               // outside the box
+    dlg.addEventListener("close", () => dlg.remove());
+    document.body.append(dlg);
+    dlg.showModal();
+    render();
+    input.focus();
+    for (const lk of DATA.jump) {
+      if (jumpRows[lk.name]) continue;
+      call(lk.tx, {}).then(res => {
+        const ds = res.datasets.main;
+        jumpRows[lk.name] = ds.rows.map(r => Object.fromEntries(ds.columns.map((c, i) => [c, r[i]])));
+      }).catch(() => { jumpRows[lk.name] = []; }).finally(() => { if (dlg.open && !picked) render(true); });
+    }
+  }
+  document.addEventListener("keydown", e => {
+    if ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === "k") { e.preventDefault(); openJump(); }
+  });
+
   // ---------- 처리 입력 창 ----------
   // A 처리 button opens this: the row it works on at the top, the inputs, and one button that
   // calls the 처리 transaction. A refusal from the server is shown here and the window stays open.
@@ -366,6 +494,8 @@
     return h("header", { class: "top" },
       h("a", { class: "brand", href: "/" }, "MiniSTP ", h("b", { text: "STP-UI" })),
       nav,
+      h("button", { type: "button", class: "jumpbtn", title: "화면이나 종목으로 바로 가기 (Ctrl+K)", onclick: openJump },
+        "바로 가기", h("kbd", { text: "Ctrl K" })),
       h("span", { class: "env", title: DATA.writable
         ? `DB ${DATA.db} · 조회는 읽기 전용 연결, 처리 버튼을 누를 때만 쓰기 연결`
         : `DB ${DATA.db} · 읽기 전용 연결 (처리 버튼은 ui --write 로 열었을 때만)` },
