@@ -125,6 +125,48 @@ def recon_history(conn: psycopg.Connection, date_from: dt.date | None = None, da
               {"kind": kind, "f": date_from, "t": date_to, "ob": only_breaks})
 
 
+def _open_day(calendar, day: dt.date) -> bool | None:
+    """Whether the exchange is open that day; None when the holiday calendar does not cover it yet."""
+    try:
+        return calendar.is_business_day(day)
+    except LookupError:
+        return None
+
+
+def recon_calendar(conn: psycopg.Connection, calendar, today: dt.date, date_from: dt.date | None = None,
+                   date_to: dt.date | None = None, kind: str = "DAILY_RECON") -> Dataset:
+    """날짜별 대사 요약, newest first: one row a day, judged by that day's latest run (ops.recon_days,
+    the same reading the gate count uses).
+
+    일치 = no break · 판단 완료 = breaks, every one judged (the gate still counts the day) ·
+    불일치 = a break nobody has judged. A weekday without a run is 휴장 on an exchange holiday,
+    대사 전 if it is today, 대사 없음 if it has passed (일 마감 대사 only: a missed day ends the
+    clean streak; an intraday recon is not owed every day). Days before the first run and after
+    today have no row.
+    """
+    from .ops import recon_days
+    date_to = min(date_to or today, today)
+    if date_from is None:   # this month and the one before: enough to see the 20-day gate
+        date_from = (date_to.replace(day=1) - dt.timedelta(days=1)).replace(day=1)
+    days = recon_days(conn, kind, date_from, date_to)
+    first = conn.execute("select min(r.date) from recon_results r join broker_snapshots b"
+                         " on b.snapshot_id = r.run_id where b.kind = %s", (kind,)).fetchone()[0]
+    daily = kind == "DAILY_RECON"
+    rows, d = [], date_to
+    while d >= date_from:
+        day = days.get(d)
+        if day is not None:
+            state = "일치" if not day.breaks else "판단 완료" if day.clean else "불일치"
+            rows.append((d, state, kind, day.items, day.breaks, day.open_breaks))
+        elif d.weekday() < 5:
+            if _open_day(calendar, d) is False:
+                rows.append((d, "휴장", kind, None, None, None))
+            elif daily and first is not None and d >= first:
+                rows.append((d, "대사 전" if d == today else "대사 없음", kind, None, None, None))
+        d -= dt.timedelta(days=1)
+    return Dataset(("date", "state", "kind", "items", "breaks", "open_breaks"), tuple(rows))
+
+
 # ---------- STP-1200 주문·체결 블로터 ----------
 
 def order_blotter(conn: psycopg.Connection, day: dt.date) -> Dataset:

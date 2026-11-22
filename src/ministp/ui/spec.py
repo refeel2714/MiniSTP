@@ -81,8 +81,11 @@ def screen_markdown(screen: Screen, catalog: dict, lookups=None) -> str:
             facts.append(f"- 마스터: `{g.master}` ({link})")
         if g.weight != 1:
             facts.append(f"- 높이 비중: {g.weight} (좌우 구성에서 같은 쪽 그리드와 나눠 쓰는 높이)")
-        if g.view != "grid":
+        if g.view == "cards":
             facts.append("- 표시: 요약 카드")
+        if g.view == "calendar":
+            facts.append(f"- 표시: 달력 (하루가 한 칸, 날짜 `{g.calendar['date']}`, 칸 색 `{g.calendar['state']}`)."
+                         " 달마다 한 덩어리로 오래된 달부터 그리고, 나머지 열은 칸에 마우스를 올리면 보여요. 칸을 누르면 그날이 골라져요 (←→ 하루, ↑↓ 한 주)")
         if g.totals:
             facts.append(f"- 합계: {', '.join(f'`{t}`' for t in g.totals)}")
         if g.meta:
