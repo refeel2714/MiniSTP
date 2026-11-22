@@ -17,6 +17,8 @@ FORMATS = {"text", "code", "number", "money", "rate", "date", "datetime", "json"
 RIGHT = {"number", "money", "rate"}
 COLORS = {None, "sign", "side", "status", "verdict"}  # verdict: the row's ok field
 LOADS = {"search", "open", "master", "input"}
+LAYOUTS = {"stack", "split"}   # stack: grids one under another · split: 목록 왼쪽, 상세 오른쪽
+MAX_DETAILS = 3                # a split screen shows at most this many detail grids next to its list
 CONDITION_TYPES = {"date", "text", "select", "bool", "number"}
 SCREEN_ID = re.compile(r"^STP-\d{4}$")
 
@@ -58,6 +60,7 @@ class Grid:
     chart: dict | None = None   # {x: column, y: column}: a line over the rows
     live: bool = False          # reload when the DB changes (SSE), changed rows highlighted
     key: str | None = None      # column that identifies a row across reloads (default: first column)
+    weight: int = 1             # split layout: this grid's share of its side's height
 
 
 @dataclass
@@ -79,13 +82,16 @@ class Screen:
     conditions: list[Condition]
     grids: list[Grid]
     file: str = ""
+    layout: str = "stack"       # split: the list that has details on the left, its details on the right
+    left: int = 45              # split: width of the left side in percent
 
 
 def _build(raw: dict, file: str) -> Screen:
     try:
         grids = [Grid(**{**g, "columns": [Column(**c) for c in g["columns"]]}) for g in raw["grids"]]
         conds = [Condition(**c) for c in raw.get("conditions", [])]
-        return Screen(raw["id"], raw["title"], raw.get("purpose", ""), conds, grids, file)
+        return Screen(raw["id"], raw["title"], raw.get("purpose", ""), conds, grids, file,
+                      raw.get("layout", "stack"), raw.get("left", 45))
     except (KeyError, TypeError) as e:
         raise DefinitionError(f"{file}: 형식 오류 {e}") from e
 
@@ -114,6 +120,31 @@ def column_comment(catalog: dict, source: str) -> str | None:
     return next((c["comment"] for c in info["columns"] if c["name"] == col), None)
 
 
+def split_sides(screen: Screen) -> tuple[list[Grid], list[Grid], list[Grid]]:
+    """A split screen's grids as (left: the list with details, right: its details, below: the rest)."""
+    masters = {g.master for g in screen.grids if g.load == "master"}
+    left = [g for g in screen.grids if g.id in masters]
+    right = [g for g in screen.grids if g.load == "master"]
+    below = [g for g in screen.grids if g.id not in masters and g.load != "master"]
+    return left, right, below
+
+
+def _layout_problems(s: Screen, where: str) -> list[str]:
+    if s.layout not in LAYOUTS:
+        return [f"{where}: layout은 {sorted(LAYOUTS)} 중 하나"]
+    if s.layout != "split":
+        return []
+    errs = []
+    left, right, _ = split_sides(s)
+    if len(left) != 1:
+        errs.append(f"{where}: 좌우 구성(split)은 상세가 딸린 목록 그리드가 하나여야 해요 (지금 {len(left)}개)")
+    if len(right) > MAX_DETAILS:
+        errs.append(f"{where}: 좌우 구성의 상세 그리드는 {MAX_DETAILS}개까지예요 (지금 {len(right)}개). 화면을 나눠 주세요")
+    if not isinstance(s.left, int) or not 25 <= s.left <= 75:
+        errs.append(f"{where}: left(왼쪽 너비 %)는 25~75 사이 정수")
+    return errs
+
+
 def validate(screens: dict[str, Screen], catalog: dict) -> list[str]:
     """Static checks against the schema catalog (erd.read_catalog). Returns problems, empty if fine."""
     errs = []
@@ -123,6 +154,7 @@ def validate(screens: dict[str, Screen], catalog: dict) -> list[str]:
             errs.append(f"{where}: 화면번호 형식은 STP-4자리")
         ids = set()
         search_params: set[str] = set()
+        errs += _layout_problems(s, where)
         for g in s.grids:
             gw = f"{where} 그리드 {g.id}"
             tx = TRANSACTIONS.get(g.tx)
@@ -154,6 +186,8 @@ def validate(screens: dict[str, Screen], catalog: dict) -> list[str]:
                         errs.append(f"{gw}.{c.name}: DB 컬럼이 있으면 한글명은 DB 주석을 써요 (label 제거)")
                 elif not c.label:
                     errs.append(f"{gw}.{c.name}: source(DB 컬럼)나 label 중 하나가 필요해요")
+            if not isinstance(g.weight, int) or not 1 <= g.weight <= 5:
+                errs.append(f"{gw}: weight(높이 비중)는 1~5 사이 정수")
             if g.key and g.key not in {c.name for c in g.columns}:
                 errs.append(f"{gw}: 행 식별 열 {g.key}가 열에 없어요")
             if g.live and g.load == "master":

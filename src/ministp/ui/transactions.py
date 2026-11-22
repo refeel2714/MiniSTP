@@ -178,9 +178,19 @@ def _account_positions(c: TxContext, p) -> TxResult:
     return TxResult({"main": q.account_positions(c.conn, p["account_id"])})
 
 
+def _customers(c: TxContext, p) -> TxResult:
+    return TxResult({"main": q.customer_list(c.conn)})
+
+
 def _customer_positions(c: TxContext, p) -> TxResult:
-    """All customers, or the one customer of the account row that was picked."""
+    """One customer's accounts added up per symbol (all customers when none is named)."""
     return TxResult({"main": q.customer_positions(c.conn, p.get("customer_id") or None)})
+
+
+def _customer_accounts(c: TxContext, p) -> TxResult:
+    if not p.get("customer_id"):
+        raise TxError("고객 ID가 필요해요")
+    return TxResult({"main": q.customer_accounts(c.conn, p["customer_id"])})
 
 
 TRANSACTIONS: dict[str, Tx] = {t.tx_id: t for t in [
@@ -207,10 +217,12 @@ TRANSACTIONS: dict[str, Tx] = {t.tx_id: t for t in [
     Tx("STP4300R03", "호가단위", {}, _ticks),
     Tx("STP4300R04", "휴장일", {}, _holidays),
     Tx("STP4300R05", "주문 검증 기준", {}, _risk),
-    Tx("STP4400R01", "고객·계좌 목록", {}, _accounts),
+    Tx("STP4400R01", "계좌 목록", {}, _accounts),
     Tx("STP4400R02", "계좌 상태 이력", {"account_id": "text"}, _account_status),
-    Tx("STP4400R03", "고객별 보유 합산", {"customer_id": "text"}, _customer_positions),
-    Tx("STP4400R04", "계좌 보유", {"account_id": "text"}, _account_positions),
+    Tx("STP4400R03", "계좌 보유", {"account_id": "text"}, _account_positions),
+    Tx("STP4500R01", "고객 목록", {}, _customers),
+    Tx("STP4500R02", "고객 보유 합산", {"customer_id": "text"}, _customer_positions),
+    Tx("STP4500R03", "고객의 계좌", {"customer_id": "text"}, _customer_accounts),
 ]}
 
 

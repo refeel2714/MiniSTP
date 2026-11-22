@@ -88,6 +88,16 @@ button.primary:hover { filter: brightness(1.08); }
 .badge.bad { background: var(--bad-bg); color: var(--bad); } .badge.bad b { color: var(--bad); }
 
 .gbody { max-height: 360px; overflow: auto; position: relative; }
+/* 좌우 구성: 목록 왼쪽, 상세 오른쪽. Each panel scrolls inside itself; the header row stays. */
+.split { display: grid; grid-template-columns: minmax(0, var(--left, 45fr)) minmax(0, var(--right, 55fr)); gap: 12px; height: var(--fit, 520px); }
+.split .side { display: flex; flex-direction: column; gap: 12px; min-height: 0; min-width: 0; }
+.split .panel { flex: 1 1 0; min-height: 0; display: flex; flex-direction: column; }
+.split .gbody { max-height: none; flex: 1 1 0; min-height: 0; }
+@media (max-width: 900px) {
+  .split { grid-template-columns: minmax(0, 1fr); height: auto; }
+  .split .panel { flex: none; }
+  .split .gbody { max-height: 360px; flex: none; }
+}
 .cards-panel .gbody { max-height: none; }
 .grid { border-collapse: separate; border-spacing: 0; width: 100%; white-space: nowrap; }
 .grid th, .grid td { padding: 0 10px; height: 26px; border-bottom: 1px solid var(--grid-line); text-align: left; }

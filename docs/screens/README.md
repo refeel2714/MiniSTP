@@ -15,7 +15,8 @@
 | [STP-4100](STP-4100.md) | 종목정보 | 2 | `STP4100R01`, `STP4100R02` |
 | [STP-4200](STP-4200.md) | 계좌정보 | 3 | `STP4200R01`, `STP4200R02`, `STP4200R03` |
 | [STP-4300](STP-4300.md) | 기준정보 | 5 | `STP4300R01`, `STP4300R02`, `STP4300R03`, `STP4300R04`, `STP4300R05` |
-| [STP-4400](STP-4400.md) | 고객·계좌 | 4 | `STP4400R01`, `STP4400R04`, `STP4400R03`, `STP4400R02` |
+| [STP-4400](STP-4400.md) | 계좌 목록 | 3 | `STP4400R01`, `STP4400R03`, `STP4400R02` |
+| [STP-4500](STP-4500.md) | 고객별 보유 | 3 | `STP4500R01`, `STP4500R02`, `STP4500R03` |
 
 ## 영향도: DB 컬럼 → 화면
 
@@ -24,12 +25,10 @@
 | DB 컬럼 | 한글명 | 쓰는 화면·그리드 |
 |---|---|---|
 | `account_balances_v.balance` | 잔액 | STP-3100 trial |
-| `account_status_history.created_at` | 기록 시각 | STP-4400 status_history |
 | `account_status_history.effective_from` | 적용 시작일 | STP-4400 status_history |
 | `account_status_history.reason` | 사유 | STP-4400 status_history |
 | `account_status_history.status` | 상태 | STP-4400 status_history |
-| `account_status_v.effective_from` | 상태 적용 시작일 | STP-4400 accounts |
-| `account_status_v.status` | 현재 상태 | STP-4200 account, STP-4400 accounts |
+| `account_status_v.status` | 현재 상태 | STP-4200 account, STP-4400 accounts, STP-4500 accounts |
 | `accounts_chart.code` | 계정코드 | STP-3100 trial |
 | `accounts_chart.name` | 계정명 | STP-3100 journal, STP-3100 trial |
 | `accounts_chart.normal_side` | 정상잔액 방향 | STP-3100 trial |
@@ -39,15 +38,14 @@
 | `cash_ledger.date` | 일자 | STP-3100 cash |
 | `cash_ledger.reason` | 사유 | STP-3100 cash |
 | `cash_ledger.ref_id` | 참조 ID | STP-3100 cash |
-| `customer_positions_v.book_cost` | 장부금액 | STP-4400 customer_positions |
-| `customer_positions_v.customer_id` | 고객 ID | STP-4400 customer_positions |
-| `customer_positions_v.qty` | 보유수량 | STP-4400 customer_positions |
-| `customer_positions_v.symbol` | 종목코드 | STP-4400 customer_positions |
-| `customers.alias` | 고객 별칭 | STP-4400 accounts, STP-4400 customer_positions |
-| `customers.customer_id` | 고객 ID | STP-4400 accounts |
+| `customer_positions_v.book_cost` | 장부금액 | STP-4500 positions |
+| `customer_positions_v.qty` | 보유수량 | STP-4500 positions |
+| `customer_positions_v.symbol` | 종목코드 | STP-4500 positions |
+| `customers.alias` | 고객 별칭 | STP-4400 accounts, STP-4500 customers |
+| `customers.customer_id` | 고객 ID | STP-4500 customers |
 | `instruments.asset_type` | 자산 유형 | STP-1100 holdings, STP-4100 instruments, STP-4300 fees, STP-4300 ticks |
 | `instruments.market` | 시장 | STP-4100 instruments, STP-4300 fees |
-| `instruments.name` | 종목명 | STP-1100 holdings, STP-1200 orders, STP-1300 symbols, STP-4100 instruments, STP-4200 settlements, STP-4400 positions, STP-4400 customer_positions |
+| `instruments.name` | 종목명 | STP-1100 holdings, STP-1200 orders, STP-1300 symbols, STP-4100 instruments, STP-4200 settlements, STP-4400 positions, STP-4500 positions |
 | `instruments.symbol` | 종목코드 | STP-1100 holdings, STP-1300 symbols, STP-1300 조회조건, STP-3100 events, STP-3100 조회조건, STP-4100 instruments, STP-4200 settlements |
 | `journal_entries.date` | 회계일 | STP-3100 journal |
 | `journal_entries.entry_id` | 전표 번호 | STP-3100 journal |
@@ -89,10 +87,5 @@
 | `recon_results.item` | 대사 항목 | STP-2100 results |
 | `recon_results.key` | 항목 키 | STP-2100 results |
 | `recon_results.status` | 상태 | STP-2100 results |
-| `trading_accounts.account_id` | 계좌 ID | STP-4200 account, STP-4400 accounts |
-| `trading_accounts.account_type` | 계좌 유형 | STP-4400 accounts |
-| `trading_accounts.alias` | 계좌 별칭 | STP-4200 account, STP-4400 accounts |
-| `trading_accounts.broker` | 증권사 | STP-4400 accounts |
-| `trading_accounts.credential_ref` | 인증정보 참조 | STP-4400 accounts |
-| `trading_accounts.env` | 환경 | STP-4400 accounts |
-| `trading_accounts.opened_on` | 개설일 | STP-4400 accounts |
+| `trading_accounts.account_id` | 계좌 ID | STP-4200 account, STP-4400 accounts, STP-4500 accounts |
+| `trading_accounts.alias` | 계좌 별칭 | STP-4200 account, STP-4400 accounts, STP-4500 accounts |

@@ -91,7 +91,7 @@ def test_a_bad_account_is_refused(client, account, message):
     assert r.status_code == 400 and message in r.json()["error"]
 
 
-def test_account_list_status_history_and_customer_totals(client, conn, sample):
+def test_account_list_and_status_history(client, conn, sample):
     accounts, body = rows(client, "STP4400R01", "A0003")          # the list is the same from any account
     assert body["meta"]["selected"] == "A0003"
     assert [(a["account_id"], a["customer_id"], a["status"]) for a in accounts] == [
@@ -109,7 +109,51 @@ def test_account_list_status_history_and_customer_totals(client, conn, sample):
     assert history[1]["reason"].startswith("샘플:")
     assert client.post("/api/tx/STP4400R02", json={"params": {}}).status_code == 400
 
-    totals, _ = rows(client, "STP4400R03")
+
+def test_the_account_list_shows_little_and_its_detail_is_on_the_right(client, conn):
+    """왼쪽 목록, 오른쪽 상세: the list keeps to what identifies an account; the rest is one row away."""
+    screen = load_screens()["STP-4400"]
+    master, *details = screen.grids
+    assert screen.layout == "split" and master.id == "accounts" and master.load == "open"
+    assert [c.name for c in master.columns] == ["account_id", "alias", "customer_alias", "status", "cash_d0", "book_cost"]
+    assert [(g.id, g.load, g.master, g.link) for g in details] == [
+        ("positions", "master", "accounts", {"account_id": "account_id"}),
+        ("status_history", "master", "accounts", {"account_id": "account_id"})]
+
+    accounts, body = rows(client, "STP4400R01", "A0002")
+    assert body["meta"]["selected"] == "A0002"                    # the row the screen opens on
+    for a in accounts:                                            # asked from A0001, answered for the row
+        held, _ = rows(client, "STP4400R03", params={"account_id": a["account_id"]})
+        want = conn.execute("select symbol, qty, book_cost from positions_v where account_id = %s",
+                            (a["account_id"],)).fetchall()
+        assert sorted((h["symbol"], h["qty"], h["book_cost"]) for h in held) == sorted(want)
+        assert len(held) == a["holdings"] and sum(h["book_cost"] for h in held) == a["book_cost"]
+    assert client.post("/api/tx/STP4400R03", json={"params": {}}).status_code == 400
+    nobody, _ = rows(client, "STP4400R03", params={"account_id": "A0009"})
+    assert nobody == []
+
+
+def test_customer_holdings_add_up_the_accounts_of_one_customer(client, conn):
+    """STP-4500 고객별 보유: 고객 → 그 고객의 종목별 합산과 계좌."""
+    screen = load_screens()["STP-4500"]
+    assert screen.layout == "split"
+    assert [(g.id, g.load, g.master) for g in screen.grids] == [
+        ("customers", "open", None), ("positions", "master", "customers"), ("accounts", "master", "customers")]
+
+    customers, _ = rows(client, "STP4500R01", "A0003")            # the same from any account
+    assert [(c["customer_id"], c["accounts"]) for c in customers] == [("C0001", 2), ("C0002", 1)]
+    for c in customers:
+        mine, _ = rows(client, "STP4500R03", params={"customer_id": c["customer_id"]})
+        want = [r[0] for r in conn.execute("select account_id from trading_accounts where customer_id = %s"
+                                           " order by account_id", (c["customer_id"],))]
+        assert [a["account_id"] for a in mine] == want
+        assert sum(a["cash_d0"] for a in mine) == c["cash_d0"] and sum(a["book_cost"] for a in mine) == c["book_cost"]
+        totals, _ = rows(client, "STP4500R02", params={"customer_id": c["customer_id"]})
+        assert totals and {t["customer_id"] for t in totals} == {c["customer_id"]}
+        assert sum(t["book_cost"] for t in totals) == c["book_cost"]
+    assert client.post("/api/tx/STP4500R03", json={"params": {}}).status_code == 400
+
+    totals, _ = rows(client, "STP4500R02")                        # no customer named: everyone
     want = conn.execute("select customer_id, symbol, qty, book_cost from customer_positions_v").fetchall()
     assert sorted((t["customer_id"], t["symbol"], t["qty"], t["book_cost"]) for t in totals) == sorted(want)
     both = [t for t in totals if t["customer_id"] == "C0001" and t["accounts"] == 2]
@@ -117,33 +161,6 @@ def test_account_list_status_history_and_customer_totals(client, conn, sample):
         parts = conn.execute("select sum(qty) from positions_v where account_id in ('A0001', 'A0002') and symbol = %s",
                              (t["symbol"],)).fetchone()[0]
         assert t["qty"] == parts
-
-
-def test_picking_an_account_row_turns_the_grids_below_into_its_detail(client, conn):
-    """기초 정보 → 상세: every grid under the account list is linked to the picked row."""
-    screen = load_screens()["STP-4400"]
-    master, *details = screen.grids
-    assert master.id == "accounts" and master.load == "open"
-    assert [(g.id, g.load, g.master, g.link) for g in details] == [
-        ("positions", "master", "accounts", {"account_id": "account_id"}),
-        ("customer_positions", "master", "accounts", {"customer_id": "customer_id"}),
-        ("status_history", "master", "accounts", {"account_id": "account_id"})]
-
-    accounts, body = rows(client, "STP4400R01", "A0002")
-    assert body["meta"]["selected"] == "A0002"                    # the row the screen opens on
-    for a in accounts:                                            # asked from A0001, answered for the row
-        held, _ = rows(client, "STP4400R04", params={"account_id": a["account_id"]})
-        want = conn.execute("select symbol, qty, book_cost from positions_v where account_id = %s",
-                            (a["account_id"],)).fetchall()
-        assert sorted((h["symbol"], h["qty"], h["book_cost"]) for h in held) == sorted(want)
-        assert len(held) == a["holdings"] and sum(h["book_cost"] for h in held) == a["book_cost"]
-        totals, _ = rows(client, "STP4400R03", params={"customer_id": a["customer_id"]})
-        assert totals and {t["customer_id"] for t in totals} == {a["customer_id"]}
-    everyone, _ = rows(client, "STP4400R03")
-    assert {t["customer_id"] for t in everyone} == {"C0001", "C0002"}
-    assert client.post("/api/tx/STP4400R04", json={"params": {}}).status_code == 400
-    nobody, _ = rows(client, "STP4400R04", params={"account_id": "A0009"})
-    assert nobody == []
 
 
 def test_a_drill_that_names_an_account_column_must_have_it(conn):

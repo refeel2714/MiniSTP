@@ -257,7 +257,7 @@ def order_check(books, day: dt.date, symbol: str, side: str, qty: int, limit_pri
                               cap.max_buy_qty, cap.held_qty, cap.pending_sell_qty, cap.sellable_qty,
                               reason == "", reason, REASON_TEXT.get(reason, reason)),))
 
-# ---------- STP-4400 고객·계좌 (조회 전용) ----------
+# ---------- STP-4400 계좌 목록 · STP-4500 고객별 보유 (조회 전용) ----------
 
 def account_list(conn: psycopg.Connection, calendar) -> Dataset:
     """Every account with its customer, current status and the size of its books.
@@ -311,6 +311,28 @@ def customer_positions(conn: psycopg.Connection, customer_id: str | None = None)
           join instruments i using (symbol)
          where (%(c)s::text is null or v.customer_id = %(c)s)
          order by v.customer_id, v.book_cost desc""", {"c": customer_id})
+
+
+def customer_list(conn: psycopg.Connection) -> Dataset:
+    """고객 목록: every customer with the number of accounts and what they add up to."""
+    return _q(conn, """
+        select c.customer_id, c.alias, count(t.account_id) as accounts,
+               coalesce(sum((select balance from cash_balance_v b where b.account_id = t.account_id)), 0) as cash_d0,
+               coalesce(sum((select sum(p.book_cost) from positions_v p where p.account_id = t.account_id)), 0) as book_cost
+          from customers c left join trading_accounts t using (customer_id)
+         group by c.customer_id, c.alias
+         order by c.customer_id""")
+
+
+def customer_accounts(conn: psycopg.Connection, customer_id: str) -> Dataset:
+    """One customer's accounts with their status, cash and holdings at book cost."""
+    return _q(conn, """
+        select t.account_id, t.alias, s.status,
+               (select balance from cash_balance_v b where b.account_id = t.account_id) as cash_d0,
+               (select coalesce(sum(p.book_cost), 0) from positions_v p where p.account_id = t.account_id) as book_cost
+          from trading_accounts t join account_status_v s using (account_id)
+         where t.customer_id = %s
+         order by t.account_id""", (customer_id,))
 
 
 # ---------- STP-4100·4200·4300 기준정보 (조회 전용) ----------
