@@ -33,14 +33,13 @@ from .instruments import AssetType, Instrument, Market
 from .ledger import Side
 from .oms import OrderStatus
 from .accounts import STATUSES, add_account, add_customer, list_accounts, set_status
-from .ops import (IntradayRunner, OpsError, acquire_writer, add_instrument, clean_streak, daily_close, load_books, open_books,
+from .ops import (GATE_DAYS, IntradayRunner, OpsError, acquire_writer, add_instrument, clean_streak, daily_close, load_books, open_books,
                   place_order, require_current_schema, resolve_break)
 from .recon import Cause, Status
 from .session import failure_text
 from .store import DEFAULT_ACCOUNT, PostgresLedgerStore, SchemaError
 from .store import migrate as mg
 
-GATE_DAYS = 20
 DB_NAME = "ministp"
 MARKET_OPEN, MARKET_CLOSE, DAILY_FROM = dt.time(9, 0), dt.time(15, 20), dt.time(15, 40)
 
