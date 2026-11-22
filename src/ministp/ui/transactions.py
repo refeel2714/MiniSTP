@@ -8,7 +8,7 @@ import psycopg
 from .. import queries as q
 from ..calendar import BusinessCalendar
 from ..fees import FeeSchedule
-from ..ops import Books, clean_streak, load_books, stored_open_orders
+from ..ops import GATE_DAYS, Books, clean_streak, load_books, stored_open_orders
 from ..queries import Dataset
 from ..store import DEFAULT_ACCOUNT
 
@@ -88,11 +88,35 @@ def _recon(c: TxContext, p) -> TxResult:
                                              c.account_id)})
 
 
+MAX_CALENDAR_DAYS = 800   # 달력 보기는 두 해 남짓까지
+
+
+def _streak(c: TxContext) -> int:
+    """무오류 연속 영업일 of the account in view, as of the last day that was closed (the number every screen shows)."""
+    last = max((r.date for r in c.books.ledger.nav_history()), default=None)
+    return clean_streak(c.conn, c.calendar, last, c.account_id) if last else 0
+
+
+def _recon_days(c: TxContext, p) -> TxResult:
+    f, t = p.get("date_from"), p.get("date_to")
+    if f and (t or c.today) < f:
+        raise TxError("시작일이 종료일보다 늦어요")
+    if f and ((t or c.today) - f).days > MAX_CALENDAR_DAYS:
+        raise TxError("달력은 두 해까지만 그려요. 기간을 줄여 주세요")
+    ds = q.recon_calendar(c.conn, c.calendar, c.today, f, t, p.get("kind") or "DAILY_RECON", c.account_id)
+    ran = [r for r in ds.records() if r["items"] is not None]   # newest first
+    # The day to open with: the latest one that still has a break to judge, else the latest run.
+    opens = next((r for r in ran if r["open_breaks"]), ran[0] if ran else None)
+    streak = _streak(c)
+    meta = {"clean_streak": streak, "gate_left": max(0, GATE_DAYS - streak)}
+    if opens:
+        meta["selected"] = opens["date"].isoformat()
+    return TxResult({"main": ds}, meta)
+
+
 def _nav(c: TxContext, p) -> TxResult:
     ds = q.nav_series(c.books.ledger, p.get("date_from"), p.get("date_to"))
-    last = max((r.date for r in c.books.ledger.nav_history()), default=None)
-    return TxResult({"main": ds}, {"clean_streak": clean_streak(c.conn, c.calendar, last, c.account_id) if last else 0,
-                                   "gate_days": 20})
+    return TxResult({"main": ds}, {"clean_streak": _streak(c), "gate_days": GATE_DAYS})
 
 
 def _events(c: TxContext, p) -> TxResult:
@@ -203,6 +227,7 @@ TRANSACTIONS: dict[str, Tx] = {t.tx_id: t for t in [
     Tx("STP1200R01", "주문·체결 블로터", {"day": "date"}, _blotter),
     Tx("STP2100R01", "대사 결과", {"date_from": "date", "date_to": "date", "kind": "text", "only_breaks": "bool"},
        _recon),
+    Tx("STP2100R02", "날짜별 대사 요약", {"date_from": "date", "date_to": "date", "kind": "text"}, _recon_days),
     Tx("STP2200R01", "기준가 추이", {"date_from": "date", "date_to": "date"}, _nav),
     Tx("STP3100R01", "원장 이벤트 목록", {"date_from": "date", "date_to": "date", "event_type": "text",
                                        "symbol": "text"}, _events),

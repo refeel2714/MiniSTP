@@ -73,6 +73,12 @@ def test_every_transaction_answers_for_the_account_it_is_asked_about(client, con
         assert {e["seq"] for e in events} == mine
         trial, tb = rows(client, "STP3100R03", acct)
         assert tb["meta"]["balanced"] and trial
+        days, cal = rows(client, "STP2100R02", acct)     # 대사 달력도 그 계좌의 대사만
+        ran = dict(conn.execute(
+            "select r.date::text, count(*) from recon_results r join broker_snapshots b on b.snapshot_id = r.run_id"
+            " where r.account_id = %s and b.kind = 'DAILY_RECON' and r.supersedes_id is null group by 1", (acct,)).fetchall())
+        assert {d["date"]: d["items"] for d in days if d["items"] is not None} == ran
+        assert cal["meta"]["clean_streak"] == summary[0]["clean_streak"]
     _, body = rows(client, "STP1100R01")                          # no account given: the default one
     assert body["account"] == "A0001"
 
