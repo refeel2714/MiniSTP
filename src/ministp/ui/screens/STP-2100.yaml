@@ -1,6 +1,6 @@
 id: STP-2100
 title: 일일 대사 결과
-purpose: 대사 항목별 내부 값과 증권사 값, 불일치와 그에 대한 판단 이력을 함께 봐요. 판단 기록은 resolve 명령으로만 해요.
+purpose: 대사 항목별 내부 값과 증권사 값, 불일치와 그에 대한 판단 이력을 함께 봐요. 불일치 행을 고르고 오른쪽 위 원인 판단 버튼을 누르면 판단을 기록해요 (CLI의 resolve 명령과 같은 처리). 불일치 행은 고치지 않고 판단을 새 행으로 덧붙여요.
 conditions:
   - {name: date_from, type: date, label: 시작일}
   - {name: date_to, type: date, label: 종료일}
@@ -26,3 +26,16 @@ grids:
       - {name: resolved_at, label: 판단 시각, format: datetime}
       - {name: taken_at, source: broker_snapshots.taken_at, format: datetime}
       - {name: id, source: recon_results.id, format: number}
+    actions:
+      - id: resolve
+        label: 원인 판단
+        tx: STP2100U01
+        needs_row: true
+        when: {status: [BREAK]}
+        shows: [date, item, key, diff]
+        note: 불일치 행은 고치지 않아요. 판단이 새 행으로 덧붙고, 다시 판단하면 가장 나중 것이 보여요 (R-73).
+        fields:
+          - {name: result_id, source: recon_results.id, column: id, readonly: true}
+          - {name: cause, source: recon_results.cause_code, type: select,
+             options: [MISSING_EXEC, FEE_DIFF, TAX_DIFF, ROUNDING, CORP_ACTION, TIMING, UNKNOWN]}
+          - {name: note, source: recon_results.note}
