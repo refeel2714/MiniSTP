@@ -183,10 +183,85 @@ def cash_summary(ledger: Ledger, open_orders) -> Dataset:
                    ((ledger.cash_balance(), projected, reserved, unpriced, projected - reserved),))
 
 
+
+
+# ---------- STP-1300 주문가능 조회 ----------
+
+REASON_TEXT = {
+    "": "주문 가능",
+    "KILL_SWITCH": "킬 스위치가 켜져 있어요",
+    "BAD_QTY": "수량을 1주 이상 넣어 주세요",
+    "MAX_ORDER_VALUE": "1회 주문 금액 한도를 넘어요",
+    "SHORT_SELL": "매도가능수량보다 많아요 (공매도 금지, R-36)",
+    "INSUFFICIENT_CASH": "주문가능금액이 모자라요",
+    "BAD_TICK": "호가단위에 맞지 않는 가격이에요",
+    "NO_PRICE": "기준 단가가 없어요: 지정가를 넣어 주세요",
+}
+
+
+def last_closes(ledger: Ledger) -> tuple[dt.date | None, dict[str, int]]:
+    """The most recent closing prices the ledger knows (NavEvent/RevaluationEvent), until live quotes come."""
+    from .ledger import NavEvent, RevaluationEvent
+    for ev in reversed(ledger.events):
+        if isinstance(ev, (NavEvent, RevaluationEvent)):
+            return ev.date, dict(ev.closes)
+    return None, {}
+
+
+def capacity_by_symbol(books, day: dt.date) -> Dataset:
+    """종목별 주문가능: 최근 종가 기준 최대 매수수량과 매도가능수량 (R-37과 같은 계산)."""
+    from .ops import order_capacity
+    close_day, closes = last_closes(books.ledger)
+    rows = []
+    for sym, inst in sorted(books.instruments.items()):
+        price = closes.get(sym)
+        if price is None:
+            continue
+        cap = order_capacity(books, day, sym, price, closes)
+        rows.append((sym, inst.name, price, close_day, cap.available_cash, cap.max_buy_qty, cap.held_qty,
+                     cap.pending_sell_qty, cap.sellable_qty))
+    return Dataset(("symbol", "instrument_name", "ref_price", "price_date", "available_cash", "max_buy_qty",
+                    "held_qty", "pending_sell_qty", "sellable_qty"), tuple(rows))
+
+
+def order_check(books, day: dt.date, symbol: str, side: str, qty: int, limit_price: int | None,
+                halted: bool = False) -> Dataset:
+    """주문 입력 하나에 대한 주문가능 판단: 화면은 입력할 때마다 이걸 부르고, 주문 검증(session.submit)과 같은 check를 써요."""
+    from .capacity import check
+    from .ledger import Side
+    from .ops import order_capacity
+    from .risk import RiskLimits
+    from .ticks import tick_size
+    if symbol not in books.instruments:
+        raise KeyError(f"등록되지 않은 종목이에요: {symbol}")
+    inst = books.instruments[symbol]
+    _, closes = last_closes(books.ledger)
+    ref = limit_price or closes.get(symbol)
+    s = Side(side)
+    columns = ("symbol", "instrument_name", "side", "qty", "ref_price", "ref_source", "order_value",
+               "required_cash", "cash_d0", "projected_cash", "pending_buy_value", "available_cash",
+               "max_buy_qty", "held_qty", "pending_sell_qty", "sellable_qty", "ok", "reason", "reason_text")
+    if ref is None:
+        return Dataset(columns, ((symbol, inst.name, side, qty, None, None, None, None, None, None, None, None,
+                                  None, None, None, None, False, "NO_PRICE", REASON_TEXT["NO_PRICE"]),))
+    cap = order_capacity(books, day, symbol, ref, closes)
+    decision = check(cap, s, qty, halted=halted)
+    reason = decision.reason
+    if decision.ok and limit_price and limit_price % tick_size(limit_price, inst.asset_type):
+        reason = "BAD_TICK"
+    value = qty * ref
+    required = int(value * (1 + RiskLimits().cash_buffer_rate)) if s is Side.BUY else 0
+    return Dataset(columns, ((symbol, inst.name, side, qty, ref, "지정가" if limit_price else "최근 종가", value,
+                              required, cap.cash_d0, cap.projected_cash, cap.pending_buy_value, cap.available_cash,
+                              cap.max_buy_qty, cap.held_qty, cap.pending_sell_qty, cap.sellable_qty,
+                              reason == "", reason, REASON_TEXT.get(reason, reason)),))
+
 # Transaction id -> service. Ids follow the screen numbers (화면번호 + R + 일련번호).
 TRANSACTIONS = {
     "STP1100R01": holdings,
     "STP1100R02": cash_summary,
+    "STP1300R01": capacity_by_symbol,
+    "STP1300R02": order_check,
     "STP3100R01": ledger_events,
     "STP3100R02": event_trace,
     "STP3100R03": trial_balance,

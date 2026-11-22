@@ -53,7 +53,8 @@
       default: return String(v);
     }
   }
-  function tone(v, rule) {
+  function tone(v, rule, row) {
+    if (rule === "verdict") return row && row.ok === true ? "st-ok" : row && row.ok === false ? "st-bad" : "";
     if (v === null || v === undefined) return "";
     if (rule === "sign") return v > 0 ? "up" : v < 0 ? "down" : "";
     if (rule === "side") return v === "BUY" ? "up" : v === "SELL" ? "down" : "";
@@ -105,18 +106,22 @@
       let def0 = urlParams.get(c.name) ?? (c.default === "today" ? DATA.today : c.default);
       let el;
       if (c.type === "select") {
-        el = h("select", { id }, h("option", { value: "", text: "전체" }),
+        el = h("select", { id }, c.required ? null : h("option", { value: "", text: "전체" }),
           c.options.map(o => h("option", { value: o, text: o, selected: o === def0 })));
       } else if (c.type === "bool") {
         el = h("input", { id, type: "checkbox", checked: def0 === "true" || def0 === true });
+      } else if (c.type === "number") {
+        el = h("input", { id, type: "number", min: "0", step: "1", inputmode: "numeric", value: def0 || "",
+          autocomplete: "off" });
       } else {
         el = h("input", { id, type: c.type === "date" ? "date" : "text", value: def0 || "",
           autocomplete: "off", spellcheck: "false", size: c.type === "date" ? null : 10 });
       }
+      el.addEventListener(c.type === "bool" || c.type === "select" || c.type === "date" ? "change" : "input", recalc);
       el.addEventListener("keydown", e => { if (e.key === "Enter") { e.preventDefault(); search(); } });
       condEls[c.name] = el;
       return h("label", { class: "cond" + (c.type === "bool" ? " bool" : ""), for: id },
-        h("span", { text: c.label }), el);
+        h("span", {}, c.label, c.required ? h("b", { class: "req", title: "필수", text: " *" }) : null), el);
     }
 
     async function call(tx, params) {
@@ -130,8 +135,21 @@
     }
 
     // Grids that share a transaction and parameters share one call.
+    function missingRequired(g) {
+      const vals = condValues();
+      return def.conditions.filter(c => c.required && g.tx_params.includes(c.name) && !(c.name in vals));
+    }
+
     async function load(list, paramsOf) {
       const calls = new Map();
+      const ready = [];
+      for (const g of list) {
+        const missing = g.load === "master" ? [] : missingRequired(g);
+        if (missing.length) grids[g.id].clear("필수 조회조건을 넣어 주세요: " + missing.map(c => c.label).join(", "));
+        else ready.push(g);
+      }
+      list = ready;
+      if (!list.length) return;
       for (const g of list) {
         const params = paramsOf(g);
         const key = g.tx + JSON.stringify(params);
@@ -158,8 +176,16 @@
       return Object.fromEntries(Object.entries(all).filter(([k]) => g.tx_params.includes(k)));
     }
 
+    let recalcTimer = null;
+    function recalc() {
+      const list = def.grids.filter(g => g.load === "input");
+      if (!list.length) return;
+      clearTimeout(recalcTimer);
+      recalcTimer = setTimeout(() => load(list, searchParams), 120);
+    }
+
     function search() {
-      const list = def.grids.filter(g => g.load === "search" || g.load === "open");
+      const list = def.grids.filter(g => g.load !== "master");
       def.grids.filter(g => g.load === "master").forEach(g => grids[g.id].clear("위 목록에서 행을 고르세요"));
       return load(list, searchParams);
     }
@@ -172,6 +198,13 @@
 
     function drill(g, row) {
       if (!g.drill || !row) return;
+      if (g.drill.screen === def.id) {
+        for (const [cond, col] of Object.entries(g.drill.params || {})) if (condEls[cond]) condEls[cond].value = row[col] ?? "";
+        const first = def.conditions.find(c => c.required && condValues()[c.name] === undefined);
+        if (first) condEls[first.name].focus();
+        recalc();
+        return;
+      }
       const q = new URLSearchParams();
       for (const [cond, col] of Object.entries(g.drill.params || {})) if (row[col] != null) q.set(cond, row[col]);
       location.href = "/screen/" + g.drill.screen + "?" + q.toString();
@@ -200,7 +233,7 @@
       if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); search(); }
     });
 
-    const opening = def.grids.filter(g => g.load === "open");
+    const opening = def.grids.filter(g => g.load === "open" || g.load === "input");
     const hasDrill = def.conditions.some(c => urlParams.has(c.name));
     def.grids.filter(g => g.load === "search").forEach(g => grids[g.id].clear("조회조건을 정하고 조회를 누르세요"));
     def.grids.filter(g => g.load === "master").forEach(g => grids[g.id].clear("위 목록에서 행을 고르세요"));
@@ -267,7 +300,7 @@
       if (!r) return body.replaceChildren(h("div", { class: "empty", text: "조회된 내역이 없어요" }));
       body.replaceChildren(h("div", { class: "cards" }, g.columns.map(c =>
         h("div", { class: "card" }, h("div", { class: "cl", text: c.label }),
-          h("div", { class: "cv " + tone(r[c.name], c.color), text: fmt(r[c.name], c.format) })))));
+          h("div", { class: "cv " + tone(r[c.name], c.color, r), text: fmt(r[c.name], c.format) || "-" })))));
     }
 
     function renderTable() {
@@ -286,7 +319,7 @@
       }, h("td", { class: "rn", text: i + 1 }), g.columns.map(c => {
         const v = r[c.name];
         const text = fmt(v, c.format);
-        return h("td", { class: [c.align === "right" ? "r" : "", tone(v, c.color), c.format === "json" ? "js" : ""].join(" ").trim() || null,
+        return h("td", { class: [c.align === "right" ? "r" : "", tone(v, c.color, r), c.format === "json" ? "js" : ""].join(" ").trim() || null,
           title: c.format === "json" ? text : null, text });
       }))));
       const foot = g.totals.length ? h("tfoot", {}, h("tr", {}, h("td", { class: "rn", text: "합계" }), g.columns.map(c =>

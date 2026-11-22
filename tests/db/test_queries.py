@@ -90,4 +90,4 @@ def test_nav_series_keeps_each_day_as_it_was(conn, broker):
 
 def test_every_transaction_is_registered_once():
     assert len(set(TRANSACTIONS.values())) == len(TRANSACTIONS)
-    assert all(k[:7] in {"STP1100", "STP1200", "STP2100", "STP2200", "STP3100"} for k in TRANSACTIONS)
+    assert all(k[:7] in {"STP1100", "STP1200", "STP1300", "STP2100", "STP2200", "STP3100"} for k in TRANSACTIONS)

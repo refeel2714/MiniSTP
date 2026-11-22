@@ -129,3 +129,35 @@ def test_ui_command_serves_on_localhost(sample, capsys):
     assert cli.ui_database_url(URL, {"MINISTP_UI_DATABASE_URL": "postgresql:///ro"}, False) == "postgresql:///ro"
     assert "ministp_sample" in cli.ui_database_url(URL, {}, True)
     assert isinstance(sample.last_day, dt.date)
+
+
+def _check(client, **params):
+    body = client.post("/api/tx/STP1300R02", json={"params": params}).json()
+    return body["meta"]["ok"], dict(zip(body["datasets"]["main"]["columns"], body["datasets"]["main"]["rows"][0]))
+
+
+def test_order_capacity_boundary_is_the_order_checks_boundary(client):
+    caps = client.post("/api/tx/STP1300R01", json={"params": {}}).json()["datasets"]["main"]
+    first = dict(zip(caps["columns"], caps["rows"][0]))
+    sym, most, sellable = first["symbol"], first["max_buy_qty"], first["sellable_qty"]
+    ok, row = _check(client, symbol=sym, side="BUY", qty=most)
+    assert ok and row["required_cash"] <= row["available_cash"]
+    ok, row = _check(client, symbol=sym, side="BUY", qty=most + 1)
+    assert not ok and row["reason"] == "INSUFFICIENT_CASH"
+    assert _check(client, symbol=sym, side="SELL", qty=sellable)[0]
+    ok, row = _check(client, symbol=sym, side="SELL", qty=sellable + 1)
+    assert not ok and row["reason"] == "SHORT_SELL"
+
+
+def test_order_capacity_uses_the_limit_price_and_checks_ticks(client):
+    ok, row = _check(client, symbol="005930", side="BUY", qty=1, limit_price=60_000)
+    assert ok and row["ref_price"] == 60_000 and row["ref_source"] == "지정가"
+    ok, row = _check(client, symbol="005930", side="BUY", qty=1, limit_price=60_050)
+    assert not ok and row["reason"] == "BAD_TICK"
+
+
+def test_order_capacity_needs_a_known_symbol(client):
+    r = client.post("/api/tx/STP1300R02", json={"params": {"symbol": "999999", "side": "BUY", "qty": 1}})
+    assert r.status_code == 400 and "등록되지 않은 종목" in r.json()["error"]
+    r = client.post("/api/tx/STP1300R02", json={"params": {"qty": 1}})
+    assert r.status_code == 400 and "종목코드" in r.json()["error"]

@@ -8,10 +8,11 @@ at once which screens it touches.
 from .definitions import Screen, column_comment, resolve, short, usages
 from .transactions import TRANSACTIONS
 
-LOAD_TEXT = {"search": "조회 버튼", "open": "화면 열 때 + 조회 버튼", "master": "마스터 행 선택"}
+LOAD_TEXT = {"search": "조회 버튼", "open": "화면 열 때 + 조회 버튼", "master": "마스터 행 선택",
+             "input": "조회조건을 바꿀 때마다 (입력 즉시 재계산)"}
 FORMAT_TEXT = {"text": "문자", "code": "코드", "number": "수량", "money": "금액", "rate": "비율·단가",
                "date": "날짜", "datetime": "일시", "json": "JSON"}
-COLOR_TEXT = {None: "", "sign": "부호(+빨강/-파랑)", "side": "매수 빨강/매도 파랑", "status": "상태"}
+COLOR_TEXT = {None: "", "sign": "부호(+빨강/-파랑)", "side": "매수 빨강/매도 파랑", "status": "상태", "verdict": "판단(가능 초록/불가 빨강)"}
 
 
 def _cell(s) -> str:
@@ -24,10 +25,11 @@ def screen_markdown(screen: Screen, catalog: dict) -> str:
            " 직접 고치지 말고 화면 정의를 고친 뒤 `python scripts/gen_screen_docs.py`를 실행하세요.", "",
            "## 목적", "", screen.purpose, ""]
     if screen.conditions:
-        out += ["## 조회조건", "", "| 조건 | 한글명 | 형식 | DB 컬럼 | 기본값 | 선택값 |", "|---|---|---|---|---|---|"]
+        out += ["## 조회조건", "", "| 조건 | 한글명 | 형식 | DB 컬럼 | 필수 | 기본값 | 선택값 |",
+                "|---|---|---|---|---|---|---|"]
         for c, cd in zip(screen.conditions, r["conditions"]):
             out.append(f"| `{c.name}` | {_cell(cd['label'])} | {c.type} | {_cell(c.source or '-')} "
-                       f"| {_cell(c.default)} | {_cell(', '.join(c.options))} |")
+                       f"| {'예' if c.required else ''} | {_cell(c.default)} | {_cell(', '.join(c.options))} |")
         out.append("")
     out += ["## 트랜잭션", "", "| 트랜잭션 | 이름 | 조회조건 | 쓰는 그리드 |", "|---|---|---|---|"]
     seen: dict[str, list[str]] = {}
