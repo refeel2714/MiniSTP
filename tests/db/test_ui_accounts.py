@@ -163,6 +163,8 @@ def test_customer_holdings_add_up_the_accounts_of_one_customer(client, conn):
         assert sum(a["cash_d0"] for a in mine) == c["cash_d0"] and sum(a["book_cost"] for a in mine) == c["book_cost"]
         totals, _ = rows(client, "STP4500R02", params={"customer_id": c["customer_id"]})
         assert totals and {t["customer_id"] for t in totals} == {c["customer_id"]}
+        kinds = dict(conn.execute("select symbol, asset_type from instruments").fetchall())
+        assert all(t["asset_type"] == kinds[t["symbol"]] for t in totals)      # 배지 모양이 되는 자산 유형
         assert sum(t["book_cost"] for t in totals) == c["book_cost"]
     assert client.post("/api/tx/STP4500R03", json={"params": {}}).status_code == 400
 

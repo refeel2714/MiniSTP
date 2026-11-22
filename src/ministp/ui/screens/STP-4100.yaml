@@ -12,7 +12,7 @@ grids:
     drill: {screen: STP-1300, params: {symbol: symbol}}
     columns:
       - {name: symbol, source: instruments.symbol, format: code}
-      - {name: instrument_name, source: instruments.name}
+      - {name: instrument_name, source: instruments.name, display: badge, code: symbol, shape: asset_type}
       - {name: market, source: instruments.market, format: code}
       - {name: asset_type, source: instruments.asset_type, format: code}
       - {name: last_close, label: 최근 종가, format: money}

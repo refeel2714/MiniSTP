@@ -53,7 +53,7 @@
 | `customer_positions_v.symbol` | 종목코드 | STP-4500 positions |
 | `customers.alias` | 고객 별칭 | STP-4400 accounts, STP-4500 customers, STP-4500 customers 버튼 add |
 | `customers.customer_id` | 고객 ID | STP-4500 customers, STP-4500 customers 버튼 add |
-| `instruments.asset_type` | 자산 유형 | STP-1100 holdings, STP-1200 orders, STP-4100 instruments, STP-4300 fees, STP-4300 ticks |
+| `instruments.asset_type` | 자산 유형 | STP-1100 holdings, STP-1200 orders, STP-1300 symbols, STP-4100 instruments, STP-4200 settlements, STP-4300 fees, STP-4300 ticks, STP-4400 positions, STP-4500 positions |
 | `instruments.market` | 시장 | STP-4100 instruments, STP-4300 fees |
 | `instruments.name` | 종목명 | STP-1100 holdings, STP-1200 orders, STP-1300 symbols, STP-4100 instruments, STP-4200 settlements, STP-4400 positions, STP-4500 positions |
 | `instruments.symbol` | 종목코드 | STP-1100 holdings, STP-1300 symbols, STP-1300 조회조건, STP-3100 events, STP-3100 조회조건, STP-4100 instruments, STP-4200 settlements |

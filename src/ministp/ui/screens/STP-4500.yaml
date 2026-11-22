@@ -34,8 +34,9 @@ grids:
     weight: 2
     totals: [book_cost]
     columns:
+      - {name: instrument_name, source: instruments.name, display: badge, code: symbol, shape: asset_type}
       - {name: symbol, source: customer_positions_v.symbol, format: code}
-      - {name: instrument_name, source: instruments.name}
+      - {name: asset_type, source: instruments.asset_type, format: code}
       - {name: qty, source: customer_positions_v.qty, format: number}
       - {name: book_cost, source: customer_positions_v.book_cost, format: money}
       - {name: accounts, label: 보유 계좌 수, format: number}
