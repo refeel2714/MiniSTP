@@ -88,6 +88,11 @@ def run(argv, *, environ=os.environ, client_factory=KisClient, connect=psycopg.c
     p.add_argument("note")
     p = sub.add_parser("sample-db")
     p.add_argument("--days", type=int, default=40, help="시뮬레이션할 영업일 수")
+    p = sub.add_parser("db-migrate", help="기존 DB를 다음 ERD 버전으로 (기본은 상태와 계획만 보여줘요)")
+    how = p.add_mutually_exclusive_group()
+    how.add_argument("--dry-run", action="store_true", help="적용해 보고 전부 되돌려요 (리허설)")
+    how.add_argument("--apply", action="store_true", help="실제로 적용해요. 먼저 pg_dump로 백업하세요")
+    p.add_argument("--sample", action="store_true", help="샘플 DB(ministp_sample)에 실행")
     p = sub.add_parser("ui", help="업무화면(STP-UI)을 이 PC에서만 열기 (조회 전용)")
     p.add_argument("--sample", action="store_true", help="샘플 DB(ministp_sample)로 열기")
     p.add_argument("--port", type=int, default=8765)
@@ -112,6 +117,13 @@ def run(argv, *, environ=os.environ, client_factory=KisClient, connect=psycopg.c
 
         if args.cmd == "ui":
             return _ui(url, environ, calendar, fees, args.sample, args.port)
+
+        if args.cmd == "db-migrate":
+            target = url
+            if args.sample:
+                target = (environ.get("MINISTP_SAMPLE_DATABASE_URL")
+                          or psycopg.conninfo.make_conninfo(url, dbname=SAMPLE_DB))
+            return _db_migrate(target, connect, dry_run=args.dry_run, apply=args.apply)
 
         with connect(url, autocommit=True) as conn:
             if args.cmd == "instrument":
@@ -281,6 +293,42 @@ def _sample_db(url: str, environ, connect, calendar, days: int) -> int:
             print(f"  {n}")
     print("운영 DB(ministp)는 건드리지 않았어요. pgAdmin에서 ministp_sample을 열어 보세요.")
     return 0
+
+
+def _db_migrate(url: str, connect, *, dry_run: bool, apply: bool) -> int:
+    """Status and plan by default; `--dry-run` rehearses and rolls back; `--apply` changes the database."""
+    from .store import erd, migrate as mg
+    try:
+        migrations = mg.discover()
+        with connect(url, autocommit=True) as conn:
+            todo = mg.pending(conn, migrations)
+            done = mg.applied(conn)
+            print(f"DB '{conn.info.dbname}': 적용된 마이그레이션 {len(done)}개, 남은 것 {len(todo)}개 "
+                  f"(코드의 ERD v{erd.schema_version(erd.schema_sql())})")
+            for m in todo:
+                print(f"  대기: {m.label}" + (f" → ERD v{m.erd_version}" if m.erd_version else ""))
+            if not todo:
+                print("적용할 마이그레이션이 없어요.")
+                return 0
+            if not (dry_run or apply):
+                print("리허설은 --dry-run (적용해 보고 되돌려요), 실제 적용은 --apply 예요. 적용 전에 pg_dump로 백업해 주세요.")
+                return 0
+            acquire_writer(conn)
+            for r in mg.migrate(conn, migrations, dry_run=dry_run):
+                print(f"{'적용' if r.applied else '리허설(되돌림)'}: {r.migration.label}")
+                for t in r.tables:
+                    if t.rows_before is None:
+                        print(f"  새 테이블 {t.table}")
+                    elif t.unchanged:
+                        print(f"  {t.table}: 기존 {t.rows_before:,}행 그대로")
+                    else:
+                        print(f"  {t.table}: {t.rows_before:,}행 → {t.rows_after if t.rows_after is not None else '없음'} "
+                              "(파일에 적힌 의도한 변경)")
+            print("리허설 통과: DB는 바뀌지 않았어요." if dry_run else "마이그레이션 완료.")
+            return 0
+    except mg.MigrationError as e:
+        print(f"오류: {e}")
+        return 1
 
 
 def ui_database_url(url: str, environ, sample: bool) -> str:

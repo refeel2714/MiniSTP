@@ -43,6 +43,16 @@ python -m ministp sample-db            # ministp_sample DB에 영업일 40일치
 
 운영 DB(`ministp`)와 별개의 `ministp_sample` DB를 만들고, 매번 지우고 다시 만듭니다. 같은 시드면 항상 같은 데이터가 나옵니다. 종목 3개(KODEX 200, TIGER 미국S&P500, 삼성전자), 부분 체결, 미체결 취소, 수수료 차이 불일치와 판단 기록이 들어 있습니다. 가격은 가상 시세입니다.
 
+## 스키마 마이그레이션
+
+```bash
+python -m ministp db-migrate            # 상태와 계획만 (DB를 바꾸지 않아요)
+python -m ministp db-migrate --dry-run  # 적용해 보고 전부 되돌려요 (리허설)
+python -m ministp db-migrate --apply    # 실제 적용. 먼저 pg_dump로 백업
+```
+
+새 DB는 `schema.sql`로 만들고, 운영 중인 DB는 번호가 붙은 SQL 파일로 다음 ERD 버전에 올립니다. 원장은 고칠 수 없는 기록이라, 마이그레이션은 "실행됐다"가 아니라 "기존 행이 하나도 바뀌지 않았다"를 보여줘야 합니다. 그래서 적용 전후로 모든 테이블의 지문(행 수와 기존 컬럼 기준 행 해시)을 비교하고, 다르면 전체를 되돌립니다. `--sample`을 붙이면 샘플 DB에서 먼저 해 볼 수 있습니다. 아직 마이그레이션은 없고, 첫 번째는 게이트 통과 후의 다계좌(ERD v2.0)입니다([스키마 변경 규칙](docs/spec/03-data-model.md)).
+
 ## 업무화면 STP-UI (조회 전용)
 
 ```bash
