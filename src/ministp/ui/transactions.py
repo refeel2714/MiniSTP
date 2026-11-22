@@ -149,8 +149,9 @@ def _ticks(c: TxContext, p) -> TxResult:
 def _holidays(c: TxContext, p) -> TxResult:
     ds = q.holiday_calendar(c.calendar, c.today)
     years = c.calendar.loaded_years
+    until = c.calendar.verified_until or (dt.date(years[-1], 12, 31) if years else None)
     return TxResult({"main": ds}, {"years": ", ".join(str(y) for y in years),
-                                   "until": f"{years[-1]}-12-31" if years else ""})
+                                   "until": until.isoformat() if until else ""})
 
 
 def _risk(c: TxContext, p) -> TxResult:

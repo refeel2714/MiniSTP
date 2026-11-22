@@ -10,9 +10,16 @@ class CalendarNotLoadedError(LookupError):
 
 
 class BusinessCalendar:
-    def __init__(self, loaded_years: Iterable[int], holidays: Iterable[dt.date]):
+    def __init__(self, loaded_years: Iterable[int], holidays: Iterable[dt.date],
+                 verified_until: dt.date | None = None):
+        """`verified_until`: the last date whose holidays are known to be complete.
+
+        A year can be loaded before the exchange has published all of its closures
+        (KRX announces next year's in December). Dates after `verified_until` raise
+        instead of being counted as business days by default (R-10)."""
         self._years = frozenset(loaded_years)
         self._holidays = frozenset(holidays)
+        self.verified_until = verified_until
 
     @property
     def loaded_years(self) -> tuple[int, ...]:
@@ -34,6 +41,10 @@ class BusinessCalendar:
     def _check(self, day: dt.date) -> None:
         if day.year not in self._years:
             raise CalendarNotLoadedError(f"holiday calendar for {day.year} is not loaded")
+        if self.verified_until is not None and day > self.verified_until:
+            raise CalendarNotLoadedError(
+                f"{day}의 휴장일은 아직 확인되지 않았어요 (확인된 기한: {self.verified_until}). "
+                "거래소 휴장일 공고를 반영한 뒤 기한을 늘려 주세요.")
 
     def is_business_day(self, day: dt.date) -> bool:
         self._check(day)
