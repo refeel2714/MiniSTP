@@ -7,7 +7,7 @@
 | 화면번호 | 화면명 | 그리드 | 트랜잭션 |
 |---|---|---|---|
 | [STP-1100](STP-1100.md) | 실시간 잔고 | 2 | `STP1100R02`, `STP1100R01` |
-| [STP-1200](STP-1200.md) | 주문·체결 블로터 | 1 | `STP1200R01` |
+| [STP-1200](STP-1200.md) | 주문·체결 블로터 | 3 | `STP1200R01`, `STP1200R02` |
 | [STP-1300](STP-1300.md) | 주문가능 조회 | 2 | `STP1300R02`, `STP1300R01` |
 | [STP-2100](STP-2100.md) | 일일 대사 결과 | 2 | `STP2100R02`, `STP2100R01`, `STP2100U01` |
 | [STP-2200](STP-2200.md) | 기준가·무오류 현황 | 1 | `STP2200R01` |
@@ -53,7 +53,7 @@
 | `customer_positions_v.symbol` | 종목코드 | STP-4500 positions |
 | `customers.alias` | 고객 별칭 | STP-4400 accounts, STP-4500 customers, STP-4500 customers 버튼 add |
 | `customers.customer_id` | 고객 ID | STP-4500 customers, STP-4500 customers 버튼 add |
-| `instruments.asset_type` | 자산 유형 | STP-1100 holdings, STP-4100 instruments, STP-4300 fees, STP-4300 ticks |
+| `instruments.asset_type` | 자산 유형 | STP-1100 holdings, STP-1200 orders, STP-4100 instruments, STP-4300 fees, STP-4300 ticks |
 | `instruments.market` | 시장 | STP-4100 instruments, STP-4300 fees |
 | `instruments.name` | 종목명 | STP-1100 holdings, STP-1200 orders, STP-1300 symbols, STP-4100 instruments, STP-4200 settlements, STP-4400 positions, STP-4500 positions |
 | `instruments.symbol` | 종목코드 | STP-1100 holdings, STP-1300 symbols, STP-1300 조회조건, STP-3100 events, STP-3100 조회조건, STP-4100 instruments, STP-4200 settlements |
@@ -69,18 +69,18 @@
 | `ledger_events.payload` | 이벤트 내용 | STP-3100 events, STP-4100 events |
 | `ledger_events.recorded_at` | 기록 시각 | STP-3100 events, STP-4100 events |
 | `ledger_events.seq` | 이벤트 순번 | STP-3100 events, STP-4100 events |
-| `oms_order_acks.detail` | 거부 사유 | STP-1200 orders |
-| `oms_order_acks.order_no` | 증권사 주문번호 | STP-1200 orders |
-| `oms_order_acks.outcome` | 결과 | STP-1200 orders |
+| `oms_order_acks.detail` | 거부 사유 | STP-1200 order |
+| `oms_order_acks.order_no` | 증권사 주문번호 | STP-1200 order |
+| `oms_order_acks.outcome` | 결과 | STP-1200 order |
 | `oms_orders.client_id` | 내부 주문번호 | STP-1200 orders |
 | `oms_orders.created_at` | 생성 시각 | STP-1200 orders |
-| `oms_orders.limit_price` | 지정가 | STP-1200 orders, STP-1300 조회조건 |
+| `oms_orders.limit_price` | 지정가 | STP-1200 order, STP-1300 조회조건 |
 | `oms_orders.qty` | 주문수량 | STP-1200 orders, STP-1300 조회조건 |
 | `oms_orders.side` | 매매구분 | STP-1200 orders, STP-1300 조회조건, STP-4200 settlements |
 | `oms_orders.symbol` | 종목코드 | STP-1200 orders |
 | `oms_orders.trade_date` | 주문일 | STP-1200 조회조건 |
 | `position_ledger.cost_delta` | 장부금액 증감 | STP-3100 positions |
-| `position_ledger.exec_id` | 체결 ID | STP-3100 positions |
+| `position_ledger.exec_id` | 체결 ID | STP-1200 fills, STP-3100 positions |
 | `position_ledger.qty_delta` | 수량 증감 | STP-3100 positions |
 | `position_ledger.realized_pnl` | 실현손익 | STP-3100 positions |
 | `position_ledger.symbol` | 종목코드 | STP-3100 positions |

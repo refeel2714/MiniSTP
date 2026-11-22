@@ -28,6 +28,8 @@
     RESOLVED: "warn", UNKNOWN: "warn", CANCELED: "warn", PENDING: "warn", "적용 중": "ok", "예정": "warn",
     OPEN: "ok", SUSPENDED: "warn", CLOSED: "bad",
     "일치": "ok", "판단 완료": "warn", "불일치": "bad", "대사 없음": "miss",   // miss: something owed is not there
+    "결제 완료": "ok", "결제 대기": "info", "체결 대기": "info", "부분 체결": "warn",   // info: on its way, nothing to do
+    "접수 거부": "bad", "결제 지연": "bad", "접수 기록 없음": "miss",
   };
 
   // ---------- account (다계좌) ----------
@@ -170,6 +172,7 @@
       case "rate": return rf.format(v);
       case "date": return String(v).slice(0, 10);
       case "datetime": { const d = new Date(v); return isNaN(d) ? String(v) : dtf.format(d); }
+      case "time": { const d = new Date(v); return isNaN(d) ? String(v) : dtf.format(d).slice(11); }
       case "json": return typeof v === "string" ? v : JSON.stringify(v);
       default: return String(v);
     }
@@ -203,11 +206,24 @@
     return h("div", { class: "ibox" }, mark,
       h("div", { class: "iname" }, h("b", { text: name || "-" }), sub ? h("span", { text: sub }) : null));
   }
-  function meter(v) {
+  // A share of a whole: a rate as a percentage, or a quantity against the column that is its whole ("4 / 10").
+  function meter(v, whole) {
     if (v === null || v === undefined) return h("span", { class: "none", text: "-" });
-    const fill = h("i");
-    fill.style.width = (Math.max(0, Math.min(1, Number(v))) * 100).toFixed(1) + "%";
-    return h("div", { class: "meter" }, h("span", { text: pf.format(v) }), h("div", { class: "mtrack", "aria-hidden": "true" }, fill));
+    const share = whole === undefined ? Number(v) : (Number(whole) ? Number(v) / Number(whole) : 0);
+    const fill = h("i", { class: share >= 1 ? "full" : null });
+    fill.style.width = (Math.max(0, Math.min(1, share)) * 100).toFixed(1) + "%";
+    return h("div", { class: "meter" }, h("span", { text: whole === undefined ? pf.format(v) : `${nf.format(v)} / ${nf.format(whole ?? 0)}` }),
+      h("div", { class: "mtrack", "aria-hidden": "true" }, fill));
+  }
+  // 진행 단계: a dot a step. done 끝 (filled) · now 진행 중 (ring) · stop 멈춤 (×) · wait 전 (hollow).
+  const STEP_TEXT = { done: "끝", now: "진행 중", stop: "멈춤", wait: "전" };
+  function steps(values, names) {
+    const v = Array.isArray(values) ? values : [];
+    if (!v.length) return h("span", { class: "none", text: "-" });
+    const said = names.map((n, i) => `${n} ${STEP_TEXT[v[i]] || "?"}`);
+    return h("div", { class: "steps", role: "img", "aria-label": said.join(", "), title: said.join(" → ") },
+      v.map((st, i) => h("span", { class: `sd ${STEP_TEXT[st] ? st : "wait"}${i && v[i - 1] === "done" && (st === "done" || st === "now") ? " on" : ""}`,
+        text: st === "stop" ? "×" : null })));
   }
   function spark(values) {
     const pts = (Array.isArray(values) ? values : []).map(Number).filter(Number.isFinite);
@@ -568,7 +584,8 @@
       const detail = g => g.load === "master";
       const leads = g => def.grids.some(d => detail(d) && d.master === g.id);
       const pick = test => def.grids.filter(test).map(g => grids[g.id].el);
-      def.grids.filter(g => leads(g) || detail(g)).forEach(g => { grids[g.id].el.style.flexGrow = g.weight; });   // share of the height
+      def.grids.filter(g => (leads(g) || detail(g)) && g.view !== "cards")
+        .forEach(g => { grids[g.id].el.style.flexGrow = g.weight; });   // share of the height (cards take what they need)
       const split = h("div", { class: "split" },
         h("div", { class: "side" }, pick(leads)), h("div", { class: "side" }, pick(detail)));
       split.style.setProperty("--left", def.left + "fr");
@@ -763,7 +780,7 @@
       const values = g.columns.map(c => h("div", { class: ["cv", tone(r[c.name], c.color, r)].join(" ").trim(),
         text: fmt(r[c.name], c.format) || "-" }));
       body.replaceChildren(h("div", { class: "cards" }, g.columns.map((c, i) =>
-        h("div", { class: "card" }, h("div", { class: "cl", text: c.label }), values[i]))));
+        h("div", { class: values[i].textContent.length > 18 ? "card long" : "card" }, h("div", { class: "cl", text: c.label }), values[i]))));
       if (old) g.columns.forEach((c, i) => {
         if (NUMERIC.has(c.format)) roll(values[i], old[c.name], r[c.name], c.format);
         else if (old[c.name] !== r[c.name]) anim(values[i], [{ opacity: 0, transform: "translateY(3px)" }, { opacity: 1, transform: "none" }], 180);
@@ -833,12 +850,13 @@
 
     function renderTable() {
       if (!rows.length) return body.replaceChildren(h("div", { class: "empty", text: "조회된 내역이 없어요" }));
-      const cols = g.columns.filter(c => !c.inside);   // a column drawn inside a badge has no column of its own
+      const cols = g.columns.filter(c => !c.inside && !c.hidden);   // drawn inside another cell, or only there to name the row
       const head = h("tr", {}, h("th", { class: "rn", scope: "col", text: "#" }), cols.map(c => {
         const on = sortCol === c.name;
         const th = h("th", { scope: "col", class: c.align === "right" ? "r" : null,
           "aria-sort": on ? (sortDir > 0 ? "ascending" : "descending") : null, title: c.source || "화면 계산 값" },
           c.display === "spark" ? c.label   // a run of numbers has no order to sort by
+            : c.display === "steps" ? h("div", { class: "steps head" }, c.steps.map(n => h("span", { text: n })))   // each name over its dot
             : h("button", { type: "button", onclick: () => sortBy(c.name) }, c.label, on ? (sortDir > 0 ? " ▲" : " ▼") : ""));
         if (c.width) th.style.width = c.width + "px";
         return th;
@@ -860,7 +878,8 @@
           c.display ? "d-" + c.display : "", flashed(r, c.name) ? "flash" : ""].filter(Boolean).join(" ") || null,
           title: c.format === "json" ? text : null, text: drawn ? null : text });
         if (c.display === "badge") td.append(badge(r, c));
-        else if (c.display === "meter") td.append(meter(v));
+        else if (c.display === "meter") td.append(c.of ? meter(v, r[c.of]) : meter(v));
+        else if (c.display === "steps") td.append(steps(v, c.steps));
         else if (c.display === "spark") td.append(spark(v));
         else if (c.display === "pill" && text) td.append(h("span", { class: ("pill " + tone(v, c.color, r)).trim(), text }));
         else if (c.display === "bar" && peak[c.name]) td.style.setProperty("--p", (Math.abs(Number(v) || 0) / peak[c.name] * 100).toFixed(1) + "%");
