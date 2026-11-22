@@ -252,25 +252,47 @@ def daily_close(books: Books, broker: BrokerGateway, day: dt.date) -> DailyRepor
     return DailyReport(day, settled, booked, nav, results, session.anomalies, run_id, notes)
 
 
+GATE_DAYS = 20   # R-74: this many clean business days in a row open the next stage
+
+
+@dataclass(frozen=True)
+class ReconDay:
+    """One date's recon as its latest run left it."""
+    run_id: int
+    items: int          # rows the run compared
+    breaks: int         # of those, not a match
+    open_breaks: int    # breaks nobody has judged yet (no later row supersedes them)
+
+    @property
+    def clean(self) -> bool:
+        """R-74: no break, or every break resolved by a later row."""
+        return self.open_breaks == 0
+
+
+def recon_days(conn: psycopg.Connection, kind: str = "DAILY_RECON", date_from: dt.date | None = None,
+               date_to: dt.date | None = None, account_id: str = DEFAULT_ACCOUNT) -> dict[dt.date, ReconDay]:
+    """Each date's latest run of `kind` for one account, summed up. The gate count and the 대사 달력
+    both read this, so a day the calendar draws as clean is a day the gate counts."""
+    rows = conn.execute(
+        "select r.date, r.run_id, count(*), count(*) filter (where r.status <> 'MATCH'),"
+        " count(*) filter (where r.status <> 'MATCH' and not exists"
+        " (select 1 from recon_results x where x.supersedes_id = r.id))"
+        " from recon_results r join broker_snapshots b on b.snapshot_id = r.run_id"
+        " where b.kind = %(kind)s and r.account_id = %(acct)s and r.supersedes_id is null"
+        " and (%(f)s::date is null or r.date >= %(f)s) and (%(t)s::date is null or r.date <= %(t)s)"
+        " group by r.date, r.run_id order by r.date, r.run_id",
+        {"kind": kind, "acct": account_id, "f": date_from, "t": date_to}).fetchall()
+    return {date: ReconDay(run_id, items, breaks, open_breaks)   # a later run of the same date replaces the earlier
+            for date, run_id, items, breaks, open_breaks in rows}
+
+
 def clean_streak(conn: psycopg.Connection, calendar: BusinessCalendar, up_to: dt.date,
                  account_id: str = DEFAULT_ACCOUNT) -> int:
     """R-74 gate, per account: consecutive business days, ending at `up_to`, whose latest run
     had no break (or whose breaks were all resolved by a later row)."""
-    rows = conn.execute(
-        "select r.date, r.run_id, r.status, r.id, r.supersedes_id from recon_results r"
-        " join broker_snapshots b on b.snapshot_id = r.run_id"
-        " where r.date <= %s and b.kind = 'DAILY_RECON' and r.account_id = %s", (up_to, account_id)).fetchall()
-    latest_run: dict[dt.date, int] = {}
-    for date, run_id, *_ in rows:
-        latest_run[date] = max(run_id, latest_run.get(date, 0))
-    resolved = {sup for *_, sup in rows if sup is not None}
-    clean_days = set()
-    for date, run_id in latest_run.items():
-        mine = [(st, i) for d, r, st, i, sup in rows if d == date and r == run_id and sup is None]
-        if all(st == "MATCH" or i in resolved for st, i in mine):
-            clean_days.add(date)
+    days = recon_days(conn, date_to=up_to, account_id=account_id)
     streak, d = 0, up_to
-    while d in clean_days:
+    while d in days and days[d].clean:
         streak += 1
         d = _prev(calendar, d)
     return streak

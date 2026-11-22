@@ -150,7 +150,8 @@ def test_management_screens_put_their_buttons_on_the_grid_they_act_on(conn):
     status = next(f for b in r["grids"][0]["actions"] if b["id"] == "status" for f in b["fields"] if f["name"] == "status")
     assert (status["label"], status["lookup"], status["lookup_params"]) == ("상태", "code", {"group_id": "ACCOUNT_STATUS"})
     assert set(r["lookups"]) == {"code", "customer"} and r["lookups"]["code"]["shows"] == "name"
-    cause = resolve(screens["STP-2100"], catalog, lookups)["grids"][0]["actions"][0]["fields"][1]
+    results = next(g for g in resolve(screens["STP-2100"], catalog, lookups)["grids"] if g["id"] == "results")
+    cause = results["actions"][0]["fields"][1]
     assert (cause["lookup"], cause["lookup_params"]) == ("code", {"group_id": "RECON_CAUSE"})   # 공통코드 팝업
     for sid in ("STP-4400", "STP-4500", "STP-4600"):                 # nothing secret is ever asked for
         fields = [f["name"] for g in resolve(screens[sid], catalog, lookups)["grids"] for b in g["actions"] for f in b["fields"]]

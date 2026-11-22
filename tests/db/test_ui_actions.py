@@ -142,7 +142,8 @@ def test_buttons_and_lookups_reach_the_runtime_and_the_screen_spec(conn):
     lookups = load_lookups()
     assert lookup_problems(lookups, catalog) == []
     screens = load_screens()
-    button = resolve(screens["STP-2100"], catalog, lookups)["grids"][0]["actions"][0]
+    results = next(g for g in resolve(screens["STP-2100"], catalog, lookups)["grids"] if g["id"] == "results")
+    button = results["actions"][0]
     assert (button["label"], button["tx"], button["title"], button["needs_row"]) == (
         "원인 판단", "STP2100U01", "불일치 원인 판단", True)
     assert [(f["name"], f["label"], f["required"]) for f in button["fields"]] == [

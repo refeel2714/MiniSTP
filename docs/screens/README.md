@@ -9,7 +9,7 @@
 | [STP-1100](STP-1100.md) | 실시간 잔고 | 2 | `STP1100R02`, `STP1100R01` |
 | [STP-1200](STP-1200.md) | 주문·체결 블로터 | 1 | `STP1200R01` |
 | [STP-1300](STP-1300.md) | 주문가능 조회 | 2 | `STP1300R02`, `STP1300R01` |
-| [STP-2100](STP-2100.md) | 일일 대사 결과 | 1 | `STP2100R01`, `STP2100U01` |
+| [STP-2100](STP-2100.md) | 일일 대사 결과 | 2 | `STP2100R02`, `STP2100R01`, `STP2100U01` |
 | [STP-2200](STP-2200.md) | 기준가·무오류 현황 | 1 | `STP2200R01` |
 | [STP-3100](STP-3100.md) | 원장·분개 조회 | 5 | `STP3100R01`, `STP3100R02`, `STP3100R03` |
 | [STP-4100](STP-4100.md) | 종목정보 | 2 | `STP4100R01`, `STP4100R02` |
@@ -33,7 +33,7 @@
 | `accounts_chart.code` | 계정코드 | STP-3100 trial |
 | `accounts_chart.name` | 계정명 | STP-3100 journal, STP-3100 trial |
 | `accounts_chart.normal_side` | 정상잔액 방향 | STP-3100 trial |
-| `broker_snapshots.kind` | 유형 | STP-2100 조회조건 |
+| `broker_snapshots.kind` | 유형 | STP-2100 days, STP-2100 조회조건 |
 | `broker_snapshots.taken_at` | 수신 시각 | STP-2100 results |
 | `cash_ledger.amount` | 금액 | STP-3100 cash |
 | `cash_ledger.date` | 일자 | STP-3100 cash |
@@ -90,7 +90,7 @@
 | `positions_v.symbol` | 종목코드 | STP-4400 positions |
 | `recon_results.broker_value` | 증권사 값 | STP-2100 results |
 | `recon_results.cause_code` | 원인 코드 | STP-2100 results, STP-2100 results 버튼 resolve |
-| `recon_results.date` | 기준일 | STP-2100 results |
+| `recon_results.date` | 기준일 | STP-2100 days |
 | `recon_results.diff` | 차이 | STP-2100 results |
 | `recon_results.id` | 행 번호 | STP-2100 results, STP-2100 results 버튼 resolve |
 | `recon_results.internal_value` | 내부(원장) 값 | STP-2100 results |
