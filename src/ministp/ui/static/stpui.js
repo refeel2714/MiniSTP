@@ -51,6 +51,16 @@
     }
     return [asked, saved, DATA.default_account].find(knownAccount) || (ACCOUNTS[0] || {}).account_id || DATA.default_account;
   })();
+  // 실전 테두리: the shell's environment or the picked account's (trading_accounts.env), whichever is live.
+  // The server could only write the shell's into the page, because the account is picked in this browser.
+  // A sample stays a sample whatever its accounts say.
+  const ACCOUNT_LIVE = DATA.env !== "sample" && (ACCOUNTS.find(a => a.account_id === ACCOUNT) || {}).env === "LIVE";
+  if (ACCOUNT_LIVE && DATA.env !== "live") {
+    DATA.env = "live";
+    DATA.env_name = "실전";
+    document.body.dataset.env = "live";
+    document.title = "[실전] " + document.title;
+  }
   function accountPicker() {
     if (ACCOUNTS.length < 2) return null;   // one account: nothing to pick, the bar stays as it was
     const el = h("select", { id: "acct", "aria-label": "조회할 계좌" }, ACCOUNTS.map(a => h("option", {
@@ -506,7 +516,7 @@
       h("form", { onsubmit: submit, novalidate: true, oninput: () => { err.textContent = ""; } },
         h("div", { class: "dhead" }, h("h2", { id: "dlg-title", text: b.label }),
           h("span", { class: "txid", title: "처리 트랜잭션: " + b.title, text: b.tx })),
-        DATA.env === "live" ? h("p", { class: "flive", role: "note", text: "실전 환경이에요. 이 처리는 실전 원장에 기록돼요." }) : null,
+        DATA.env === "live" ? h("p", { class: "flive", role: "note", text: (ACCOUNT_LIVE ? "실전 계좌예요." : "실전 환경이에요.") + " 이 처리는 실전 원장에 기록돼요." }) : null,
         shows, b.note ? h("p", { class: "fnote", text: b.note }) : null,
         h("div", { class: "fields" }, fields), err,
         h("div", { class: "dfoot" }, h("button", { type: "button", class: "ghost", onclick: () => dlg.close() }, "취소"), ok)));
@@ -521,7 +531,8 @@
   const ENV_TITLES = {
     sample: "샘플 DB: 연습용이라 증권사 계좌와 이어져 있지 않아요",
     paper: "모의투자 환경 (MINISTP_KIS_ENV=paper)",
-    live: "실전 환경 (MINISTP_KIS_ENV=live): 이 화면의 숫자와 처리는 실전 원장의 것이에요",
+    live: ACCOUNT_LIVE ? `실전 계좌 (${ACCOUNT}): 이 화면의 숫자와 처리는 실전 원장의 것이에요`
+      : "실전 환경 (MINISTP_KIS_ENV=live): 이 화면의 숫자와 처리는 실전 원장의 것이에요",
   };
   function topbar(screen) {
     const nav = h("nav", { class: "menu", "aria-label": "화면 목록" },

@@ -150,10 +150,12 @@ def create_app(dsn: str, *, calendar: BusinessCalendar, fees: FeeSchedule, today
     app.mount("/static", StaticFiles(directory=str(files("ministp.ui").joinpath("static"))), name="static")
 
     def accounts() -> list[dict]:
-        """For the account picker in the top bar: id, alias, customer and status. Never a number or a key."""
+        """For the account picker in the top bar: id, alias, customer, status and environment (PAPER/LIVE, for
+        the 실전 테두리). Never a number or a key."""
         with connect_read_only(dsn, connect) as conn:
-            return [dict(zip(("account_id", "alias", "customer_id", "status"), r)) for r in conn.execute(
-                "select account_id, alias, customer_id, status from account_status_v order by account_id")]
+            return [dict(zip(("account_id", "alias", "customer_id", "status", "env"), r)) for r in conn.execute(
+                "select s.account_id, s.alias, s.customer_id, s.status, t.env from account_status_v s"
+                " join trading_accounts t using (account_id) order by s.account_id")]
 
     def shell_data(screen_id: str | None) -> str:
         data = {"menu": menu, "jump": jump, "today": business_day().isoformat(), "db": db_name, "label": label,
