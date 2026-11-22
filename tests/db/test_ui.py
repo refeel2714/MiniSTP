@@ -313,3 +313,30 @@ def test_recon_screen_is_a_calendar_with_that_days_results_next_to_it(client):
     assert [a["tx"] for a in results["actions"]] == ["STP2100U01"]     # 원인 판단 버튼은 그날의 결과 쪽에
     spec = client.get("/spec/STP-2100").text
     assert "- 표시: 달력" in spec and "`STP2100R02` | 날짜별 대사 요약" in spec
+
+
+# ---------- 주문 진행 단계와 결제 ----------
+
+def test_blotter_shows_where_each_order_stands_and_its_settlements(client, conn, sample):
+    screen = client.get("/api/screen/STP-1200").json()
+    orders, order, fills = screen["grids"]
+    cols = {c["name"]: c for c in orders["columns"]}
+    assert screen["layout"] == "split" and (order["view"], order["dataset"], fills["dataset"]) == ("cards", "order", "fills")
+    assert cols["progress"]["steps"] == ["의도", "접수", "체결", "결제"] and cols["qty"]["inside"] == "filled_qty"
+    assert cols["client_id"]["hidden"] and orders["key"] == "client_id"
+    # 그림을 더한 만큼 열을 줄여요: 열네 열이던 주문 목록이 여섯 열로 보여요
+    assert len([c for c in orders["columns"] if not c["inside"] and not c["hidden"]]) == 6
+    day = conn.execute("select min(trade_date) from oms_orders").fetchone()[0]     # 샘플의 첫 주문일: 결제까지 끝난 날
+    rows, _ = _rows(client, "STP1200R01", {"day": day.isoformat()})
+    assert rows and all(len(r["progress"]) == 4 and r["stage"] for r in rows)
+    filled = next(r for r in rows if r["filled_qty"])
+    assert (filled["progress"], filled["stage"], filled["settled_qty"]) == (["done"] * 4, "결제 완료", filled["filled_qty"])
+    body = client.post("/api/tx/STP1200R02", json={"params": {"client_id": filled["client_id"]}}).json()
+    sent = dict(zip(body["datasets"]["order"]["columns"], body["datasets"]["order"]["rows"][0]))
+    execs = [dict(zip(body["datasets"]["fills"]["columns"], r)) for r in body["datasets"]["fills"]["rows"]]
+    assert sent["order_no"] == filled["order_no"] and sum(e["qty"] for e in execs) == filled["filled_qty"]
+    assert all(e["settle_state"] == "결제 완료" and e["settled_on"] == e["settle_date"] for e in execs)
+    r = client.post("/api/tx/STP1200R02", json={"params": {"client_id": "S-없는주문"}})
+    assert r.status_code == 400 and "없는 주문" in r.json()["error"]
+    spec = client.get("/spec/STP-1200").text
+    assert "진행 단계(의도 → 접수 → 체결 → 결제" in spec and "`filled_qty` 막대 안에 표시" in spec and "숨김" in spec

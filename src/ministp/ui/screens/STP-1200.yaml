@@ -1,6 +1,8 @@
 id: STP-1200
 title: 주문·체결 블로터
-purpose: 주문 의도 → 증권사 접수 → 원장 반영 체결을 한 줄로 보고, 체결통보가 원장에 반영되기까지 걸린 시간을 확인해요.
+purpose: 왼쪽에서 주문마다 의도 → 접수 → 체결 → 결제 가운데 어디까지 왔는지 한 줄로 보고, 주문을 고르면 오른쪽에 접수 내용과 체결별 결제 예정일·결제일이 나와요. 결제는 예수금 화면과 같은 원장에서 읽어요.
+layout: split
+left: 58
 conditions:
   - {name: day, type: date, source: oms_orders.trade_date, default: today}
 grids:
@@ -9,20 +11,49 @@ grids:
     live: true
     key: client_id
     tx: STP1200R01
-    totals: [filled_amount]
+    load: open
     drill: {screen: STP-3100, params: {symbol: symbol}}
     columns:
-      - {name: client_id, source: oms_orders.client_id, format: code}
-      - {name: created_at, source: oms_orders.created_at, format: datetime}
+      - {name: created_at, source: oms_orders.created_at, format: time}
+      - {name: instrument_name, source: instruments.name, display: badge, code: symbol, shape: asset_type}
       - {name: symbol, source: oms_orders.symbol, format: code}
-      - {name: instrument_name, source: instruments.name}
-      - {name: side, source: oms_orders.side, format: code, color: side}
+      - {name: asset_type, source: instruments.asset_type, format: code}
+      - {name: side, source: oms_orders.side, format: code, color: side, display: pill}
+      - {name: filled_qty, label: 체결 / 주문, format: number, display: meter, of: qty}
       - {name: qty, source: oms_orders.qty, format: number}
-      - {name: limit_price, source: oms_orders.limit_price, format: money}
-      - {name: outcome, source: oms_order_acks.outcome, format: code, color: status, display: pill}
+      - {name: progress, label: 진행 단계, format: steps, display: steps, steps: [의도, 접수, 체결, 결제]}
+      - {name: stage, label: 진행 상태, color: status, display: pill}
+      - {name: client_id, source: oms_orders.client_id, format: code, hidden: true}
+  - id: order
+    title: 접수 내용
+    tx: STP1200R02
+    dataset: order
+    load: master
+    master: orders
+    link: {client_id: client_id}
+    view: cards
+    columns:
+      - {name: outcome, source: oms_order_acks.outcome, format: code, color: status}
       - {name: order_no, source: oms_order_acks.order_no, format: code}
-      - {name: filled_qty, label: 체결수량, format: number}
-      - {name: filled_amount, label: 체결금액, format: money}
+      - {name: limit_price, source: oms_orders.limit_price, format: money}
       - {name: notices, label: 체결통보 건수, format: number}
       - {name: max_booking_ms, label: 통보 반영 지연(ms), format: number}
       - {name: detail, source: oms_order_acks.detail}
+  - id: fills
+    title: 체결과 결제
+    tx: STP1200R02
+    dataset: fills
+    load: master
+    master: orders
+    link: {client_id: client_id}
+    key: exec_id
+    totals: [qty, fees, net]
+    columns:
+      - {name: qty, label: 체결수량, format: number}
+      - {name: price, label: 체결가, format: money}
+      - {name: fees, label: 수수료·세금, format: money}
+      - {name: net, label: 정산금액, format: money}
+      - {name: settle_date, label: 결제 예정일, format: date}
+      - {name: settled_on, label: 결제일, format: date}
+      - {name: settle_state, label: 결제 상태, color: status, display: pill}
+      - {name: exec_id, source: position_ledger.exec_id, format: code}

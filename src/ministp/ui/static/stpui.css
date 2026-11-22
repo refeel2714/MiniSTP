@@ -87,6 +87,12 @@ button.primary:hover { filter: brightness(1.08); }
 .split .side { display: flex; flex-direction: column; gap: 12px; min-height: 0; min-width: 0; }
 .split .panel { flex: 1 1 0; min-height: 0; display: flex; flex-direction: column; }
 .split .gbody { max-height: none; flex: 1 1 0; min-height: 0; }
+/* a summary next to a list is as tall as its cards, and a long text takes a line of its own */
+.split .cards-panel, .split .cards-panel .gbody { flex: none; }
+.split .cards { grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); }
+.split .cv { font-size: 15px; overflow-wrap: anywhere; }
+.split .card.long { grid-column: 1 / -1; border-right: 0; border-top: 1px solid var(--grid-line); }
+.split .card.long .cv { font-size: 13px; font-weight: 500; }
 @media (max-width: 900px) {
   .split { grid-template-columns: minmax(0, 1fr); height: auto; }
   .split .panel { flex: none; }
@@ -135,6 +141,21 @@ button.primary:hover { filter: brightness(1.08); }
 .pill.st-warn { background: var(--warn-bg); color: var(--warn); }
 .st-miss { color: var(--bad); font-weight: 600; }
 .pill.st-miss { background: transparent; color: var(--bad); box-shadow: inset 0 0 0 1px var(--bad); }
+.st-info { color: var(--accent); font-weight: 600; }
+.pill.st-info { background: color-mix(in srgb, var(--accent) 12%, transparent); color: var(--accent); }
+.mtrack i.full { background: var(--ok); }
+
+/* 진행 단계: a dot a step, a line between; the header writes each step's name over its dot. */
+.steps { display: grid; grid-auto-flow: column; grid-auto-columns: 32px; justify-content: start; align-items: center; }
+.steps.head span { font-size: 11px; text-align: center; white-space: nowrap; }
+.sd { position: relative; justify-self: center; width: 11px; height: 11px; border-radius: 50%; border: 2px solid var(--line-strong);
+  background: transparent; font-size: 15px; line-height: 7px; text-align: center; }
+.sd::before { content: ""; position: absolute; top: 50%; right: 100%; width: 19px; height: 2px; margin-top: -1px; margin-right: 2px; background: var(--line-strong); }
+.sd:first-child::before { display: none; }
+.sd.on::before { background: var(--ok); }
+.sd.done { border-color: var(--ok); background: var(--ok); }
+.sd.now { border-color: var(--accent); background: radial-gradient(circle, var(--accent) 0 2px, transparent 2.6px); }
+.sd.stop { border-color: transparent; background: transparent; color: var(--bad); font-weight: 700; }
 
 /* 달력 보기: a cell a day. Filled = that day has a result (colour by the state), dashed = owed and missing,
    plain outline = nothing to judge (휴장, 아직), faint number = no row for that day. */
