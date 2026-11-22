@@ -227,7 +227,17 @@ def test_badge_draws_its_code_inside_and_the_code_keeps_no_column_of_its_own():
 @pytest.mark.parametrize("cols, problem", [
     ([Column("qty", "positions_v.qty", format="number", display="gauge")], "없는 표시 유형"),
     ([Column("qty", "positions_v.qty", display="bar")], "표시 유형 bar의 형식"),
-    ([Column("qty", "positions_v.qty", format="number", display="meter")], "표시 유형 meter의 형식"),
+    ([Column("qty", "positions_v.qty", format="money", display="meter")], "표시 유형 meter의 형식"),
+    ([Column("qty", "positions_v.qty", format="number", display="meter")], "of로 전체가 되는 열을 적어요"),
+    ([Column("w", label="비중", format="rate", display="meter", of="qty"),
+      Column("qty", "positions_v.qty", format="number")], "of로 전체가 되는 열을 적어요"),
+    ([Column("qty", "positions_v.qty", format="number", display="meter", of="nope")], "다른 수량(number) 열이 아니에요"),
+    ([Column("qty", "positions_v.qty", format="number", of="qty")], "비율 막대(display: meter)에만"),
+    ([Column("p", label="진행", format="steps")], "진행 단계(display: steps)로만"),
+    ([Column("p", label="진행", format="steps", display="steps", steps=["하나"])], "단계 이름을 2~6개"),
+    ([Column("qty", "positions_v.qty", format="number", steps=["가", "나"])], "진행 단계(display: steps)에만"),
+    ([Column("qty", "positions_v.qty", format="number", display="bar", hidden=True)], "숨긴 열에는 표시 유형"),
+    ([Column("qty", "positions_v.qty", format="number", hidden=True)], "보이는 열이 하나도 없어요"),
     ([Column("trend", label="추세", format="series")], "추세선(display: spark)으로만"),
     ([Column("trend", label="추세", format="number", display="spark")], "표시 유형 spark의 형식"),
     ([Column("st", label="상태", format="code", display="pill")], "색 규칙이 있어야"),
@@ -281,3 +291,23 @@ def test_calendar_view_names_its_date_and_state_columns():
 def test_calendar_problems(s, problem):
     errs = validate(s, CATALOG)
     assert any(problem in e for e in errs), errs
+
+
+# ---------- 진행 단계, 수량 막대, 숨긴 열 ----------
+
+def test_a_quantity_meter_draws_its_whole_inside_and_a_hidden_column_stays_in_the_rows():
+    s = screen([Column("symbol", "instruments.symbol", format="code", hidden=True),
+                Column("filled", label="체결 / 주문", format="number", display="meter", of="qty"),
+                Column("qty", "positions_v.qty", format="number"),
+                Column("progress", label="진행 단계", format="steps", display="steps", steps=["의도", "접수", "체결", "결제"])])
+    assert validate(s, CATALOG) == []
+    cols = {c["name"]: c for c in resolve(s["STP-1100"], CATALOG)["grids"][0]["columns"]}
+    assert cols["qty"]["inside"] == "filled" and cols["filled"]["align"] == "left"
+    assert cols["symbol"]["hidden"] and cols["progress"]["steps"] == ["의도", "접수", "체결", "결제"]
+    assert usages(s)["instruments.symbol"] == ["STP-1100 g"]     # 숨겨도 영향도 분석에는 남아요
+
+
+def test_pictures_are_not_for_calendar_or_cards_and_hidden_columns_are_for_tables():
+    errs = validate(screen([Column("qty", "positions_v.qty", format="number", hidden=True),
+                            Column("symbol", "instruments.symbol")], view="cards"), CATALOG)
+    assert any("숨긴 열은 표 보기에만" in e for e in errs)

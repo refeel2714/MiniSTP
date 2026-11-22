@@ -76,7 +76,17 @@ def _order_check(c: TxContext, p) -> TxResult:
 
 
 def _blotter(c: TxContext, p) -> TxResult:
-    return TxResult({"main": q.order_blotter(c.conn, p.get("day") or c.today)})
+    return TxResult({"main": q.blotter_view(q.order_blotter(c.conn, p.get("day") or c.today), c.books.ledger, c.today)})
+
+
+def _order(c: TxContext, p) -> TxResult:
+    if not p.get("client_id"):
+        raise TxError("내부 주문번호가 필요해요")
+    try:
+        d = q.order_detail(c.conn, c.books.ledger, p["client_id"], c.today)
+    except KeyError as e:
+        raise TxError(e.args[0]) from e
+    return TxResult({"order": d.order, "fills": d.fills})
 
 
 def _recon(c: TxContext, p) -> TxResult:
@@ -189,6 +199,7 @@ TRANSACTIONS: dict[str, Tx] = {t.tx_id: t for t in [
     Tx("STP1300R02", "주문가능 판단", {"symbol": "text", "side": "text", "qty": "int", "limit_price": "int"},
        _order_check),
     Tx("STP1200R01", "주문·체결 블로터", {"day": "date"}, _blotter),
+    Tx("STP1200R02", "주문의 접수와 체결별 결제", {"client_id": "text"}, _order),
     Tx("STP2100R01", "대사 결과", {"date_from": "date", "date_to": "date", "kind": "text", "only_breaks": "bool"},
        _recon),
     Tx("STP2100R02", "날짜별 대사 요약", {"date_from": "date", "date_to": "date", "kind": "text"}, _recon_days),
@@ -249,6 +260,7 @@ def output_problems(screens, ctx: TxContext, lookups=None) -> list[str]:
     row of their master grid, so a database with some data is needed.
     """
     errs, cache = [], {}
+    from .definitions import STEP_STATES
     for s in screens.values():
         rows: dict[str, list[dict]] = {}
         for g in sorted(s.grids, key=lambda g: g.load == "input"):  # input grids last: they borrow values
@@ -277,6 +289,11 @@ def output_problems(screens, ctx: TxContext, lookups=None) -> list[str]:
                     i = ds.columns.index(col.name)
                     if any(not isinstance(r[i], (list, tuple)) for r in ds.rows):
                         errs.append(f"{s.id} {g.id}.{col.name}: 추세선 열의 값이 숫자열이 아니에요")
+                if col.display == "steps" and col.name in ds.columns:   # 진행 단계: one known state a step
+                    i = ds.columns.index(col.name)
+                    if any(not isinstance(r[i], (list, tuple)) or len(r[i]) != len(col.steps)
+                           or not set(r[i]) <= STEP_STATES for r in ds.rows):
+                        errs.append(f"{s.id} {g.id}.{col.name}: 진행 단계 열의 값이 단계 수만큼의 상태 목록이 아니에요")
             for c in g.link.values():
                 if c not in (rows.get(g.master) or [{}])[0]:
                     errs.append(f"{s.id} {g.id}: 마스터 {g.master}에 연결 열 {c}가 없어요")

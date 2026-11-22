@@ -14,7 +14,7 @@ import yaml
 from .actions import ACTIONS
 from .transactions import TRANSACTIONS
 
-FORMATS = {"text", "code", "number", "money", "rate", "date", "datetime", "json", "series"}
+FORMATS = {"text", "code", "number", "money", "rate", "date", "datetime", "time", "json", "series", "steps"}
 RIGHT = {"number", "money", "rate"}
 COLORS = {None, "sign", "side", "status", "verdict"}  # verdict: the row's ok field
 # 셀 표시 유형: how a cell is drawn on top of its value. The value stays; the picture sits next to it.
@@ -23,9 +23,13 @@ COLORS = {None, "sign", "side", "status", "verdict"}  # verdict: the row's ok fi
 #   meter  비율 막대: 0~1 값을 %와 막대로
 #   spark  추세선: 숫자열(오래된 값부터)
 #   pill   상태 표시: 색 규칙이 고른 색의 둥근 표시
-DISPLAYS = {None, "badge", "bar", "meter", "spark", "pill"}
-DISPLAY_FORMATS = {"badge": {"text"}, "bar": {"number", "money"}, "meter": {"rate"}, "spark": {"series"},
-                   "pill": {"text", "code"}}
+#   steps  진행 단계: 단계마다 점 하나 (끝 · 진행 중 · 멈춤 · 전), 값은 단계별 상태의 목록
+DISPLAYS = {None, "badge", "bar", "meter", "spark", "pill", "steps"}
+DISPLAY_FORMATS = {"badge": {"text"}, "bar": {"number", "money"}, "meter": {"rate", "number"}, "spark": {"series"},
+                   "pill": {"text", "code"}, "steps": {"steps"}}
+DRAWN_ONLY = {"series": "spark", "steps": "steps"}   # formats that have no text form: they are always drawn
+STEP_STATES = {"done", "now", "stop", "wait"}
+MAX_STEPS = 6
 PILL_COLORS = {"status", "side", "verdict"}
 # 그리드 보기: grid 표 · cards 한 행 요약 카드 · calendar 달력(하루가 한 칸, 칸 색은 상태 열의 색 규칙)
 VIEWS = {"grid", "cards", "calendar"}
@@ -55,6 +59,10 @@ class Column:
     # badge: two other columns of the same grid are drawn inside the badge cell instead of as columns of their own
     code: str | None = None     # the column written under the name (종목코드); it also picks the colour
     shape: str | None = None    # the column whose value picks the shape (자산유형)
+    # meter on a quantity: the column that is the whole ("4 / 10"); it is drawn inside this cell too
+    of: str | None = None
+    steps: list[str] = field(default_factory=list)   # steps: the name of each step, in order
+    hidden: bool = False        # in the rows (row key, link, button values) but not drawn as a column
 
     @property
     def align(self) -> str:
@@ -241,12 +249,24 @@ def _display_problems(c: Column, where: str) -> list[str]:
     errs = []
     if c.format == "series" and c.display != "spark":
         errs.append(f"{at}: 숫자열(series)은 추세선(display: spark)으로만 보여요")
+    if c.format == "steps" and c.display != "steps":
+        errs.append(f"{at}: 단계 상태(steps)는 진행 단계(display: steps)로만 보여요")
     if c.display and c.format not in DISPLAY_FORMATS[c.display]:
         errs.append(f"{at}: 표시 유형 {c.display}의 형식은 {sorted(DISPLAY_FORMATS[c.display])} 중 하나예요 (지금 {c.format})")
     if c.display == "pill" and c.color not in PILL_COLORS:
         errs.append(f"{at}: 상태 표시(pill)는 색 규칙이 있어야 해요 ({sorted(PILL_COLORS)} 중 하나)")
     if c.display != "badge" and (c.code or c.shape):
         errs.append(f"{at}: code와 shape는 배지(display: badge)에만 써요")
+    if c.of and c.display != "meter":
+        errs.append(f"{at}: of(전체가 되는 열)는 비율 막대(display: meter)에만 써요")
+    if c.display == "meter" and (c.format == "number") != bool(c.of):
+        errs.append(f"{at}: 비율 막대는 비율(rate)이거나, 수량(number)에 of로 전체가 되는 열을 적어요")
+    if c.display == "steps" and not 2 <= len(c.steps) <= MAX_STEPS:
+        errs.append(f"{at}: 진행 단계는 steps에 단계 이름을 2~{MAX_STEPS}개 적어요")
+    if c.display != "steps" and c.steps:
+        errs.append(f"{at}: steps(단계 이름)는 진행 단계(display: steps)에만 써요")
+    if c.hidden and c.display:
+        errs.append(f"{at}: 숨긴 열에는 표시 유형을 쓰지 않아요")
     return errs
 
 
@@ -391,6 +411,12 @@ def validate(screens: dict[str, Screen], catalog: dict, lookups: dict[str, Looku
                 for inside in (c.code, c.shape):
                     if inside and (inside == c.name or inside not in {x.name for x in g.columns}):
                         errs.append(f"{gw}.{c.name}: 배지 안에 넣을 열 {inside}가 이 그리드의 다른 열이 아니에요")
+                if c.of and c.of not in {x.name for x in g.columns if x.format == "number" and x.name != c.name}:
+                    errs.append(f"{gw}.{c.name}: 전체가 되는 열 {c.of}가 이 그리드의 다른 수량(number) 열이 아니에요")
+                if c.hidden and g.view != "grid":
+                    errs.append(f"{gw}.{c.name}: 숨긴 열은 표 보기에만 써요")
+            if all(c.hidden or any(c.name in (x.code, x.shape, x.of) for x in g.columns) for c in g.columns):
+                errs.append(f"{gw}: 보이는 열이 하나도 없어요")
             if g.view not in VIEWS:
                 errs.append(f"{gw}: view는 {sorted(VIEWS)} 중 하나")
             errs += _calendar_problems(g, gw)
@@ -446,7 +472,7 @@ def resolve(screen: Screen, catalog: dict, lookups: dict[str, Lookup] | None = N
         for c, cd in zip(g.columns, gd["columns"]):
             cd["label"] = label(c)
             cd["align"] = c.align
-            cd["inside"] = next((x.name for x in g.columns if c.name in (x.code, x.shape)), None)
+            cd["inside"] = next((x.name for x in g.columns if c.name in (x.code, x.shape, x.of)), None)
         for b, bd in zip(g.actions, gd["actions"]):
             bd["title"] = ACTIONS[b.tx].title
             for f, fd in zip(b.fields, bd["fields"]):
