@@ -55,6 +55,8 @@ def screen_markdown(screen: Screen, catalog: dict) -> str:
         if g.drill:
             params = ", ".join(f"`{k}` ← `{v}`" for k, v in g.drill.get("params", {}).items())
             facts.append(f"- 행 더블클릭·Enter: {g.drill['screen']}로 이동 ({params})")
+        if g.live:
+            facts.append(f"- 실시간: DB가 바뀌면 마지막 조회조건으로 다시 조회, 바뀐 칸 강조 (행 식별 열 `{g.key or g.columns[0].name}`)")
         if g.chart:
             facts.append(f"- 차트: `{g.chart['x']}` 대비 `{g.chart['y']}` 선 그래프")
         out += facts + ["", "| 열 | 한글명 | DB 컬럼 | DB 주석 | 형식 | 정렬 | 색 |", "|---|---|---|---|---|---|---|"]

@@ -6,6 +6,8 @@ conditions:
 grids:
   - id: orders
     title: 주문
+    live: true
+    key: client_id
     tx: STP1200R01
     totals: [filled_amount]
     drill: {screen: STP-3100, params: {symbol: symbol}}

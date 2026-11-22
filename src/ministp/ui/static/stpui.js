@@ -73,7 +73,7 @@
       h("a", { class: "brand", href: "/" }, "MiniSTP ", h("b", { text: "STP-UI" })),
       nav,
       h("span", { class: "env", title: "조회 전용 연결" },
-        h("span", { class: "dot" }), `${DATA.db}${DATA.label ? " · " + DATA.label : ""} · 기준일 ${DATA.today} · 읽기 전용`));
+        h("span", { class: "dot", id: "live-dot" }), `${DATA.db}${DATA.label ? " · " + DATA.label : ""} · 기준일 ${DATA.today} · 읽기 전용`));
   }
 
   function home() {
@@ -140,7 +140,7 @@
       return def.conditions.filter(c => c.required && g.tx_params.includes(c.name) && !(c.name in vals));
     }
 
-    async function load(list, paramsOf) {
+    async function load(list, paramsOf, opts = {}) {
       const calls = new Map();
       const ready = [];
       for (const g of list) {
@@ -152,23 +152,25 @@
       if (!list.length) return;
       for (const g of list) {
         const params = paramsOf(g);
+        grids[g.id].params = params;
         const key = g.tx + JSON.stringify(params);
         if (!calls.has(key)) calls.set(key, { tx: g.tx, params, grids: [] });
         calls.get(key).grids.push(g);
       }
-      list.forEach(g => grids[g.id].busy(true));
+      if (!opts.live) list.forEach(g => grids[g.id].busy(true));
       const started = performance.now();
       const done = await Promise.all([...calls.values()].map(async c => {
         try {
           const res = await call(c.tx, c.params);
-          c.grids.forEach(g => grids[g.id].fill(res.datasets[g.dataset], res.meta, res));
+          c.grids.forEach(g => grids[g.id].fill(res.datasets[g.dataset], res.meta, opts.live));
           return `${c.tx} ${res.elapsed_ms}ms`;
         } catch (e) {
           c.grids.forEach(g => grids[g.id].fail(e.message));
           return `${c.tx} 오류`;
         }
       }));
-      status.textContent = `${done.join(" · ")} · 화면 ${Math.round(performance.now() - started)}ms`;
+      const when = new Date().toLocaleTimeString("sv-SE");
+      status.textContent = `${opts.live ? "실시간 갱신 " + when + " · " : ""}${done.join(" · ")} · 화면 ${Math.round(performance.now() - started)}ms`;
     }
 
     function searchParams(g) {
@@ -238,17 +240,39 @@
     def.grids.filter(g => g.load === "search").forEach(g => grids[g.id].clear("조회조건을 정하고 조회를 누르세요"));
     def.grids.filter(g => g.load === "master").forEach(g => grids[g.id].clear("위 목록에서 행을 고르세요"));
     if (hasDrill) search(); else if (opening.length) load(opening, searchParams);
+
+    // 실시간: the server says when the DB head moves; live grids reload with their last conditions.
+    const liveGrids = def.grids.filter(g => g.live);
+    if (liveGrids.length && window.EventSource) {
+      const dot = document.getElementById("live-dot");
+      const es = new EventSource("/api/live");
+      let first = true, pending = false;
+      es.addEventListener("change", () => {
+        if (first) { first = false; return; }          // the opening head, nothing changed yet
+        if (pending) return;
+        pending = true;
+        const list = liveGrids.filter(g => grids[g.id].params);
+        load(list, g => grids[g.id].params, { live: true }).finally(() => { pending = false; });
+      });
+      es.onopen = () => { dot.classList.remove("off"); dot.classList.add("on"); dot.title = "실시간 연결됨"; };
+      es.onerror = () => { dot.classList.remove("on"); dot.classList.add("off"); dot.title = "실시간 연결 끊김 (자동 재연결)"; };
+    }
   }
 
   // ---------- grid ----------
   function Grid(g, { onSelect, onDrill }) {
     let rows = [], view = [], sel = -1, sortCol = null, sortDir = 1;
+    let changed = new Map();   // row key -> Set of changed columns ("*" = new row), shown once
+    const keyCol = g.key || g.columns[0].name;
+    const rowKey = g.view === "cards" ? () => "card" : r => String(r[keyCol]);   // cards show one row
     const count = h("span", { class: "count" });
     const metaBox = h("span", { class: "meta" });
     const body = h("div", { class: "gbody" });
     const chartBox = g.chart ? h("div", { class: "chart" }) : null;
     const el = h("section", { class: "panel" + (g.view === "cards" ? " cards-panel" : ""), "aria-label": g.title },
-      h("div", { class: "phead" }, h("h2", { text: g.title }), metaBox, count,
+      h("div", { class: "phead" }, h("h2", { text: g.title }),
+        g.live ? h("span", { class: "livechip", title: "DB가 바뀌면 자동으로 다시 조회해요" }, "실시간") : null,
+        metaBox, count,
         h("span", { class: "txid", title: "조회 트랜잭션", text: g.tx })),
       chartBox, body);
 
@@ -260,14 +284,31 @@
     function busy(on) { el.classList.toggle("busy", on); }
     function fail(msg) { busy(false); clear(""); body.replaceChildren(h("div", { class: "err", role: "alert", text: msg })); }
 
-    function fill(ds, meta) {
+    function fill(ds, meta, live) {
       busy(false);
       if (!ds) return fail(`데이터셋 ${g.dataset}이 없어요`);
-      rows = ds.rows.map(r => Object.fromEntries(ds.columns.map((c, i) => [c, r[i]])));
-      sel = -1;
+      const fresh = ds.rows.map(r => Object.fromEntries(ds.columns.map((c, i) => [c, r[i]])));
+      const keep = live && view[sel] ? rowKey(view[sel]) : null;
+      changed = new Map();
+      if (live) {
+        const before = new Map(rows.map(r => [rowKey(r), r]));
+        for (const r of fresh) {
+          const old = before.get(rowKey(r));
+          if (!old) { changed.set(rowKey(r), new Set(["*"])); continue; }
+          const cols = g.columns.filter(c => JSON.stringify(old[c.name]) !== JSON.stringify(r[c.name])).map(c => c.name);
+          if (cols.length) changed.set(rowKey(r), new Set(cols));
+        }
+      } else {
+        sortCol = null;
+      }
+      const hadFocus = body.contains(document.activeElement);
+      rows = fresh;
       renderMeta(meta || {});
-      sortCol = null;
       apply();
+      sel = keep ? view.findIndex(r => rowKey(r) === keep) : -1;
+      if (keep) mark(false);
+      if (hadFocus) { const t = body.querySelector(".grid"); if (t) t.focus({ preventScroll: true }); }
+      changed = new Map();   // highlight once; a later sort does not flash again
       if (chartBox) renderChart();
     }
 
@@ -295,12 +336,18 @@
       g.view === "cards" ? renderCards() : renderTable();
     }
 
+    function flashed(r, col) {
+      const set = changed.get(rowKey(r));
+      return !!set && (set.has("*") || set.has(col));
+    }
+
     function renderCards() {
       const r = rows[0];
       if (!r) return body.replaceChildren(h("div", { class: "empty", text: "조회된 내역이 없어요" }));
       body.replaceChildren(h("div", { class: "cards" }, g.columns.map(c =>
         h("div", { class: "card" }, h("div", { class: "cl", text: c.label }),
-          h("div", { class: "cv " + tone(r[c.name], c.color, r), text: fmt(r[c.name], c.format) || "-" })))));
+          h("div", { class: ["cv", tone(r[c.name], c.color, r), flashed(r, c.name) ? "flash" : ""].join(" ").trim(),
+            text: fmt(r[c.name], c.format) || "-" })))));
     }
 
     function renderTable() {
@@ -314,12 +361,14 @@
         return th;
       }));
       const tbody = h("tbody", {}, view.map((r, i) => h("tr", {
-        class: i === sel ? "sel" : null, "aria-selected": i === sel ? "true" : "false",
+        class: [i === sel ? "sel" : "", changed.get(rowKey(r))?.has("*") ? "new" : ""].join(" ").trim() || null,
+        "aria-selected": i === sel ? "true" : "false",
         onclick: () => select(i), ondblclick: () => onDrill(view[i]),
       }, h("td", { class: "rn", text: i + 1 }), g.columns.map(c => {
         const v = r[c.name];
         const text = fmt(v, c.format);
-        return h("td", { class: [c.align === "right" ? "r" : "", tone(v, c.color, r), c.format === "json" ? "js" : ""].join(" ").trim() || null,
+        return h("td", { class: [c.align === "right" ? "r" : "", tone(v, c.color, r), c.format === "json" ? "js" : "",
+          flashed(r, c.name) ? "flash" : ""].join(" ").trim() || null,
           title: c.format === "json" ? text : null, text });
       }))));
       const foot = g.totals.length ? h("tfoot", {}, h("tr", {}, h("td", { class: "rn", text: "합계" }), g.columns.map(c =>
@@ -337,12 +386,12 @@
       const keep = view[sel]; apply();
       sel = keep ? view.indexOf(keep) : -1; mark();
     }
-    function mark() {
+    function mark(scroll = true) {
       body.querySelectorAll("tbody tr").forEach((tr, i) => {
         tr.classList.toggle("sel", i === sel); tr.setAttribute("aria-selected", i === sel ? "true" : "false");
       });
       const tr = body.querySelectorAll("tbody tr")[sel];
-      if (tr) tr.scrollIntoView({ block: "nearest" });
+      if (tr && scroll) tr.scrollIntoView({ block: "nearest" });
     }
     function select(i) {
       if (i < 0 || i >= view.length) return;

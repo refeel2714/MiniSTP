@@ -7,6 +7,7 @@ with the CLI (single writer). The server answers only on 127.0.0.1/localhost
 At start it checks every screen definition against the live schema and refuses
 to start if one does not match, so a screen can never drift from the DB.
 """
+import asyncio
 import datetime as dt
 import html
 import json
@@ -16,7 +17,7 @@ from importlib.resources import files
 
 import psycopg
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
@@ -44,6 +45,43 @@ def to_json(v):
     if isinstance(v, (dict, list)):
         return v
     return v
+
+
+# Cheap markers that move whenever the single writer records anything a screen shows.
+HEAD_SQL = """select (select coalesce(max(seq), 0) from ledger_events),
+                     (select count(*) from oms_orders),
+                     (select count(*) from oms_order_acks),
+                     (select coalesce(max(snapshot_id), 0) from broker_snapshots),
+                     (select coalesce(max(id), 0) from recon_results)"""
+HEAD_NAMES = ("ledger_seq", "orders", "acks", "snapshot", "recon")
+
+
+def read_head(conn: psycopg.Connection) -> dict:
+    return dict(zip(HEAD_NAMES, conn.execute(HEAD_SQL).fetchone()))
+
+
+async def live_events(read, *, interval: float = 1.0, keepalive: float = 15.0, disconnected=None,
+                      sleep=asyncio.sleep, limit: int | None = None):
+    """Server-sent events: one `change` when the DB head moves (and one at start), comments as keep-alive.
+
+    No trigger or schema change is needed (the gate period forbids one): the
+    stream polls a few max()/count() markers. `read` is a blocking call, run off
+    the event loop.
+    """
+    last, quiet, sent = None, 0.0, 0
+    while limit is None or sent < limit:
+        if disconnected and await disconnected():
+            return
+        head = await asyncio.to_thread(read)
+        if head != last:
+            last, quiet = head, 0.0
+            sent += 1
+            yield f"event: change\ndata: {json.dumps(head)}\n\n"
+        elif quiet >= keepalive:
+            quiet = 0.0
+            yield ": keep-alive\n\n"
+        await sleep(interval)
+        quiet += interval
 
 
 def _page(title: str, body: str, head: str = "") -> HTMLResponse:
@@ -135,6 +173,19 @@ def create_app(dsn: str, *, calendar: BusinessCalendar, fees: FeeSchedule, today
                 "datasets": {name: {"columns": list(ds.columns),
                                     "rows": [[to_json(v) for v in r] for r in ds.rows]}
                              for name, ds in result.datasets.items()}}
+
+    @app.get("/api/live")
+    async def live(request: Request):
+        conn = connect_read_only(dsn, connect)
+
+        async def stream():
+            try:
+                async for chunk in live_events(lambda: read_head(conn), disconnected=request.is_disconnected):
+                    yield chunk
+            finally:
+                conn.close()
+        return StreamingResponse(stream(), media_type="text/event-stream",
+                                 headers={"X-Accel-Buffering": "no"})
 
     return app
 

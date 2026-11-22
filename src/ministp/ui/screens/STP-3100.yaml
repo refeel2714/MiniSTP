@@ -10,6 +10,7 @@ conditions:
 grids:
   - id: events
     title: 원장 이벤트
+    live: true
     tx: STP3100R01
     load: open
     columns:
@@ -66,6 +67,7 @@ grids:
       - {name: ref_id, source: cash_ledger.ref_id, format: code}
   - id: trial
     title: 시산표
+    live: true
     tx: STP3100R03
     load: open
     meta: {balanced: 차대 일치}

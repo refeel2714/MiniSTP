@@ -55,6 +55,8 @@ class Grid:
     meta: dict[str, str] = field(default_factory=dict)   # tx meta key -> label
     drill: dict | None = None   # {screen: STP-xxxx, params: {cond: column}}
     chart: dict | None = None   # {x: column, y: column}: a line over the rows
+    live: bool = False          # reload when the DB changes (SSE), changed rows highlighted
+    key: str | None = None      # column that identifies a row across reloads (default: first column)
 
 
 @dataclass
@@ -151,6 +153,10 @@ def validate(screens: dict[str, Screen], catalog: dict) -> list[str]:
                         errs.append(f"{gw}.{c.name}: DB 컬럼이 있으면 한글명은 DB 주석을 써요 (label 제거)")
                 elif not c.label:
                     errs.append(f"{gw}.{c.name}: source(DB 컬럼)나 label 중 하나가 필요해요")
+            if g.key and g.key not in {c.name for c in g.columns}:
+                errs.append(f"{gw}: 행 식별 열 {g.key}가 열에 없어요")
+            if g.live and g.load == "master":
+                errs.append(f"{gw}: 마스터-디테일 그리드는 실시간 갱신 대상이 아니에요 (마스터를 live로)")
             for t in g.totals:
                 if t not in {c.name for c in g.columns}:
                     errs.append(f"{gw}: 합계 대상 {t}가 열에 없어요")
