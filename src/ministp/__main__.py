@@ -130,8 +130,9 @@ def run(argv, *, environ=os.environ, client_factory=KisClient, connect=psycopg.c
     p.add_argument("--sample", action="store_true", help="샘플 DB(ministp_sample)에 실행")
     p = sub.add_parser("verify", help="원장 무결성 점검: 저장된 행이 이벤트를 다시 계산한 결과와 같은지 (읽기 전용)")
     p.add_argument("--sample", action="store_true", help="샘플 DB(ministp_sample)를 점검")
-    p = sub.add_parser("ui", help="업무화면(STP-UI)을 이 PC에서만 열기 (조회 전용)")
-    p.add_argument("--sample", action="store_true", help="샘플 DB(ministp_sample)로 열기")
+    p = sub.add_parser("ui", help="업무화면(STP-UI)을 이 PC에서만 열기 (기본은 조회 전용)")
+    p.add_argument("--sample", action="store_true", help="샘플 DB(ministp_sample)로 열기. 연습용이라 처리 버튼도 켜져요")
+    p.add_argument("--write", action="store_true", help="운영 DB에서 화면의 처리 버튼을 켜기 (없으면 조회 전용)")
     p.add_argument("--port", type=int, default=8765)
     args = ap.parse_args(argv)
 
@@ -153,7 +154,7 @@ def run(argv, *, environ=os.environ, client_factory=KisClient, connect=psycopg.c
             return _sample_db(url, environ, connect, calendar, args.days)
 
         if args.cmd == "ui":
-            return _ui(url, environ, calendar, fees, args.sample, args.port)
+            return _ui(url, environ, calendar, fees, args.sample, args.port, write=args.write)
 
         if args.cmd == "db-migrate":
             target = url
@@ -471,17 +472,21 @@ def ui_database_url(url: str, environ, sample: bool) -> str:
     return environ.get("MINISTP_UI_DATABASE_URL") or url
 
 
-def _ui(url: str, environ, calendar, fees, sample: bool, port: int, serve=None) -> int:
+def _ui(url: str, environ, calendar, fees, sample: bool, port: int, serve=None, write: bool = False) -> int:
+    """Screens read on `dsn` (read-only session). 처리 buttons write only on the sample DB or with --write,
+    and then through the normal DB URL, the one the CLI writes with."""
     from .ui.app import create_app, sample_today
     from .ui.definitions import DefinitionError
     dsn = ui_database_url(url, environ, sample)
+    write_dsn = dsn if sample else url if write else None
     try:
         app = create_app(dsn, calendar=calendar, fees=fees, today=sample_today(dsn) if sample else None,
-                         label="샘플" if sample else "")
+                         label="샘플" if sample else "", write_dsn=write_dsn)
     except DefinitionError as e:
         print(f"오류: {e}")
         return 1
-    print(f"STP-UI: http://127.0.0.1:{port}  (조회 전용, 이 PC에서만 열려요. 끝낼 때 Ctrl+C)")
+    mode = "처리 버튼 켜짐" if write_dsn else "조회 전용, 처리 버튼은 ui --write"
+    print(f"STP-UI: http://127.0.0.1:{port}  ({mode}. 이 PC에서만 열려요. 끝낼 때 Ctrl+C)")
     if serve is None:
         import uvicorn
         serve = lambda a: uvicorn.run(a, host="127.0.0.1", port=port, log_level="warning",  # noqa: E731

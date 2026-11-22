@@ -208,3 +208,67 @@ button.primary:active, .tile:active { transform: scale(.97); }
   .panel.busy::after { opacity: 1; width: 100%; }
   .tile:hover, button.primary:active, .tile:active { transform: none; }
 }
+
+/* ---------- 처리 버튼, 입력 창, 찾기 팝업 ---------- */
+/* buttons live at the top right of the grid they act on */
+.acts { display: flex; gap: 6px; margin-left: 4px; }
+button.act, button.ghost, button.find { font: inherit; color: var(--ink); background: var(--panel); border: 1px solid var(--line-strong);
+  border-radius: 4px; cursor: pointer; white-space: nowrap;
+  transition: border-color var(--t-fast) ease-out, background-color var(--t-fast) ease-out, transform var(--t-fast) var(--ease); }
+button.act { font-size: 12px; font-weight: 600; height: 24px; padding: 0 10px; }
+button.act:hover:not(:disabled), button.ghost:hover, button.find:hover { border-color: var(--sel-line); background: var(--hover); }
+button.act:active:not(:disabled) { transform: scale(.97); }
+button.act:disabled { color: var(--muted); opacity: .6; cursor: not-allowed; }
+button.primary:disabled { opacity: .6; cursor: progress; }
+button.ghost { height: 28px; padding: 0 14px; }
+button.find { font-size: 12px; height: 28px; padding: 0 8px; background: var(--head); }
+
+/* an input with a 찾기 button, and the name of what was picked */
+.lk { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.lk input { flex: 1 1 60px; min-width: 0; }
+.lkname { flex: 0 1 auto; color: var(--muted); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 50%; }
+.fields .lk input { width: auto; }
+.lkname:empty { display: none; }
+
+dialog.dlg { padding: 0; border: 1px solid var(--line-strong); border-radius: 8px; background: var(--panel); color: var(--ink);
+  font: inherit; width: min(460px, calc(100vw - 32px)); box-shadow: 0 16px 48px rgba(0, 0, 0, .28); }
+dialog.dlg.lookup { width: min(680px, calc(100vw - 32px)); }
+dialog.dlg::backdrop { background: rgba(10, 14, 20, .45); }
+dialog.dlg[open] { animation: stpui-in var(--t) var(--ease); }
+.dhead { display: flex; align-items: center; gap: 10px; padding: 10px 14px; border-bottom: 1px solid var(--line); }
+.dhead h2 { font-size: 14px; margin: 0; font-weight: 650; }
+.fctx { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 3px 14px; margin: 0; padding: 10px 14px;
+  background: var(--head); border-bottom: 1px solid var(--line); font-size: 12px; }
+.fctx dt { color: var(--muted); }
+.fctx dd { margin: 0; font-weight: 600; }
+.fnote { margin: 10px 14px 0; color: var(--muted); font-size: 12px; }
+.fields { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 8px 14px; align-items: center; padding: 12px 14px; }
+.frow { display: contents; }
+.fl { color: var(--muted); font-size: 12px; }
+.fl .req { color: var(--bad); font-weight: 600; }
+.fields input[type=text], .fields input[type=number], .fields input[type=date], .fields select, .lkfilter {
+  font: inherit; font-size: 13px; color: var(--ink); background: var(--panel); border: 1px solid var(--line-strong);
+  border-radius: 4px; padding: 4px 7px; height: 28px; width: 100%; min-width: 0; }
+.fields input:focus, .fields select:focus, .lkfilter:focus { outline: none; border-color: var(--sel-line);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--sel-line) 22%, transparent); }
+.fields input[readonly], .fields select:disabled { background: var(--head); color: var(--muted); }
+.fields input[type=number] { text-align: right; }
+.ferr { margin: 0 14px 12px; padding: 8px 10px; border-radius: 4px; background: var(--bad-bg); color: var(--bad); }
+.ferr:empty { display: none; }
+.dfoot { display: flex; justify-content: flex-end; align-items: center; gap: 8px; padding: 10px 14px; border-top: 1px solid var(--line); }
+.dfoot .hint { margin-right: auto; color: var(--muted); font-size: 11px; }
+.lkfilter { display: block; margin: 10px 14px; width: calc(100% - 28px); height: 30px; }
+.lkbody { max-height: min(50vh, 380px); overflow: auto; border-top: 1px solid var(--line); }
+.lkbody .grid tbody tr { cursor: pointer; }
+.lkbody .grid tbody tr.sel td, .lkbody .grid tbody tr.sel:hover td { background: var(--sel); }
+.lkbody .grid tbody tr.sel td:first-child { box-shadow: inset 3px 0 0 var(--sel-line); }
+
+/* what a 처리 did, said once */
+#toast { position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%); display: flex; flex-direction: column; gap: 8px;
+  align-items: center; z-index: 20; pointer-events: none; }
+.toast { background: var(--top); color: var(--top-ink); padding: 9px 14px; border-radius: 6px; box-shadow: 0 8px 24px rgba(0, 0, 0, .3);
+  max-width: min(620px, calc(100vw - 32px)); animation: stpui-in var(--t-slow) var(--ease); }
+@media (prefers-reduced-motion: reduce) {
+  dialog.dlg[open], .toast { animation: none; }
+  button.act, button.ghost, button.find { transition: none; }
+}
