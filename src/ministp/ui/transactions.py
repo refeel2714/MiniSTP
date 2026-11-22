@@ -257,7 +257,7 @@ def _example_params(screen, grid, rows: dict[str, list[dict]]) -> dict:
     return out
 
 
-def output_problems(screens, ctx: TxContext) -> list[str]:
+def output_problems(screens, ctx: TxContext, lookups=None) -> list[str]:
     """Run every grid's transaction and check that the dataset it names has every column the grid shows.
 
     The static validator checks definitions against the schema; this checks them
@@ -295,4 +295,21 @@ def output_problems(screens, ctx: TxContext) -> list[str]:
                 if k not in res.meta:
                     errs.append(f"{s.id} {g.id}: {g.tx}가 주지 않는 상태값 {k}")
             rows[g.id] = ds.records()
+    used = [(x.lookup, x.lookup_params) for s in screens.values()
+            for x in [*s.conditions, *(f for g in s.grids for b in g.actions for f in b.fields)] if x.lookup]
+    if used and lookups is None:
+        from .definitions import load_lookups
+        lookups = load_lookups()
+    for name, params in used:   # 찾기 팝업: the list really has the columns the popup shows
+        lk = lookups.get(name)
+        if lk is None:
+            errs.append(f"찾기 {name}: 정의가 없어 확인하지 못했어요")
+            continue
+        key = (lk.tx, tuple(sorted(params.items())))
+        if key not in cache:
+            cache[key] = run_tx(lk.tx, ctx, dict(params))
+        ds = cache[key].datasets.get("main")
+        missing = [c.name for c in lk.columns if ds is None or c.name not in ds.columns]
+        if missing:
+            errs.append(f"찾기 {name}: {lk.tx}에 없는 열 {', '.join(missing)}")
     return errs
