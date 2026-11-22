@@ -68,9 +68,7 @@ class KisConfig:
         account = environ["MINISTP_KIS_ACCOUNT"].replace("-", "")
         if len(account) not in (8, 10) or not account.isdigit():
             raise KisError("MINISTP_KIS_ACCOUNT must be 8 digits, or 10 digits / 8-2 with product code")
-        env = environ.get("MINISTP_KIS_ENV", "paper")
-        if env not in ("paper", "live"):
-            raise KisError("MINISTP_KIS_ENV must be 'paper' or 'live'")
+        env = trading_env(environ)
         if env == "live" and environ.get("MINISTP_ALLOW_LIVE") != "1":
             raise LiveTradingLocked("live server needs MINISTP_ALLOW_LIVE=1 as well (Phase 4 only)")
         return cls(app_key=environ["MINISTP_KIS_APP_KEY"], app_secret=environ["MINISTP_KIS_APP_SECRET"],
@@ -80,6 +78,17 @@ class KisConfig:
     @property
     def base_url(self) -> str:
         return LIVE_URL if self.env == "live" else PAPER_URL
+
+
+def trading_env(environ=os.environ) -> str:
+    """Which server this shell is set up for: 'paper' (the default) or 'live'.
+
+    The one place MINISTP_KIS_ENV is read, so the commands and the screens (실전 테두리) cannot disagree.
+    Being set to 'live' is not permission to trade there: that takes MINISTP_ALLOW_LIVE=1 as well."""
+    env = environ.get("MINISTP_KIS_ENV", "paper")
+    if env not in ("paper", "live"):
+        raise KisError("MINISTP_KIS_ENV must be 'paper' or 'live'")
+    return env
 
 
 # transport(method, url, headers, body_or_None) -> (status, response_headers, json_body)

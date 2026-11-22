@@ -37,6 +37,9 @@ from .spec import screen_markdown
 from .transactions import TxContext, TxError, run_tx
 
 READ_ONLY = "-c default_transaction_read_only=on"
+# 실전 테두리: what the screens are looking at. sample: the practice DB · paper: 모의투자 · live: 실전.
+# A live page says so before any script runs: the frame is drawn from an attribute the server writes.
+ENVS = {"sample": "샘플", "paper": "모의", "live": "실전"}
 LOCAL_HOSTS = ["127.0.0.1", "localhost"]
 
 
@@ -91,11 +94,13 @@ async def live_events(read, *, interval: float = 1.0, keepalive: float = 15.0, d
         quiet += interval
 
 
-def _page(title: str, body: str, head: str = "") -> HTMLResponse:
+def _page(title: str, body: str, head: str = "", env: str = "paper") -> HTMLResponse:
+    if env == "live":
+        title = f"[실전] {title}"       # the browser tab says it too
     return HTMLResponse(f"""<!doctype html>
 <html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{html.escape(title)}</title><link rel="stylesheet" href="/static/stpui.css">{head}</head>
-<body>{body}</body></html>""")
+<body data-env="{env}">{body}</body></html>""")
 
 
 def same_origin(request: Request) -> bool:
@@ -108,9 +113,12 @@ def same_origin(request: Request) -> bool:
 
 def create_app(dsn: str, *, calendar: BusinessCalendar, fees: FeeSchedule, today=None,
                connect=psycopg.connect, allowed_hosts=LOCAL_HOSTS, label: str = "",
-               write_dsn: str | None = None) -> FastAPI:
+               write_dsn: str | None = None, env: str = "paper") -> FastAPI:
     """`today`: a date, or a callable giving one (the sample DB passes its last business day).
-    `write_dsn`: where 처리 buttons write. Without it the server is read only and the buttons are off."""
+    `write_dsn`: where 처리 buttons write. Without it the server is read only and the buttons are off.
+    `env`: sample, paper or live (ENVS). Every page of a live server wears the 실전 frame."""
+    if env not in ENVS:
+        raise ValueError(f"env는 {sorted(ENVS)} 중 하나")
     screens = load_screens()
     lookups = load_lookups()
     token = secrets.token_urlsafe(24)   # only pages this process served know it
@@ -142,12 +150,13 @@ def create_app(dsn: str, *, calendar: BusinessCalendar, fees: FeeSchedule, today
         data = {"menu": menu, "today": business_day().isoformat(), "db": db_name, "label": label,
                 "writable": write_dsn is not None, "token": token if write_dsn else "",
                 "screen": resolved.get(screen_id) if screen_id else None}
+        data |= {"env": env, "env_name": ENVS[env]}        # 실전 테두리: the page says which environment it shows
         # Embedded as JSON in a non-executed script tag; '<' escaped so no value can close the tag.
         return json.dumps(data, ensure_ascii=False, default=str).replace("<", "\\u003c")
 
     def shell(title: str, screen_id: str | None) -> HTMLResponse:
         return _page(title, f'<div id="app"></div><script id="stpui-data" type="application/json">'
-                            f'{shell_data(screen_id)}</script><script src="/static/stpui.js"></script>')
+                            f'{shell_data(screen_id)}</script><script src="/static/stpui.js"></script>', env=env)
 
     @app.get("/", response_class=HTMLResponse)
     def home():
