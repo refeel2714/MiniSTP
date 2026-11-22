@@ -48,6 +48,20 @@ a { color: var(--accent); }
 .env { color: var(--top-muted); font-size: 12px; white-space: nowrap; display: flex; align-items: center; gap: 6px; }
 .env .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--ok); }
 
+/* 실전 테두리: a live page is framed on every side, on every screen, before any script runs.
+   The colour is its own (not 상승 red, not 오류 red) and is used for nothing else. */
+:root { --live: #d9480f; --live-bg: #fff1e6; --live-ink: #ffffff; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --live: #ff922b; --live-bg: #3b2410; --live-ink: #1d1203; } }
+:root[data-theme="dark"] { --live: #ff922b; --live-bg: #3b2410; --live-ink: #1d1203; }
+body[data-env="live"]::before { content: ""; position: fixed; inset: 0; z-index: 30; pointer-events: none; border: 4px solid var(--live); }
+body[data-env="live"] .top { box-shadow: inset 0 -3px 0 var(--live); }
+.envchip { font-size: 11px; font-weight: 700; padding: 1px 7px; border-radius: 4px; border: 1px solid rgba(255, 255, 255, .22); color: var(--top-ink); }
+.envchip.live { background: var(--live); border-color: var(--live); color: var(--live-ink); letter-spacing: .04em; }
+body[data-env="live"] button.act:not(:disabled) { border-color: var(--live); color: var(--live); }
+body[data-env="live"] dialog.dlg:not(.lookup):not(.jump) { border-color: var(--live); box-shadow: 0 0 0 3px var(--live), 0 16px 48px rgba(0, 0, 0, .28); }
+body[data-env="live"] dialog.dlg:not(.lookup):not(.jump) button.primary { background: var(--live); color: var(--live-ink); }
+.flive { margin: 0; padding: 8px 14px; background: var(--live-bg); color: var(--live); font-weight: 600; border-bottom: 1px solid var(--line); }
+
 /* screen */
 main { padding: 14px 16px 24px; max-width: 1600px; margin: 0 auto; }
 .title { display: flex; align-items: baseline; gap: 12px; }
@@ -205,6 +219,57 @@ button.day:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--panel), 0 
 .err { color: var(--bad); background: var(--bad-bg); text-align: left; }
 .status { margin-top: 10px; color: var(--muted); font: 11px ui-monospace, Consolas, monospace; min-height: 1em; }
 
+/* T계정 보기: 계정마다 T 하나, 차변 왼쪽 · 대변 오른쪽 */
+.seg { display: flex; margin: -1px 0; border: 1px solid var(--line-strong); border-radius: 5px; overflow: hidden; }
+.seg button { font: inherit; font-size: 11px; height: 18px; padding: 0 9px; border: 0; background: var(--panel); color: var(--muted); cursor: pointer; }
+.seg button + button { border-left: 1px solid var(--line-strong); }
+.seg button[aria-pressed="true"] { background: var(--head); color: var(--ink); font-weight: 600; }
+.seg button:focus-visible { outline: 2px solid var(--sel-line); outline-offset: -2px; }
+.tview { display: flex; flex-direction: column; gap: 16px; padding: 12px 14px 14px; }
+.tentry { display: flex; flex-direction: column; gap: 12px; }
+.tentry + .tentry { padding-top: 14px; border-top: 1px dashed var(--line-strong); }
+.tfacts { display: flex; flex-wrap: wrap; gap: 3px 16px; font-size: 12px; color: var(--muted); }
+.tfacts b { margin-left: 5px; color: var(--ink); font-weight: 600; }
+.taccs { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 16px 20px; }
+.tacc h3 { display: flex; justify-content: center; align-items: baseline; gap: 6px; margin: 0; padding: 0 4px 5px;
+  font-size: 13px; font-weight: 650; border-bottom: 2px solid var(--muted); }
+.tacc h3 span { font: 11px ui-monospace, "Cascadia Mono", Consolas, monospace; color: var(--muted); }
+.tsides { display: grid; grid-template-columns: 1fr 1fr; min-height: 58px; }
+.tside { padding: 4px 8px 6px; text-align: right; }
+.tside + .tside { border-left: 2px solid var(--muted); }
+.tl { margin-bottom: 3px; text-align: center; font-size: 11px; color: var(--muted); }
+.tv { font-weight: 600; }
+.tsum { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 22px; padding-top: 9px; border-top: 1px solid var(--line); }
+.tsum b { margin-left: 6px; }
+.tsum .pill { margin-left: auto; }
+
+/* 구성 지도: 타일 하나가 행 하나. 면적은 크기 열, 색은 부호 열(이익 빨강, 손실 파랑, 짙을수록 큼) */
+.tmapbox { padding: 10px 12px 10px; }
+.tmap { position: relative; height: clamp(220px, 36vh, 340px); outline: none; }
+.tmap:focus-visible { box-shadow: 0 0 0 2px var(--sel-line); border-radius: 6px; }
+.mtile { position: absolute; display: flex; flex-direction: column; gap: 2px; padding: 10px 12px; overflow: hidden; border-radius: 5px;
+  background: var(--head); border: 1px solid var(--line); cursor: pointer; --k: 0%;
+  transition: left var(--t-slow) var(--ease), top var(--t-slow) var(--ease), width var(--t-slow) var(--ease), height var(--t-slow) var(--ease); }
+.mtile.up { background: color-mix(in srgb, var(--up) var(--k), var(--panel)); border-color: color-mix(in srgb, var(--up) 35%, var(--line)); }
+.mtile.down { background: color-mix(in srgb, var(--down) var(--k), var(--panel)); border-color: color-mix(in srgb, var(--down) 35%, var(--line)); }
+.mtile.none { background: repeating-linear-gradient(135deg, var(--head) 0 6px, var(--panel) 6px 12px); border-style: dashed; border-color: var(--line-strong); }
+.mtile, .mtile.up, .mtile.down { color: var(--ink); }   /* the tone colours the tile, not its name */
+.mtile b { font-size: 13px; font-weight: 650; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mtile .tshare { font-size: 18px; font-weight: 650; line-height: 1.2; }
+.mtile .tsize { font-size: 12px; opacity: .78; white-space: nowrap; }
+.mtile .ttone { margin-top: auto; font-size: 12px; white-space: nowrap; }
+.mtile.up .ttone { color: var(--up); } .mtile.down .ttone { color: var(--down); } .mtile.none .ttone { color: var(--muted); }
+.mtile.sm { padding: 5px 7px; } .mtile.sm .ttone, .mtile.sm .tsize { display: none; } .mtile.sm .tshare { font-size: 12px; }
+.mtile.xs > * { display: none; }
+.mtile:hover { border-color: var(--sel-line); }
+.mtile.sel { border-color: var(--sel-line); box-shadow: inset 0 0 0 2px var(--sel-line); }
+.tlegend { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 14px; padding-top: 8px; font-size: 12px; color: var(--muted); }
+.tlegend .lg::before { content: ""; display: inline-block; width: 10px; height: 10px; margin-right: 5px; border-radius: 2px; vertical-align: -1px; }
+.tlegend .lg.up::before { background: color-mix(in srgb, var(--up) 40%, var(--panel)); }
+.tlegend .lg.down::before { background: color-mix(in srgb, var(--down) 40%, var(--panel)); }
+.tlegend .lg.none::before { background: repeating-linear-gradient(135deg, var(--line-strong) 0 3px, var(--panel) 3px 6px); }
+@media (prefers-reduced-motion: reduce) { .mtile { transition: none; } }
+
 /* home */
 .home .lead { color: var(--muted); max-width: 760px; }
 .tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 10px; margin-top: 16px; }
@@ -341,6 +406,30 @@ dialog.dlg[open] { animation: stpui-in var(--t) var(--ease); }
 .lkbody .grid tbody tr { cursor: pointer; }
 .lkbody .grid tbody tr.sel td, .lkbody .grid tbody tr.sel:hover td { background: var(--sel); }
 .lkbody .grid tbody tr.sel td:first-child { box-shadow: inset 3px 0 0 var(--sel-line); }
+
+/* 바로 가기 창 (Ctrl+K) */
+.jumpbtn { display: flex; align-items: center; gap: 8px; height: 26px; padding: 0 6px 0 10px; border: 1px solid rgba(255, 255, 255, .16);
+  border-radius: 5px; background: rgba(255, 255, 255, .06); color: var(--top-muted); font: inherit; font-size: 12px;
+  cursor: pointer; white-space: nowrap; }
+.jumpbtn:hover { color: var(--top-ink); background: rgba(255, 255, 255, .12); }
+.jumpbtn:focus-visible { outline: 2px solid var(--sel-line); outline-offset: 1px; }
+.jumpbtn kbd { font: 600 10px/1 ui-monospace, "Cascadia Mono", Consolas, monospace; padding: 3px 5px; border-radius: 3px;
+  border: 1px solid rgba(255, 255, 255, .2); }
+dialog.dlg.jump { width: min(560px, calc(100vw - 32px)); margin-top: 12vh; }
+.jump .lkfilter { height: 36px; font-size: 15px; }
+.jcrumb { display: flex; align-items: center; gap: 12px; padding: 10px 14px 0; color: var(--muted); font-size: 12px; }
+.jcrumb:empty { display: none; }
+.jbody { max-height: min(56vh, 420px); overflow: auto; border-top: 1px solid var(--line); padding: 4px 0 6px; }
+.jgroup { display: flex; gap: 8px; padding: 8px 14px 4px; font-size: 11px; font-weight: 600; color: var(--muted); }
+.jgroup span { font-weight: 400; }
+.jitem { display: flex; align-items: center; gap: 10px; min-height: 34px; padding: 5px 14px; cursor: pointer; }
+.jitem:hover { background: var(--hover); }
+.jitem.sel, .jitem.sel:hover { background: var(--sel); box-shadow: inset 3px 0 0 var(--sel-line); }
+.jitem .sid { color: var(--muted); min-width: 62px; }
+.jitem .jt { font-weight: 600; }
+.jitem .jnote { margin-left: auto; color: var(--muted); font-size: 12px; white-space: nowrap; }
+.jempty, .jtip { padding: 10px 14px; color: var(--muted); font-size: 12px; }
+.jempty { padding: 18px 14px; font-size: 13px; }
 
 /* what a 처리 did, said once */
 #toast { position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%); display: flex; flex-direction: column; gap: 8px;
