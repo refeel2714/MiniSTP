@@ -74,3 +74,9 @@ def test_unknown_transaction_and_parameters_are_refused():
         run_tx("STP3100R03", None, {"drop": "table"})
     with pytest.raises(TxError, match="올바르지 않아요"):
         run_tx("STP3100R02", None, {"seq": "abc"})
+
+
+def test_input_screens_and_required_conditions_are_accepted():
+    s = load_screens()["STP-1300"]
+    assert {c.name for c in s.conditions if c.required} == {"symbol", "side", "qty"}
+    assert s.grids[0].load == "input"

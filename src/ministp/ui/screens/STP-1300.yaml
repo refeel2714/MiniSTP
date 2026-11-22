@@ -1,0 +1,40 @@
+id: STP-1300
+title: 주문가능 조회
+purpose: 종목·매매구분·수량·지정가를 넣는 즉시 주문가능 여부를 판단해요. 판단은 실제 주문 검증(session.submit)과 같은 계산(R-36·37)을 백엔드에서 해서, 화면과 주문 결과가 어긋나지 않아요. 지정가가 없으면 최근 종가를 기준 단가로 써요. 주문은 하지 않아요.
+conditions:
+  - {name: symbol, type: text, source: instruments.symbol, required: true}
+  - {name: side, type: select, source: oms_orders.side, options: [BUY, SELL], default: BUY, required: true}
+  - {name: qty, type: number, source: oms_orders.qty, required: true}
+  - {name: limit_price, type: number, source: oms_orders.limit_price}
+grids:
+  - id: check
+    title: 주문가능 판단
+    tx: STP1300R02
+    load: input
+    view: cards
+    meta: {ok: 주문 가능}
+    columns:
+      - {name: reason_text, label: 판단, color: verdict}
+      - {name: ref_price, label: 기준 단가, format: money}
+      - {name: ref_source, label: 단가 기준}
+      - {name: order_value, label: 주문금액, format: money}
+      - {name: required_cash, label: 필요금액(여유분 포함), format: money}
+      - {name: available_cash, label: 주문가능금액, format: money}
+      - {name: max_buy_qty, label: 최대 매수수량, format: number}
+      - {name: sellable_qty, label: 매도가능수량, format: number}
+      - {name: pending_buy_value, label: 미체결 매수 예약, format: money}
+      - {name: pending_sell_qty, label: 미체결 매도 수량, format: number}
+  - id: symbols
+    title: 종목별 주문가능 (최근 종가 기준)
+    tx: STP1300R01
+    load: open
+    drill: {screen: STP-1300, params: {symbol: symbol}}
+    columns:
+      - {name: symbol, source: instruments.symbol, format: code}
+      - {name: instrument_name, source: instruments.name}
+      - {name: ref_price, label: 최근 종가, format: money}
+      - {name: price_date, label: 종가 기준일, format: date}
+      - {name: max_buy_qty, label: 최대 매수수량, format: number}
+      - {name: held_qty, source: positions_v.qty, format: number}
+      - {name: pending_sell_qty, label: 미체결 매도 수량, format: number}
+      - {name: sellable_qty, label: 매도가능수량, format: number}

@@ -57,6 +57,24 @@ def _cash(c: TxContext, p) -> TxResult:
     return TxResult({"main": q.cash_summary(c.books.ledger, stored_open_orders(c.books, c.today))})
 
 
+def _capacities(c: TxContext, p) -> TxResult:
+    return TxResult({"main": q.capacity_by_symbol(c.books, c.today)})
+
+
+def _order_check(c: TxContext, p) -> TxResult:
+    if not p.get("symbol"):
+        raise TxError("종목코드를 넣어 주세요")
+    side = (p.get("side") or "BUY").upper()
+    if side not in ("BUY", "SELL"):
+        raise TxError(f"매매구분은 BUY 또는 SELL이에요: {side}")
+    try:
+        ds = q.order_check(c.books, c.today, p["symbol"], side, p.get("qty") or 0, p.get("limit_price"))
+    except KeyError as e:
+        raise TxError(e.args[0]) from e
+    r = ds.records()[0]
+    return TxResult({"main": ds}, {"ok": r["ok"], "reason_text": r["reason_text"]})
+
+
 def _blotter(c: TxContext, p) -> TxResult:
     return TxResult({"main": q.order_blotter(c.conn, p.get("day") or c.today)})
 
@@ -97,6 +115,9 @@ def _trial(c: TxContext, p) -> TxResult:
 TRANSACTIONS: dict[str, Tx] = {t.tx_id: t for t in [
     Tx("STP1100R01", "종목별 보유", {"day": "date"}, _holdings),
     Tx("STP1100R02", "예수금·주문가능금액", {}, _cash),
+    Tx("STP1300R01", "종목별 주문가능", {}, _capacities),
+    Tx("STP1300R02", "주문가능 판단", {"symbol": "text", "side": "text", "qty": "int", "limit_price": "int"},
+       _order_check),
     Tx("STP1200R01", "주문·체결 블로터", {"day": "date"}, _blotter),
     Tx("STP2100R01", "대사 결과", {"date_from": "date", "date_to": "date", "kind": "text", "only_breaks": "bool"},
        _recon),
@@ -127,6 +148,18 @@ def run_tx(tx_id: str, ctx: TxContext, raw: dict) -> TxResult:
     return tx.run(ctx, params)
 
 
+def _example_params(screen, grid, rows: dict[str, list[dict]]) -> dict:
+    """Values for required conditions: the default, else the same-named column of a loaded grid, else 1."""
+    out = {}
+    tx = TRANSACTIONS[grid.tx]
+    for c in screen.conditions:
+        if not c.required or c.name not in tx.params:
+            continue
+        seen = next((r[0][c.name] for r in rows.values() if r and c.name in r[0]), None)
+        out[c.name] = c.default or seen or (1 if tx.params[c.name] == "int" else None)
+    return out
+
+
 def output_problems(screens, ctx: TxContext) -> list[str]:
     """Run every grid's transaction and check that the dataset it names has every column the grid shows.
 
@@ -137,8 +170,10 @@ def output_problems(screens, ctx: TxContext) -> list[str]:
     errs, cache = [], {}
     for s in screens.values():
         rows: dict[str, list[dict]] = {}
-        for g in s.grids:
+        for g in sorted(s.grids, key=lambda g: g.load == "input"):  # input grids last: they borrow values
             params = {}
+            if g.load == "input":
+                params = _example_params(s, g, rows)
             if g.load == "master":
                 first = (rows.get(g.master) or [None])[0]
                 if first is None:

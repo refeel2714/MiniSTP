@@ -15,9 +15,9 @@ from .transactions import TRANSACTIONS
 
 FORMATS = {"text", "code", "number", "money", "rate", "date", "datetime", "json"}
 RIGHT = {"number", "money", "rate"}
-COLORS = {None, "sign", "side", "status"}
-LOADS = {"search", "open", "master"}
-CONDITION_TYPES = {"date", "text", "select", "bool"}
+COLORS = {None, "sign", "side", "status", "verdict"}  # verdict: the row's ok field
+LOADS = {"search", "open", "master", "input"}
+CONDITION_TYPES = {"date", "text", "select", "bool", "number"}
 SCREEN_ID = re.compile(r"^STP-\d{4}$")
 
 
@@ -47,6 +47,7 @@ class Grid:
     columns: list[Column]
     dataset: str = "main"
     load: str = "search"        # search: 조회 button · open: on screen open · master: on master row
+                                # · input: again on every condition change (주문가능 재계산)
     master: str | None = None
     link: dict[str, str] = field(default_factory=dict)   # tx param -> master column
     totals: list[str] = field(default_factory=list)
@@ -64,6 +65,7 @@ class Condition:
     label: str | None = None
     options: list[str] = field(default_factory=list)
     default: str | None = None  # "today" or a literal
+    required: bool = False      # grids are not loaded until it has a value
 
 
 @dataclass
