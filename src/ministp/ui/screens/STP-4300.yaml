@@ -1,0 +1,51 @@
+id: STP-4300
+title: 기준정보
+purpose: 원장과 주문 검증이 실제로 쓰는 기준값(수수료·세율, 결제주기, 호가단위, 휴장일, 주문 검증 기준)을 한곳에서 보여줘요. 화면에 따로 저장한 값이 아니라 시스템이 계산에 쓰는 객체에서 바로 읽어서, 화면과 계산이 어긋날 수 없어요. 변경은 게이트 이후 적용시작일이 있는 이력으로 추가할 예정이에요.
+grids:
+  - id: fees
+    title: 수수료·세금 (R-20~22)
+    tx: STP4300R01
+    load: open
+    columns:
+      - {name: market, source: instruments.market, format: code}
+      - {name: asset_type, source: instruments.asset_type, format: code}
+      - {name: commission_rate, label: 위탁수수료율}
+      - {name: commission_unit, label: 수수료 절사 단위(원), format: number}
+      - {name: tx_tax_rate, label: 증권거래세율(매도)}
+      - {name: rural_tax_rate, label: 농어촌특별세율(매도)}
+      - {name: sell_tax, label: 매도 세율 합계}
+  - id: settlement
+    title: 결제주기 규칙 (R-11, 체결일 기준 적용)
+    tx: STP4300R02
+    load: open
+    columns:
+      - {name: effective_from, label: 적용시작일(빈칸은 처음부터), format: date}
+      - {name: cycle, label: 결제주기, format: code}
+      - {name: status, label: 상태, color: status}
+  - id: ticks
+    title: 호가가격단위 (KOSPI·KOSDAQ 공통)
+    tx: STP4300R03
+    load: open
+    columns:
+      - {name: asset_type, source: instruments.asset_type, format: code}
+      - {name: price_from, label: 가격 이상, format: money}
+      - {name: price_below, label: 가격 미만, format: money}
+      - {name: tick, label: 호가단위, format: money}
+  - id: holidays
+    title: 휴장일 (주말 외)
+    tx: STP4300R04
+    load: open
+    meta: {years: 등록 연도, until: 계산 가능 기한}
+    columns:
+      - {name: date, label: 일자, format: date}
+      - {name: weekday, label: 요일}
+      - {name: status, label: 상태, color: status}
+  - id: risk
+    title: 주문 검증 기준 (R-36·37)
+    tx: STP4300R05
+    load: open
+    view: cards
+    columns:
+      - {name: cash_buffer_rate, label: 매수 여유분(가격 변동·수수료)}
+      - {name: max_order_value, label: 1회 주문 금액 한도(빈칸은 없음), format: money}
+      - {name: short_sell, label: 공매도}

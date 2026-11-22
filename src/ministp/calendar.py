@@ -14,6 +14,23 @@ class BusinessCalendar:
         self._years = frozenset(loaded_years)
         self._holidays = frozenset(holidays)
 
+    @property
+    def loaded_years(self) -> tuple[int, ...]:
+        return tuple(sorted(self._years))
+
+    @property
+    def holidays(self) -> tuple[dt.date, ...]:
+        """Registered weekday closures (weekends are closed without being listed)."""
+        return tuple(sorted(self._holidays))
+
+    def business_days_between(self, start: dt.date, end: dt.date) -> int:
+        """Business days after `start` up to and including `end` (D+n of `end` seen from `start`)."""
+        n, cur = 0, start
+        while cur < end:
+            cur += dt.timedelta(days=1)
+            n += self.is_business_day(cur)
+        return n
+
     def _check(self, day: dt.date) -> None:
         if day.year not in self._years:
             raise CalendarNotLoadedError(f"holiday calendar for {day.year} is not loaded")

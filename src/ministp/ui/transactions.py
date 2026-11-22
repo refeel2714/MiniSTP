@@ -112,6 +112,51 @@ def _trial(c: TxContext, p) -> TxResult:
     return TxResult({"main": ds}, {"balanced": balanced})
 
 
+def _instruments(c: TxContext, p) -> TxResult:
+    return TxResult({"main": q.instrument_master(c.books)})
+
+
+def _instrument_events(c: TxContext, p) -> TxResult:
+    if not p.get("symbol"):
+        raise TxError("종목코드가 필요해요")
+    return TxResult({"main": q.instrument_events(c.conn, p["symbol"])})
+
+
+def _account(c: TxContext, p) -> TxResult:
+    return TxResult({"main": q.account_summary(c.books, c.calendar, c.today)})
+
+
+def _ladder(c: TxContext, p) -> TxResult:
+    return TxResult({"main": q.cash_ladder(c.books, c.calendar, c.today)})
+
+
+def _settlements(c: TxContext, p) -> TxResult:
+    return TxResult({"main": q.pending_settlements(c.books)})
+
+
+def _fees(c: TxContext, p) -> TxResult:
+    return TxResult({"main": q.fee_rules(c.fees)})
+
+
+def _settlement_rules(c: TxContext, p) -> TxResult:
+    return TxResult({"main": q.settlement_rules(c.books.ledger, c.today)})
+
+
+def _ticks(c: TxContext, p) -> TxResult:
+    return TxResult({"main": q.tick_rules()})
+
+
+def _holidays(c: TxContext, p) -> TxResult:
+    ds = q.holiday_calendar(c.calendar, c.today)
+    years = c.calendar.loaded_years
+    return TxResult({"main": ds}, {"years": ", ".join(str(y) for y in years),
+                                   "until": f"{years[-1]}-12-31" if years else ""})
+
+
+def _risk(c: TxContext, p) -> TxResult:
+    return TxResult({"main": q.risk_rules()})
+
+
 TRANSACTIONS: dict[str, Tx] = {t.tx_id: t for t in [
     Tx("STP1100R01", "종목별 보유", {"day": "date"}, _holdings),
     Tx("STP1100R02", "예수금·주문가능금액", {}, _cash),
@@ -126,6 +171,16 @@ TRANSACTIONS: dict[str, Tx] = {t.tx_id: t for t in [
                                        "symbol": "text"}, _events),
     Tx("STP3100R02", "이벤트 추적", {"seq": "int"}, _trace),
     Tx("STP3100R03", "시산표", {}, _trial),
+    Tx("STP4100R01", "종목정보", {}, _instruments),
+    Tx("STP4100R02", "종목 원장 이벤트", {"symbol": "text"}, _instrument_events),
+    Tx("STP4200R01", "계좌 요약", {}, _account),
+    Tx("STP4200R02", "예수금 D+n", {}, _ladder),
+    Tx("STP4200R03", "결제 예정", {}, _settlements),
+    Tx("STP4300R01", "수수료·세금", {}, _fees),
+    Tx("STP4300R02", "결제주기 규칙", {}, _settlement_rules),
+    Tx("STP4300R03", "호가단위", {}, _ticks),
+    Tx("STP4300R04", "휴장일", {}, _holidays),
+    Tx("STP4300R05", "주문 검증 기준", {}, _risk),
 ]}
 
 

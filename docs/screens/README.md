@@ -12,6 +12,9 @@
 | [STP-2100](STP-2100.md) | 일일 대사 결과 | 1 | `STP2100R01` |
 | [STP-2200](STP-2200.md) | 기준가·무오류 현황 | 1 | `STP2200R01` |
 | [STP-3100](STP-3100.md) | 원장·분개 조회 | 5 | `STP3100R01`, `STP3100R02`, `STP3100R03` |
+| [STP-4100](STP-4100.md) | 종목정보 | 2 | `STP4100R01`, `STP4100R02` |
+| [STP-4200](STP-4200.md) | 계좌정보 | 3 | `STP4200R01`, `STP4200R02`, `STP4200R03` |
+| [STP-4300](STP-4300.md) | 기준정보 | 5 | `STP4300R01`, `STP4300R02`, `STP4300R03`, `STP4300R04`, `STP4300R05` |
 
 ## 영향도: DB 컬럼 → 화면
 
@@ -29,9 +32,10 @@
 | `cash_ledger.date` | 일자 | STP-3100 cash |
 | `cash_ledger.reason` | 사유 | STP-3100 cash |
 | `cash_ledger.ref_id` | 참조 ID | STP-3100 cash |
-| `instruments.asset_type` | 자산 유형 | STP-1100 holdings |
-| `instruments.name` | 종목명 | STP-1100 holdings, STP-1200 orders, STP-1300 symbols |
-| `instruments.symbol` | 종목코드 | STP-1100 holdings, STP-1300 symbols, STP-1300 조회조건, STP-3100 events, STP-3100 조회조건 |
+| `instruments.asset_type` | 자산 유형 | STP-1100 holdings, STP-4100 instruments, STP-4300 fees, STP-4300 ticks |
+| `instruments.market` | 시장 | STP-4100 instruments, STP-4300 fees |
+| `instruments.name` | 종목명 | STP-1100 holdings, STP-1200 orders, STP-1300 symbols, STP-4100 instruments, STP-4200 settlements |
+| `instruments.symbol` | 종목코드 | STP-1100 holdings, STP-1300 symbols, STP-1300 조회조건, STP-3100 events, STP-3100 조회조건, STP-4100 instruments, STP-4200 settlements |
 | `journal_entries.date` | 회계일 | STP-3100 journal |
 | `journal_entries.entry_id` | 전표 번호 | STP-3100 journal |
 | `journal_entries.kind` | 전표 유형 | STP-3100 journal |
@@ -40,10 +44,10 @@
 | `journal_lines.account_code` | 계정코드 | STP-3100 journal |
 | `journal_lines.credit` | 대변 금액 | STP-3100 journal |
 | `journal_lines.debit` | 차변 금액 | STP-3100 journal |
-| `ledger_events.event_type` | 이벤트 유형 | STP-3100 events, STP-3100 조회조건 |
-| `ledger_events.payload` | 이벤트 내용 | STP-3100 events |
-| `ledger_events.recorded_at` | 기록 시각 | STP-3100 events |
-| `ledger_events.seq` | 이벤트 순번 | STP-3100 events |
+| `ledger_events.event_type` | 이벤트 유형 | STP-3100 events, STP-3100 조회조건, STP-4100 events |
+| `ledger_events.payload` | 이벤트 내용 | STP-3100 events, STP-4100 events |
+| `ledger_events.recorded_at` | 기록 시각 | STP-3100 events, STP-4100 events |
+| `ledger_events.seq` | 이벤트 순번 | STP-3100 events, STP-4100 events |
 | `oms_order_acks.detail` | 거부 사유 | STP-1200 orders |
 | `oms_order_acks.order_no` | 증권사 주문번호 | STP-1200 orders |
 | `oms_order_acks.outcome` | 결과 | STP-1200 orders |
@@ -51,7 +55,7 @@
 | `oms_orders.created_at` | 생성 시각 | STP-1200 orders |
 | `oms_orders.limit_price` | 지정가 | STP-1200 orders, STP-1300 조회조건 |
 | `oms_orders.qty` | 주문수량 | STP-1200 orders, STP-1300 조회조건 |
-| `oms_orders.side` | 매매구분 | STP-1200 orders, STP-1300 조회조건 |
+| `oms_orders.side` | 매매구분 | STP-1200 orders, STP-1300 조회조건, STP-4200 settlements |
 | `oms_orders.symbol` | 종목코드 | STP-1200 orders |
 | `oms_orders.trade_date` | 주문일 | STP-1200 조회조건 |
 | `position_ledger.cost_delta` | 장부금액 증감 | STP-3100 positions |
@@ -60,8 +64,8 @@
 | `position_ledger.realized_pnl` | 실현손익 | STP-3100 positions |
 | `position_ledger.symbol` | 종목코드 | STP-3100 positions |
 | `position_ledger.trade_date` | 매매일 | STP-3100 positions |
-| `positions_v.book_cost` | 장부금액 | STP-1100 holdings |
-| `positions_v.qty` | 보유수량 | STP-1100 holdings, STP-1300 symbols |
+| `positions_v.book_cost` | 장부금액 | STP-1100 holdings, STP-4100 instruments |
+| `positions_v.qty` | 보유수량 | STP-1100 holdings, STP-1300 symbols, STP-4100 instruments |
 | `recon_results.broker_value` | 증권사 값 | STP-2100 results |
 | `recon_results.cause_code` | 원인 코드 | STP-2100 results |
 | `recon_results.date` | 기준일 | STP-2100 results |
