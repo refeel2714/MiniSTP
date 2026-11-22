@@ -205,3 +205,47 @@ def test_actions_refuse_unknown_ids_and_incomplete_input():
     with pytest.raises(ActionError, match="없는 원인 코드"):
         run_action("STP2100U01", None, {"result_id": 1, "cause": "NOPE", "note": "x"})
     assert all(tx[7] == "U" for tx in ACTIONS)        # R = 조회, U = 처리: an id says which kind it is
+
+
+# ---------- 셀 표시 유형 ----------
+
+def badge_columns(**badge):
+    return [Column("symbol", "instruments.symbol", format="code"),
+            Column("name", "instruments.name", **{"display": "badge", "code": "symbol", **badge})]
+
+
+def test_badge_draws_its_code_inside_and_the_code_keeps_no_column_of_its_own():
+    s = screen(badge_columns())
+    assert validate(s, CATALOG) == []
+    cols = {c["name"]: c for c in resolve(s["STP-1100"], CATALOG)["grids"][0]["columns"]}
+    assert cols["symbol"]["inside"] == "name" and cols["name"]["inside"] is None
+    assert cols["name"]["display"] == "badge" and cols["name"]["code"] == "symbol"
+    # the code is still a column of the definition: 영향도 분석 keeps seeing it
+    assert usages(s)["instruments.symbol"] == ["STP-1100 g"]
+
+
+@pytest.mark.parametrize("cols, problem", [
+    ([Column("qty", "positions_v.qty", format="number", display="gauge")], "없는 표시 유형"),
+    ([Column("qty", "positions_v.qty", display="bar")], "표시 유형 bar의 형식"),
+    ([Column("qty", "positions_v.qty", format="number", display="meter")], "표시 유형 meter의 형식"),
+    ([Column("trend", label="추세", format="series")], "추세선(display: spark)으로만"),
+    ([Column("trend", label="추세", format="number", display="spark")], "표시 유형 spark의 형식"),
+    ([Column("st", label="상태", format="code", display="pill")], "색 규칙이 있어야"),
+    ([Column("qty", "positions_v.qty", format="number", code="symbol")], "배지(display: badge)에만"),
+    (badge_columns(code="nope"), "이 그리드의 다른 열이 아니에요"),
+    (badge_columns(code="name"), "이 그리드의 다른 열이 아니에요"),
+    (badge_columns(shape="asset_type"), "이 그리드의 다른 열이 아니에요"),
+])
+def test_display_problems(cols, problem):
+    errs = validate(screen(cols), CATALOG)
+    assert any(problem in e for e in errs), errs
+
+
+def test_pictures_are_for_grid_rows_only():
+    errs = validate(screen([Column("qty", "positions_v.qty", format="number", display="bar")], view="cards"), CATALOG)
+    assert any("카드 보기에는 표시 유형" in e for e in errs)
+
+
+def test_a_meter_reads_as_text_next_to_its_bar():
+    assert Column("w", label="비중", format="rate", display="meter").align == "left"
+    assert Column("w", label="비중", format="rate").align == "right"

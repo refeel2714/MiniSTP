@@ -12,7 +12,9 @@ from .transactions import TRANSACTIONS
 LOAD_TEXT = {"search": "조회 버튼", "open": "화면 열 때 + 조회 버튼", "master": "목록(마스터)에서 행 선택",
              "input": "조회조건을 바꿀 때마다 (입력 즉시 재계산)"}
 FORMAT_TEXT = {"text": "문자", "code": "코드", "number": "수량", "money": "금액", "rate": "비율·단가",
-               "date": "날짜", "datetime": "일시", "json": "JSON"}
+               "date": "날짜", "datetime": "일시", "json": "JSON", "series": "숫자열"}
+DISPLAY_TEXT = {None: "", "badge": "배지(이름 첫 글자, 색은 코드·모양은 자산 유형)", "bar": "셀 안 막대(열의 최댓값 대비)",
+                "meter": "비율 막대(%)", "spark": "추세선(오래된 값부터)", "pill": "상태 표시(둥근 표시)"}
 COLOR_TEXT = {None: "", "sign": "부호(+빨강/-파랑)", "side": "매수 빨강/매도 파랑", "status": "상태", "verdict": "판단(가능 초록/불가 빨강)"}
 
 
@@ -94,12 +96,13 @@ def screen_markdown(screen: Screen, catalog: dict, lookups=None) -> str:
             facts.append(f"- 실시간: DB가 바뀌면 마지막 조회조건으로 다시 조회, 바뀐 칸 강조 (행 식별 열 `{g.key or g.columns[0].name}`)")
         if g.chart:
             facts.append(f"- 차트: `{g.chart['x']}` 대비 `{g.chart['y']}` 선 그래프")
-        out += facts + ["", "| 열 | 한글명 | DB 컬럼 | DB 주석 | 형식 | 정렬 | 색 |", "|---|---|---|---|---|---|---|"]
+        out += facts + ["", "| 열 | 한글명 | DB 컬럼 | DB 주석 | 형식 | 정렬 | 색 | 표시 |", "|---|---|---|---|---|---|---|---|"]
         for c, cd in zip(g.columns, gd["columns"]):
             comment = column_comment(catalog, c.source) if c.source else "(화면 계산·집계 값)"
+            shown = f"`{cd['inside']}` 배지 안에 표시" if cd["inside"] else DISPLAY_TEXT[c.display]
             out.append(f"| `{c.name}` | {_cell(cd['label'])} | {_cell(c.source or '-')} | {_cell(comment)} "
                        f"| {FORMAT_TEXT[c.format]} | {'오른쪽' if c.align == 'right' else '왼쪽'} "
-                       f"| {COLOR_TEXT[c.color]} |")
+                       f"| {COLOR_TEXT[c.color]} | {shown} |")
         out.append("")
         for b, bd in zip(g.actions, gd["actions"]):
             target = "고른 행" if b.needs_row else "행을 고르지 않아도 됨"

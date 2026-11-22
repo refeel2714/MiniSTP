@@ -19,7 +19,7 @@ grids:
       - {name: internal_value, source: recon_results.internal_value, format: money}
       - {name: broker_value, source: recon_results.broker_value, format: money}
       - {name: diff, source: recon_results.diff, format: money}
-      - {name: status, source: recon_results.status, format: code, color: status}
+      - {name: status, source: recon_results.status, format: code, color: status, display: pill}
       - {name: cause_code, source: recon_results.cause_code, format: code}
       - {name: resolved_cause, label: 판단 원인, format: code}
       - {name: resolved_note, label: 판단 메모}

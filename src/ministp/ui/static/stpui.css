@@ -114,6 +114,34 @@ button.primary:hover { filter: brightness(1.08); }
 .up { color: var(--up); } .down { color: var(--down); }
 .st-ok { color: var(--ok); font-weight: 600; } .st-bad { color: var(--bad); font-weight: 600; } .st-warn { color: var(--warn); font-weight: 600; }
 
+/* 셀 표시 유형: the value stays, the picture sits next to it. Colour only where it means something. */
+.grid td.d-badge { height: 36px; }
+.ibox { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.ib { flex: none; width: 24px; height: 24px; display: grid; place-items: center; border-radius: 6px; font-size: 11px; font-weight: 700;
+  color: var(--ink); border: 1px solid var(--ib); background: color-mix(in srgb, var(--ib) 14%, transparent); }
+.ib.round { border-radius: 50%; }
+.ib.h0 { --ib: #2f6fd6; } .ib.h1 { --ib: #d9662b; } .ib.h2 { --ib: #1a9a6c; } .ib.h3 { --ib: #8a56c9; }
+.ib.h4 { --ib: #c2488b; } .ib.h5 { --ib: #1b93a8; } .ib.h6 { --ib: #a8842a; } .ib.h7 { --ib: #6b7686; }
+.iname { display: flex; flex-direction: column; min-width: 0; line-height: 1.25; }
+.iname b { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.iname span { font: 11px ui-monospace, Consolas, monospace; color: var(--muted); }
+.grid td.d-bar { background-image: linear-gradient(var(--bar), var(--bar)); background-repeat: no-repeat;
+  background-size: var(--p, 0%) 64%; background-position: 0 50%; --bar: color-mix(in srgb, var(--accent) 16%, transparent); }
+.meter { display: flex; flex-direction: column; gap: 3px; width: 112px; }
+.meter span { font-size: 12px; font-variant-numeric: tabular-nums; line-height: 1; }
+.mtrack { height: 4px; border-radius: 2px; background: var(--line); overflow: hidden; }
+.mtrack i { display: block; height: 100%; border-radius: 2px; background: var(--accent); }
+.spark { display: block; color: var(--muted); overflow: visible; }
+.spark.up { color: var(--up); } .spark.down { color: var(--down); }
+.spark polyline { fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linejoin: round; stroke-linecap: round; }
+.spark circle { fill: currentColor; }
+.none { color: var(--muted); }
+.pill { display: inline-block; padding: 1px 9px; border-radius: 10px; font-size: 11px; font-weight: 600; background: var(--head); color: var(--muted); }
+.pill.st-ok { background: var(--ok-bg); color: var(--ok); } .pill.st-bad { background: var(--bad-bg); color: var(--bad); }
+.pill.st-warn { background: var(--warn-bg); color: var(--warn); }
+.pill.up { background: color-mix(in srgb, var(--up) 12%, transparent); color: var(--up); }
+.pill.down { background: color-mix(in srgb, var(--down) 12%, transparent); color: var(--down); }
+
 .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); }
 .card { padding: 10px 14px; border-right: 1px solid var(--grid-line); }
 .card:last-child { border-right: 0; }
@@ -154,7 +182,7 @@ button.primary:hover { filter: brightness(1.08); }
 .env .dot.off { background: var(--bad); box-shadow: none; }
 .env .dot.on { background: var(--ok); box-shadow: 0 0 0 3px rgba(76, 194, 107, .25); }
 .livechip { font-size: 11px; padding: 1px 7px; border-radius: 10px; color: var(--ok); background: var(--ok-bg); }
-@keyframes stpui-flash { from { background: var(--warn-bg); } to { background: transparent; } }
+@keyframes stpui-flash { from { background-color: var(--warn-bg); } to { background-color: transparent; } }
 .grid td.flash, .cv.flash { animation: stpui-flash 2.4s ease-out; }
 .grid tr.new td { animation: stpui-flash 2.4s ease-out; }
 @media (prefers-reduced-motion: reduce) {
