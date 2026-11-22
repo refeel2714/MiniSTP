@@ -9,7 +9,7 @@
 | [STP-1100](STP-1100.md) | 실시간 잔고 | 2 | `STP1100R02`, `STP1100R01` |
 | [STP-1200](STP-1200.md) | 주문·체결 블로터 | 1 | `STP1200R01` |
 | [STP-1300](STP-1300.md) | 주문가능 조회 | 2 | `STP1300R02`, `STP1300R01` |
-| [STP-2100](STP-2100.md) | 일일 대사 결과 | 1 | `STP2100R01` |
+| [STP-2100](STP-2100.md) | 일일 대사 결과 | 1 | `STP2100R01`, `STP2100U01` |
 | [STP-2200](STP-2200.md) | 기준가·무오류 현황 | 1 | `STP2200R01` |
 | [STP-3100](STP-3100.md) | 원장·분개 조회 | 5 | `STP3100R01`, `STP3100R02`, `STP3100R03` |
 | [STP-4100](STP-4100.md) | 종목정보 | 2 | `STP4100R01`, `STP4100R02` |
@@ -87,13 +87,14 @@
 | `positions_v.qty` | 보유수량 | STP-1100 holdings, STP-1300 symbols, STP-4100 instruments, STP-4400 positions |
 | `positions_v.symbol` | 종목코드 | STP-4400 positions |
 | `recon_results.broker_value` | 증권사 값 | STP-2100 results |
-| `recon_results.cause_code` | 원인 코드 | STP-2100 results |
+| `recon_results.cause_code` | 원인 코드 | STP-2100 results, STP-2100 results 버튼 resolve |
 | `recon_results.date` | 기준일 | STP-2100 results |
 | `recon_results.diff` | 차이 | STP-2100 results |
-| `recon_results.id` | 행 번호 | STP-2100 results |
+| `recon_results.id` | 행 번호 | STP-2100 results, STP-2100 results 버튼 resolve |
 | `recon_results.internal_value` | 내부(원장) 값 | STP-2100 results |
 | `recon_results.item` | 대사 항목 | STP-2100 results |
 | `recon_results.key` | 항목 키 | STP-2100 results |
+| `recon_results.note` | 판단 메모 | STP-2100 results 버튼 resolve |
 | `recon_results.status` | 상태 | STP-2100 results |
 | `trading_accounts.account_id` | 계좌 ID | STP-4200 account, STP-4400 accounts, STP-4500 accounts |
 | `trading_accounts.alias` | 계좌 별칭 | STP-4200 account, STP-4400 accounts, STP-4500 accounts |
