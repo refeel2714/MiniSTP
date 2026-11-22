@@ -32,7 +32,7 @@
 | `cash_ledger.date` | 일자 | STP-3100 cash |
 | `cash_ledger.reason` | 사유 | STP-3100 cash |
 | `cash_ledger.ref_id` | 참조 ID | STP-3100 cash |
-| `instruments.asset_type` | 자산 유형 | STP-1100 holdings, STP-1200 orders, STP-4100 instruments, STP-4300 fees, STP-4300 ticks |
+| `instruments.asset_type` | 자산 유형 | STP-1100 holdings, STP-1200 orders, STP-1300 symbols, STP-4100 instruments, STP-4200 settlements, STP-4300 fees, STP-4300 ticks |
 | `instruments.market` | 시장 | STP-4100 instruments, STP-4300 fees |
 | `instruments.name` | 종목명 | STP-1100 holdings, STP-1200 orders, STP-1300 symbols, STP-4100 instruments, STP-4200 settlements |
 | `instruments.symbol` | 종목코드 | STP-1100 holdings, STP-1300 symbols, STP-1300 조회조건, STP-3100 events, STP-3100 조회조건, STP-4100 instruments, STP-4200 settlements |
