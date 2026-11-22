@@ -27,6 +27,26 @@ class ShortSellError(ValueError):
     """R-36: selling more than the trade-date position."""
 
 
+class ClosedDayError(ValueError):
+    """R-78: the date is inside a closed day. Nothing more is booked there; what turns up
+    late is booked on the first open day as a correction."""
+
+
+class CannotCloseError(ValueError):
+    """R-77: the day is not ready to be closed. `reason` is one of CLOSE_BLOCKERS."""
+
+    def __init__(self, date: dt.date, reason: str):
+        super().__init__(f"{date} cannot be closed: {reason}")
+        self.date, self.reason = date, reason
+
+
+# Why a day cannot be closed yet (R-77), in the order they are checked.
+CLOSE_BLOCKERS = ("ALREADY_CLOSED",   # this date or a later one is closed already
+                  "LATER_ENTRIES",    # a later day already has entries: the next close covers this one
+                  "NAV_NOT_LAST",     # the day has no NAV, or something was booked after it
+                  "UNSETTLED")        # a settlement due by this date has not been booked
+
+
 class LedgerHaltedError(RuntimeError):
     """A listener (e.g. the DB store) failed; this in-memory ledger may no longer
     match the durable record and must be rebuilt from it."""
@@ -80,7 +100,34 @@ class NavEvent:
     closes: tuple[tuple[str, int], ...]
 
 
-Event = DepositEvent | OpeningPositionEvent | ExecutionEvent | SettlementEvent | RevaluationEvent | NavEvent
+@dataclass(frozen=True)
+class LateExecutionEvent(ExecutionEvent):
+    """A fill of a day whose books were already closed: the correction event of spec D6 (R-78).
+
+    `trade_date` stays the true trade date, so the position row, the settlement date and the
+    day's filled quantity are what the broker says. The journal entry is dated `booked_on`,
+    the first day still open, because a closed day takes no more entries."""
+    booked_on: dt.date
+
+
+@dataclass(frozen=True)
+class DayClosedEvent:
+    """R-77: the books are closed through `date`. What the ledger held at this event is the
+    ABOR of that day, and no later event may be booked on or before it."""
+    date: dt.date
+
+
+Event = (DepositEvent | OpeningPositionEvent | ExecutionEvent | SettlementEvent | RevaluationEvent | NavEvent
+         | LateExecutionEvent | DayClosedEvent)
+
+
+def book_date(ev) -> dt.date:
+    """The accounting date an event is booked on: the date a day close locks."""
+    if isinstance(ev, LateExecutionEvent):
+        return ev.booked_on
+    if isinstance(ev, ExecutionEvent):
+        return ev.trade_date
+    return ev.date
 
 
 # ---------- read models ----------
@@ -145,6 +192,10 @@ class _State:
     units: int = 0
     last_nav: Decimal | None = None
     last_valuation: JournalEntry | None = None
+    last_nav_row: NavRow | None = None
+    closed_through: dt.date | None = None                           # R-77: the last closed date
+    closed_days: dict[dt.date, NavRow] = field(default_factory=dict)  # closed date -> the NAV it was closed at
+    closed_at: int = 0                                              # events up to and including the last close
 
 
 class Ledger:
@@ -191,7 +242,10 @@ class Ledger:
             raise ValueError("qty and price must be positive")
         if side is Side.SELL and qty > self.position(symbol).qty:
             raise ShortSellError(f"{symbol}: sell {qty} > held {self.position(symbol).qty}")
-        self._record(ExecutionEvent(exec_id, trade_date, symbol, side, qty, price))
+        if self.is_closed(trade_date):   # R-78: the day is closed, so this is a correction on the open day
+            self._record(LateExecutionEvent(exec_id, trade_date, symbol, side, qty, price, self.open_day()))
+        else:
+            self._record(ExecutionEvent(exec_id, trade_date, symbol, side, qty, price))
         return self._s.results[exec_id]
 
     def next_settlement_date(self, up_to: dt.date) -> dt.date | None:
@@ -205,8 +259,9 @@ class Ledger:
             (s for s in self._s.settlements.values() if not s.settled and s.settle_date <= date),
             key=lambda s: (s.settle_date, s.exec_id),
         )
+        when = self.open_day() if self.is_closed(date) else date   # R-78: a late fill can be due inside closed days
         for s in due:
-            self._record(SettlementEvent(date, s.exec_id))
+            self._record(SettlementEvent(when, s.exec_id))
         return [s.exec_id for s in due]
 
     def revalue(self, date: dt.date, closes: dict[str, int]) -> None:
@@ -218,11 +273,70 @@ class Ledger:
         self._record(NavEvent(date, tuple(sorted(closes.items()))))
         return self._nav_row(date, closes)
 
+    def close_blocker(self, date: dt.date) -> str | None:
+        """Why `date` cannot be closed now (one of CLOSE_BLOCKERS), or None when it can."""
+        if self.is_closed(date):
+            return "ALREADY_CLOSED"
+        if any(book_date(e) > date for e in self._events[self._s.closed_at:]):
+            return "LATER_ENTRIES"
+        last = self._events[-1] if self._events else None
+        if not (isinstance(last, NavEvent) and last.date == date):
+            return "NAV_NOT_LAST"
+        if self.next_settlement_date(date) is not None:
+            return "UNSETTLED"
+        return None
+
+    def close_day(self, date: dt.date) -> NavRow:
+        """R-77: close the books through `date`, right after that day's NAV. Returns the NAV it closed at.
+
+        A day is closed only as the last word on it: its NAV is the latest event, nothing of a
+        later day has been booked and nothing due is unsettled. So the events up to the close
+        are exactly the books of that day (ABOR), and `abor()` can rebuild them at any time."""
+        reason = self.close_blocker(date)
+        if reason:
+            raise CannotCloseError(date, reason)
+        self._record(DayClosedEvent(date))
+        return self._s.closed_days[date]
+
     # ----- queries -----
 
     @property
     def events(self) -> tuple[Event, ...]:
         return tuple(self._events)
+
+    @property
+    def closed_through(self) -> dt.date | None:
+        """The last closed date (R-77), or None while nothing is closed."""
+        return self._s.closed_through
+
+    def is_closed(self, date: dt.date) -> bool:
+        return self._s.closed_through is not None and date <= self._s.closed_through
+
+    def closed_days(self) -> dict[dt.date, NavRow]:
+        """Every closed date with the NAV it was closed at, oldest first."""
+        return dict(self._s.closed_days)
+
+    def unclosed_events(self) -> tuple[Event, ...]:
+        """The events after the last close: all that IBOR holds and ABOR does not (D6)."""
+        return tuple(self._events[self._s.closed_at:])
+
+    def open_day(self) -> dt.date | None:
+        """The date a correction is booked on (R-78): the business day after the last close,
+        or the latest day that already has entries when the books have moved on since."""
+        if self._s.closed_through is None:
+            return None
+        first = self.calendar.add_business_days(self._s.closed_through, 1)
+        return max([first, *(book_date(e) for e in self._events[self._s.closed_at:])])
+
+    def abor(self, date: dt.date | None = None) -> "Ledger | None":
+        """The books as the close of `date` left them (default: the last close), or None when
+        that day was never closed. A replay of the events up to that close, nothing else."""
+        date = date or self._s.closed_through
+        for n, ev in enumerate(self._events, 1):
+            if isinstance(ev, DayClosedEvent) and ev.date == date:
+                return Ledger.replay(self._events[:n], self.calendar, self.fees, self.instruments,
+                                     self.settlement_cycle)
+        return None
 
     @property
     def journal(self) -> tuple[JournalEntry, ...]:
@@ -265,12 +379,12 @@ class Ledger:
     def nav_history(self) -> list[NavRow]:
         """Every recorded NAV as it stood on its own day (replays the events in order)."""
         led = Ledger(self.calendar, self.fees, self.instruments, self.settlement_cycle)
-        rows = []
+        rows: dict[dt.date, NavRow] = {}
         for ev in self._events:
             led._record(ev)
-            if isinstance(ev, NavEvent):
-                rows.append(led._nav_row(ev.date, dict(ev.closes)))
-        return rows
+            if isinstance(ev, NavEvent):   # struck again before the close (R-75): the last one is the day's NAV
+                rows[ev.date] = led._nav_row(ev.date, dict(ev.closes))
+        return list(rows.values())
 
     @classmethod
     def replay(cls, events, calendar, fees, instruments,
@@ -285,6 +399,9 @@ class Ledger:
     def _record(self, ev: Event) -> None:
         if self._halted:
             raise LedgerHaltedError(self._halted)
+        if self.is_closed(book_date(ev)):   # R-78, also on replay: a stream that books into a closed day is refused
+            raise ClosedDayError(f"{type(ev).__name__} dated {book_date(ev)}: the books are closed "
+                                 f"through {self._s.closed_through}")
         n = len(self._s.journal)
         self._apply(ev)
         self._events.append(ev)
@@ -312,7 +429,12 @@ class Ledger:
             case RevaluationEvent():
                 self._apply_revaluation(ev)
             case NavEvent():
-                self._s.last_nav = self._nav_row(ev.date, dict(ev.closes)).nav_per_1000
+                self._s.last_nav_row = self._nav_row(ev.date, dict(ev.closes))
+                self._s.last_nav = self._s.last_nav_row.nav_per_1000
+            case DayClosedEvent():
+                self._s.closed_through = ev.date
+                self._s.closed_days[ev.date] = self._s.last_nav_row
+                self._s.closed_at = len(self._events) + 1   # this event is appended right after it is applied
 
     def _apply_deposit(self, ev: DepositEvent) -> None:
         nav = self._s.last_nav or INITIAL_NAV
@@ -355,7 +477,8 @@ class Ledger:
                      Dr(Account.TAXES, c.taxes), Cr(Account.FVPL_STOCK, cost_of_sale),
                      Cr(Account.TRADING_GAIN, max(pnl, 0)), Dr(Account.TRADING_LOSS, max(-pnl, 0))]  # R-53
 
-        self._s.journal.append(entry(ev.trade_date, "EXECUTION", ev.exec_id, *lines))
+        late = isinstance(ev, LateExecutionEvent)   # R-78: the entry goes on the open day, marked as a correction
+        self._s.journal.append(entry(book_date(ev), "LATE_EXECUTION" if late else "EXECUTION", ev.exec_id, *lines))
         self._s.settlements[ev.exec_id] = Settlement(ev.exec_id, ev.trade_date, settle_date, ev.side, net)
         self._s.results[ev.exec_id] = ExecutionResult(
             ev.exec_id, gross, c.commission, c.tx_tax, c.rural_tax, net, settle_date, cost_of_sale, pnl)

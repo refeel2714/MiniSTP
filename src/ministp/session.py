@@ -9,7 +9,7 @@ import datetime as dt
 from dataclasses import dataclass, field
 
 from .broker.base import BrokerBalance, BrokerGateway, OrderAck, recon_items
-from .ledger import ExecutionEvent, Ledger, Side
+from .ledger import ExecutionEvent, LateExecutionEvent, Ledger, Side
 from .oms import OrderManager, OrderStatus, OverfillError
 from .recon import ReconItem, ReconResult, reconcile
 from .capacity import OpenOrder, capacity, check
@@ -30,7 +30,7 @@ def failure_text(detail: str) -> str:
 @dataclass(frozen=True)
 class Anomaly:
     day: dt.date
-    kind: str      # UNKNOWN_ORDER | ODD_FILL_PRICE | BROKER_REJECTED | SUBMIT_FAILED | OVERFILL
+    kind: str      # UNKNOWN_ORDER | ODD_FILL_PRICE | BROKER_REJECTED | SUBMIT_FAILED | OVERFILL | LATE_FILL
     ref: str
     detail: str
 
@@ -164,6 +164,10 @@ class TradingSession:
                 t.fills += 1
                 exec_id = f"{exec_prefix(day, b.order_no)}{t.fills}"
                 self.ledger.execute(exec_id, day, b.symbol, Side(b.side), dq, da // dq)
+                late = self.ledger.events[-1]
+                if isinstance(late, LateExecutionEvent):   # R-78: kept in the recon snapshot with the run
+                    self.anomalies.append(Anomaly(day, "LATE_FILL", b.order_no,
+                                                  f"{exec_id} booked on {late.booked_on}: {day} was already closed"))
                 t.booked_qty, t.booked_amount = b.filled_qty, b.filled_amount
                 booked.append(exec_id)
             done = b.filled_qty + b.canceled_qty + b.rejected_qty

@@ -24,7 +24,7 @@ from .calendar import BusinessCalendar
 from .capacity import Capacity, OpenOrder, capacity, pending_buy_value
 from .fees import FeeSchedule
 from .instruments import AssetType, Instrument, Market
-from .ledger import ExecutionEvent, Ledger, NavEvent, Side
+from .ledger import ExecutionEvent, LateExecutionEvent, Ledger, NavEvent, NavRow, Side, book_date
 from .oms import OrderStatus
 from .recon import Cause, ReconResult, Status
 from .session import Anomaly, TradingSession, failure_text
@@ -206,11 +206,51 @@ class DailyReport:
     anomalies: list[Anomaly]
     run_id: int
     notes: list[str] = field(default_factory=list)
+    closed: bool = False        # R-77: this run closed the day
 
     @property
     def clean(self) -> bool:
         """R-74: no UNKNOWN cause and no unresolved break."""
         return all(r.status is Status.MATCH for r in self.results)
+
+
+# Why a day is not closed yet (ledger.CLOSE_BLOCKERS), for a person.
+CLOSE_BLOCKER_TEXT = {
+    "ALREADY_CLOSED": "이미 마감한 날이에요",
+    "LATER_ENTRIES": "다음 날 장부가 이미 시작돼서 이 날만 따로 마감할 수 없어요. 다음 마감이 이 날까지 함께 닫아요",
+    "NAV_NOT_LAST": "그날 기준가를 산출한 바로 뒤에만 마감해요. daily를 먼저 실행해 주세요",
+    "UNSETTLED": "결제일이 지났는데 결제하지 않은 거래가 있어요. daily를 먼저 실행해 주세요",
+}
+
+
+def _nav_outdated(ledger: Ledger, day: dt.date) -> bool:
+    """R-75: the day has a NAV, and something was booked on that same day after it."""
+    events = ledger.events
+    last = max(i for i, e in enumerate(events) if isinstance(e, NavEvent) and e.date == day)
+    after = events[last + 1:]
+    return bool(after) and all(book_date(e) == day for e in after)
+
+
+def close_books(books: Books, day: dt.date) -> NavRow:
+    """R-77: close the day by hand, once every break of its last daily recon has been judged.
+
+    `daily` closes a day itself when its recon is clean. This is for the day that had a break:
+    the owner judges it (`resolve`), then closes. The rule is the one the gate and the 대사 달력
+    read (`recon_days`), so a day that counts as clean is a day that can be closed."""
+    days = recon_days(books.conn, date_from=day, date_to=day, account_id=books.account_id)
+    if day not in days:
+        raise OpsError(f"{day} 일 마감 대사 기록이 없어요. daily를 먼저 실행해 주세요.")
+    if not days[day].clean:
+        raise OpsError(f"{day} 대사에 판단하지 않은 불일치가 {days[day].open_breaks}건 있어요. "
+                       "resolve로 원인을 판단한 뒤 마감해 주세요.")
+    reason = books.ledger.close_blocker(day)
+    if reason:
+        raise OpsError(f"{day} 장부를 마감할 수 없어요: {CLOSE_BLOCKER_TEXT[reason]}.")
+    nav = books.ledger.close_day(day)
+    problems = books.store.verify(books.ledger)
+    if problems:
+        raise OpsError(f"DB 원장 검증 실패: {problems}")
+    return nav
 
 
 def daily_close(books: Books, broker: BrokerGateway, day: dt.date) -> DailyReport:
@@ -227,12 +267,20 @@ def daily_close(books: Books, broker: BrokerGateway, day: dt.date) -> DailyRepor
     # 2. fills of orders MiniSTP placed today
     session = session_for(books, broker, day)
     booked = session.sync(day)
+    for e in ledger.events[-len(booked):] if booked else ():
+        if isinstance(e, LateExecutionEvent):   # R-78: the day was closed, so the fill is a correction
+            notes.append(f"마감 후 체결 {e.exec_id}: {e.trade_date}은 마감한 날이라 {e.booked_on} 장부에 정정으로 기록했어요.")
 
-    # 3. valuation and NAV at the close, once per day (R-55, R-60)
+    # 3. valuation and NAV at the close (R-55, R-60). Until the day is closed it can be struck again (R-75).
     nav = None
-    if any(isinstance(e, NavEvent) and e.date == day for e in ledger.events):
+    has_nav = any(isinstance(e, NavEvent) and e.date == day for e in ledger.events)
+    if ledger.is_closed(day):
+        notes.append(f"{day}은 이미 마감한 날이라 대사만 다시 실행했어요.")
+    elif has_nav and not _nav_outdated(ledger, day):
         notes.append("오늘 NAV는 이미 기록돼 있어 대사만 다시 실행했어요.")
     else:
+        if has_nav:
+            notes.append("기준가를 산출한 뒤에 반영된 거래가 있어, 마감 전이라 기준가를 다시 산출했어요.")
         closes = {sym: broker.get_price(sym) for sym in sorted(ledger.positions())}
         ledger.revalue(day, closes)
         nav = ledger.nav(day, closes)
@@ -246,10 +294,22 @@ def daily_close(books: Books, broker: BrokerGateway, day: dt.date) -> DailyRepor
         "anomalies": [a.__dict__ | {"day": a.day.isoformat()} for a in session.anomalies],
     }, books.account_id)
     _insert_results(books.conn, run_id, results, books.account_id)
+
+    # 5. close the day when the recon is clean (R-77). A day with a break waits for the owner's judgement.
+    closed = False
+    if not ledger.is_closed(day):
+        reason = ledger.close_blocker(day)
+        if any(r.status is not Status.MATCH for r in results):
+            notes.append("불일치가 있어 장부를 마감하지 않았어요. resolve로 원인을 판단한 뒤 close로 마감해 주세요.")
+        elif reason:
+            notes.append(f"장부를 마감하지 않았어요: {CLOSE_BLOCKER_TEXT[reason]}.")
+        else:
+            ledger.close_day(day)
+            closed = True
     problems = books.store.verify(ledger)
     if problems:
         raise OpsError(f"DB 원장 검증 실패: {problems}")
-    return DailyReport(day, settled, booked, nav, results, session.anomalies, run_id, notes)
+    return DailyReport(day, settled, booked, nav, results, session.anomalies, run_id, notes, closed)
 
 
 GATE_DAYS = 20   # R-74: this many clean business days in a row open the next stage

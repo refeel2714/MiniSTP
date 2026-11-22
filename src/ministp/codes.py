@@ -38,7 +38,8 @@ class CodeGroup:
     fixed: bool = True                       # the program defines the codes; only names change
 
 
-# The codes of ERD v2.1, as a new database gets them (`init_schema`) and as migration 0002 inserts them.
+# The codes a new database gets (`init_schema`). An existing one gets the same rows from the migrations:
+# 0002 inserted the codes of ERD v2.1, 0003 the three of the day close (v2.2).
 SEED: tuple[CodeGroup, ...] = (
     CodeGroup("ACCOUNT_STATUS", "계좌 상태", "위탁계좌의 상태. 정상 계좌만 주문을 받아요 (R-39).",
               "account_status_history.status", (
@@ -114,14 +115,17 @@ SEED: tuple[CodeGroup, ...] = (
                   ("ExecutionEvent", "체결", "매수·매도 체결"),
                   ("SettlementEvent", "결제", "체결 대금이 예수금에 반영되는 날"),
                   ("RevaluationEvent", "평가", "종가로 다시 평가"),
-                  ("NavEvent", "기준가", "하루의 기준가 산출"))),
+                  ("NavEvent", "기준가", "하루의 기준가 산출"),
+                  ("LateExecutionEvent", "마감 후 체결", "마감한 날의 체결을 열린 날에 정정으로 기록"),
+                  ("DayClosedEvent", "일 마감", "이 날짜까지 장부를 마감"))),
     CodeGroup("JOURNAL_KIND", "전표 유형", "분개 전표가 만들어진 이유.", "journal_entries.kind", (
         ("DEPOSIT", "입금", ""),
         ("OPENING", "시작 보유", ""),
         ("EXECUTION", "체결", "체결일에 미수금·미지급금으로 인식"),
         ("SETTLEMENT", "결제", "결제일에 예수금으로 정리"),
         ("VALUATION", "평가", "종가 평가손익"),
-        ("VALUATION_REVERSAL", "평가 환입", "전일 평가분을 되돌림"))),
+        ("VALUATION_REVERSAL", "평가 환입", "전일 평가분을 되돌림"),
+        ("LATE_EXECUTION", "마감 후 체결", "마감한 날의 체결을 열린 날 전표로 인식 (정정)"))),
     CodeGroup("CASH_REASON", "예수금 변동 사유", "예수금이 움직인 이유. 예수금은 결제일에만 변해요 (R-13).",
               "cash_ledger.reason", (
                   ("DEPOSIT", "입금", ""),
@@ -151,7 +155,7 @@ def seed(conn: psycopg.Connection) -> None:
 
 
 def seed_sql() -> str:
-    """The same seed as SQL. Migration 0002 was written from it; a test compares the two results."""
+    """The same seed as SQL. The migrations' inserts were written from it; a test compares the two results."""
     def lit(v) -> str:
         if v is None:
             return "null"

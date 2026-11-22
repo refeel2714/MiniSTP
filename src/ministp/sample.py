@@ -22,7 +22,8 @@ from .fees import FeeSchedule
 from .instruments import AssetType, Instrument, Market
 from .ledger import Side
 from .accounts import add_account, add_customer, set_status
-from .ops import Books, add_instrument, clean_streak, daily_close, load_books, open_books, place_order, resolve_break
+from .ops import (Books, add_instrument, clean_streak, close_books, daily_close, load_books, open_books, place_order,
+                  resolve_break)
 from .recon import Cause, Status
 from .store import DEFAULT_ACCOUNT, PostgresLedgerStore
 from .ticks import round_to_tick
@@ -142,6 +143,8 @@ def build_sample(conn: psycopg.Connection, calendar: BusinessCalendar, fees: Fee
             if r.status is Status.BREAK:
                 _judge(conn, day, r.item, DEFAULT_ACCOUNT)
                 summary.breaks_resolved += 1
+        if not report.closed:   # the day with a break: judged above, then closed by hand (R-77)
+            close_books(_books(conn, calendar, fees), day)
         for x in others:   # after the default account, so its history does not depend on them
             x.run_day(conn, calendar, fees, instruments, broker.prices, n, day)
         summary.days += 1
@@ -208,6 +211,8 @@ class _Extra:
             if r.status is Status.BREAK:
                 _judge(conn, day, r.item, acct)
                 out.breaks_resolved += 1
+        if not report.closed:
+            close_books(_books(conn, calendar, fees, acct), day)
 
 
 def _move_prices(broker: SimBroker, rng: random.Random) -> None:

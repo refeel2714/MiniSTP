@@ -69,7 +69,7 @@ def test_the_migration_leaves_the_same_codes_as_a_new_database(conn):
     _restore_v1_1()
     with psycopg.connect(URL, autocommit=True) as old:
         reports = mg.migrate(old)
-        assert [r.migration.version for r in reports] == [1, 2] and all(r.applied for r in reports)
+        assert [r.migration.version for r in reports] == [1, 2, 3] and all(r.applied for r in reports)
         assert _rows(old) == fresh
         assert codes.check(old) == []                              # the codes a real ledger stored all have names
 

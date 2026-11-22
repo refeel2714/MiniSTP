@@ -1,5 +1,5 @@
 -- MiniSTP ledger schema (spec 03).
--- ERD version: 2.1  (bump on every schema change, then run scripts/gen_erd.py) Append-only tables are enforced in the DB,
+-- ERD version: 2.2  (bump on every schema change, then run scripts/gen_erd.py) Append-only tables are enforced in the DB,
 -- not just in application code.
 
 create table if not exists accounts_chart (
@@ -93,6 +93,22 @@ create table if not exists cash_ledger (
     ref_id     text not null,
     account_id text not null,
     constraint cash_ledger_event_account_fkey
+        foreign key (event_seq, account_id) references ledger_events (seq, account_id)
+);
+
+-- v2.2 일 마감 (스펙 D6, R-77~79): 마감 이벤트(DayClosedEvent)마다 한 행. 그날의 확정 기준가를 함께 남긴다.
+-- 마감일과 그 이전 날짜로는 전표와 예수금 행이 더 들어가지 않는다 (아래 ministp_forbid_closed_day).
+create table if not exists day_closes (
+    account_id   text not null,
+    date         date not null,
+    event_seq    bigint not null,
+    net_assets   bigint not null,
+    units        bigint not null check (units >= 0),
+    nav_per_1000 numeric(18, 2) not null,
+    closed_at    timestamptz not null default now(),
+    primary key (account_id, date),
+    constraint day_closes_event_key unique (event_seq),
+    constraint day_closes_event_account_fkey
         foreign key (event_seq, account_id) references ledger_events (seq, account_id)
 );
 
@@ -210,7 +226,7 @@ begin
     foreach t in array array['ledger_events', 'journal_entries', 'journal_lines',
                              'position_ledger', 'cash_ledger', 'instruments', 'oms_orders',
                              'oms_order_acks', 'broker_snapshots', 'recon_results',
-                             'customers', 'trading_accounts', 'account_status_history'] loop
+                             'customers', 'trading_accounts', 'account_status_history', 'day_closes'] loop
         if not exists (select 1 from pg_trigger where tgname = t || '_append_only') then
             execute format('create trigger %I before update or delete on %I
                             for each row execute function ministp_forbid_change()',
@@ -226,6 +242,29 @@ begin
         create constraint trigger journal_lines_balanced after insert on journal_lines
             deferrable initially deferred for each row execute function ministp_check_entry_balance();
     end if;
+end $$;
+
+-- R-78: a closed day takes no more entries. An entry, a cash row or another close dated on or
+-- before a close of the same account is refused, whoever tries (the program books a correction
+-- on the open day instead).
+create or replace function ministp_forbid_closed_day() returns trigger language plpgsql as $$
+begin
+    if exists (select 1 from day_closes c where c.account_id = new.account_id and c.date >= new.date) then
+        raise exception '%: % is inside a closed day of account % (book a correction on the open day)',
+            tg_table_name, new.date, new.account_id using errcode = 'check_violation';
+    end if;
+    return new;
+end $$;
+
+do $$
+declare t text;
+begin
+    foreach t in array array['journal_entries', 'cash_ledger', 'day_closes'] loop
+        if not exists (select 1 from pg_trigger where tgname = t || '_closed_day') then
+            execute format('create trigger %I before insert on %I
+                            for each row execute function ministp_forbid_closed_day()', t || '_closed_day', t);
+        end if;
+    end loop;
 end $$;
 
 -- A code is renamed or switched off, never removed: old rows still carry it.
@@ -288,6 +327,22 @@ create or replace view customer_positions_v as
 select t.customer_id, p.symbol, sum(p.qty_delta) as qty, sum(p.cost_delta) as book_cost
   from position_ledger p join trading_accounts t on t.account_id = p.account_id
  group by t.customer_id, p.symbol having sum(p.qty_delta) <> 0;
+
+-- ABOR (스펙 D6, R-79): 마지막 마감이 남긴 장부. 그 뒤에 쌓인 이벤트는 들어 있지 않다.
+create or replace view last_close_v as
+select distinct on (account_id) account_id, date, event_seq, net_assets, units, nav_per_1000, closed_at
+  from day_closes order by account_id, date desc;
+
+create or replace view abor_positions_v as
+select c.account_id, c.date as closed_date, p.symbol, sum(p.qty_delta) as qty, sum(p.cost_delta) as book_cost
+  from last_close_v c join position_ledger p on p.account_id = c.account_id and p.event_seq <= c.event_seq
+ group by c.account_id, c.date, p.symbol having sum(p.qty_delta) <> 0;
+
+-- IBOR와 ABOR의 차이는 이 이벤트들로만 설명된다.
+create or replace view unclosed_events_v as
+select e.account_id, e.seq, e.event_type, e.recorded_at
+  from ledger_events e left join last_close_v c on c.account_id = e.account_id
+ where c.event_seq is null or e.seq > c.event_seq;
 
 -- Korean names (한글 명칭). Shown in pgAdmin and in docs/erd. Every table, view and
 -- column must have one; tests/db/test_erd.py fails otherwise.
@@ -458,6 +513,37 @@ comment on column common_codes.description is '코드 설명';
 comment on column common_codes.sort_order is '표시 순서';
 comment on column common_codes.in_use is '사용 여부';
 comment on column common_codes.updated_at is '수정 시각';
+
+comment on table day_closes is '일 마감 (마감 이벤트마다 한 행, 그날의 확정 기준가)';
+comment on column day_closes.account_id is '계좌 ID';
+comment on column day_closes.date is '마감일 (이 날짜까지 장부 마감)';
+comment on column day_closes.event_seq is '마감 이벤트 순번';
+comment on column day_closes.net_assets is '마감 순자산';
+comment on column day_closes.units is '마감 좌수';
+comment on column day_closes.nav_per_1000 is '마감 기준가 (1,000좌당)';
+comment on column day_closes.closed_at is '마감 기록 시각';
+
+comment on view last_close_v is '계좌별 마지막 마감';
+comment on column last_close_v.account_id is '계좌 ID';
+comment on column last_close_v.date is '마지막 마감일';
+comment on column last_close_v.event_seq is '마감 이벤트 순번';
+comment on column last_close_v.net_assets is '마감 순자산';
+comment on column last_close_v.units is '마감 좌수';
+comment on column last_close_v.nav_per_1000 is '마감 기준가 (1,000좌당)';
+comment on column last_close_v.closed_at is '마감 기록 시각';
+
+comment on view abor_positions_v is '마지막 마감 시점의 계좌별·종목별 보유 (ABOR)';
+comment on column abor_positions_v.account_id is '계좌 ID';
+comment on column abor_positions_v.closed_date is '마감일';
+comment on column abor_positions_v.symbol is '종목코드';
+comment on column abor_positions_v.qty is '마감 보유수량';
+comment on column abor_positions_v.book_cost is '마감 장부금액 (매입금액)';
+
+comment on view unclosed_events_v is '마지막 마감 뒤에 쌓인 이벤트 (IBOR와 ABOR의 차이)';
+comment on column unclosed_events_v.account_id is '계좌 ID';
+comment on column unclosed_events_v.seq is '이벤트 순번';
+comment on column unclosed_events_v.event_type is '이벤트 유형';
+comment on column unclosed_events_v.recorded_at is '기록 시각';
 
 -- 마이그레이션 적용 기록. 새 DB는 이 스키마로 만들어지면서 그때까지의 마이그레이션이 적용된 것으로 기록된다.
 create table if not exists schema_migrations (

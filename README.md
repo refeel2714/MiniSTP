@@ -195,6 +195,7 @@ MINISTP_TEST_DATABASE_URL=postgresql://postgres:postgres@localhost:5432/ministp_
 .venv\Scripts\python -m ministp daily                         :: 영업일 15:40 이후
 .venv\Scripts\python -m ministp status
 .venv\Scripts\python -m ministp resolve 12 FEE_DIFF "메모"     :: 불일치 판단 기록
+.venv\Scripts\python -m ministp close                         :: 불일치를 판단한 날을 직접 마감 (--date 날짜)
 ```
 
 계좌가 여러 개일 때 (ERD v2.0부터):
@@ -220,7 +221,7 @@ MINISTP_TEST_DATABASE_URL=postgresql://postgres:postgres@localhost:5432/ministp_
 
 `run`은 한국투자증권 실시간 체결통보(WebSocket)를 받아 체결 즉시 원장(IBOR)에 반영하고, 끊기면 1분마다 조회로 보완하며, 5분마다 장중 대사를 남깁니다. 창에 `buy 069500 1`, `sell 069500 1 81000`, `status`, `recon`, `quit`을 입력해 씁니다. HTS ID(체결통보 구독 키)를 처음에 물어봅니다. 15:30에 스스로 끝나고, 원장을 쓰는 명령은 한 번에 하나만 실행됩니다.
 
-`daily`는 결제, 체결 반영, 종가 평가와 NAV, 대사를 차례로 하고 무오류 연속 영업일을 보여줍니다. 증권사 앱에서 직접 낸 주문은 원장에 들어가지 않고 이상 거래로 표시됩니다.
+`daily`는 결제, 체결 반영, 종가 평가와 NAV, 대사를 차례로 하고 무오류 연속 영업일을 보여줍니다. 대사가 모두 일치하면 그날 장부를 마감합니다(일 마감, R-77). 마감한 날짜로는 원장도 DB도 더 기록을 받지 않고, 마감 뒤에 알게 된 그날의 체결은 실제 매매일을 그대로 둔 채 다음 열린 날의 정정 전표로 남습니다(R-78). 마감 시점의 장부(ABOR)는 따로 쌓지 않고 마감 이벤트까지를 다시 재생해 만들기 때문에, 장중 장부(IBOR)와의 차이는 마감 뒤에 쌓인 이벤트로만 설명됩니다(R-79). 불일치가 있던 날은 `resolve`로 원인을 판단한 뒤 `close`로 마감하고, `status`가 어디까지 마감했는지 보여줍니다. 증권사 앱에서 직접 낸 주문은 원장에 들어가지 않고 이상 거래로 표시됩니다.
 
 ## 보안
 
