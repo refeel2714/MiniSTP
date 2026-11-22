@@ -167,3 +167,39 @@ def test_the_ui_command_turns_buttons_on_only_when_asked(sample, capsys):
     assert writable(sample=False) is False and "조회 전용" in capsys.readouterr().out
     assert writable(sample=False, write=True) is True and "처리 버튼 켜짐" in capsys.readouterr().out
     assert writable(sample=True) is True                                       # the sample DB is for trying things
+
+
+def test_a_live_shell_opens_framed_screens_and_the_sample_never_does(sample, capsys):
+    """실전 테두리: 화면은 명령과 같은 환경변수(MINISTP_KIS_ENV)를 읽어요. 실전이면 모든 페이지가 테두리를 두르고 그렇다고 말해요."""
+    apps = []
+    base = {"MINISTP_UI_DATABASE_URL": URL, "MINISTP_SAMPLE_DATABASE_URL": URL}
+
+    def opened(environ, sample=False, **kw):
+        assert cli._ui(URL, {**base, **environ}, CAL, FEES, sample=sample, port=9999, serve=apps.append, **kw) == 0
+        client = TestClient(apps[-1], base_url="http://127.0.0.1")
+        return client, page_data(client), capsys.readouterr().out
+
+    client, data, said = opened({})                                              # nothing set: 모의투자
+    assert (data["env"], data["env_name"]) == ("paper", "모의") and "실전" not in said
+    assert '<body data-env="paper">' in client.get("/").text and "[실전]" not in client.get("/").text
+
+    client, data, said = opened({"MINISTP_KIS_ENV": "live"}, write=True)
+    assert (data["env"], data["env_name"]) == ("live", "실전") and "실전 환경" in said
+    for path in ("/", "/screen/STP-1100", "/screen/STP-2100"):                   # every page, before any script runs
+        page = client.get(path).text
+        assert '<body data-env="live">' in page and "<title>[실전] " in page
+    css = client.get("/static/stpui.css").text
+    assert 'body[data-env="live"]::before' in css and "--live:" in css
+
+    # the frame does not wait for MINISTP_ALLOW_LIVE: a shell that points at 실전 is shown as 실전
+    _, data, _ = opened({"MINISTP_KIS_ENV": "live", "MINISTP_ALLOW_LIVE": "1"})
+    assert data["env"] == "live"
+    # the sample DB is nobody's account, whatever the shell says
+    client, data, said = opened({"MINISTP_KIS_ENV": "live"}, sample=True)
+    assert (data["env"], data["env_name"]) == ("sample", "샘플") and "실전" not in said
+    assert '<body data-env="sample">' in client.get("/").text
+
+    assert cli._ui(URL, {**base, "MINISTP_KIS_ENV": "real"}, CAL, FEES, sample=False, port=9999, serve=apps.append) == 1
+    assert "paper(모의)나 live(실전)" in capsys.readouterr().out                  # a typo is not quietly taken for 모의
+    with pytest.raises(ValueError):
+        ui_app.create_app(URL, calendar=CAL, fees=FEES, env="prod")
