@@ -52,6 +52,24 @@ def from_payload(event_type: str, payload: dict):
     return cls(**kw)
 
 
+def position_row(ledger: Ledger, ev) -> tuple | None:
+    """What an event adds to position_ledger: (trade_date, symbol, exec_id, qty_delta, cost_delta, realized_pnl)."""
+    if isinstance(ev, OpeningPositionEvent):
+        return (ev.date, ev.symbol, f"OPEN-{ev.symbol}", ev.qty, ev.book_cost, None)
+    if isinstance(ev, ExecutionEvent):
+        r = ledger.execution_result(ev.exec_id)
+        buy = ev.side is Side.BUY
+        return (ev.trade_date, ev.symbol, ev.exec_id, ev.qty if buy else -ev.qty,
+                r.gross if buy else -r.cost_of_sale, r.realized_pnl)
+    return None
+
+
+def cash_rows(entry) -> list[tuple]:
+    """What a journal entry adds to cash_ledger: (date, reason, amount, ref_id) per cash line."""
+    return [(entry.date, entry.kind, ln.debit - ln.credit, entry.source_id)
+            for ln in entry.lines if ln.account is Account.CASH]
+
+
 class PostgresLedgerStore:
     def __init__(self, conn: psycopg.Connection):
         self.conn = conn
@@ -102,26 +120,15 @@ class PostgresLedgerStore:
                         "insert into journal_lines (entry_id, account_code, debit, credit)"
                         " values (%s, %s, %s, %s)",
                         [(eid, ln.account.code, ln.debit, ln.credit) for ln in e.lines])
-                for ln in e.lines:
-                    if ln.account is Account.CASH:
-                        self.conn.execute(
-                            "insert into cash_ledger (event_seq, date, reason, amount, ref_id)"
-                            " values (%s, %s, %s, %s, %s)",
-                            (seq, e.date, e.kind, ln.debit - ln.credit, e.source_id))
-            if isinstance(ev, OpeningPositionEvent):
+                with self.conn.cursor() as cur:
+                    cur.executemany(
+                        "insert into cash_ledger (event_seq, date, reason, amount, ref_id)"
+                        " values (%s, %s, %s, %s, %s)", [(seq, *row) for row in cash_rows(e)])
+            row = position_row(ledger, ev)
+            if row is not None:
                 self.conn.execute(
                     "insert into position_ledger (event_seq, trade_date, symbol, exec_id,"
-                    " qty_delta, cost_delta, realized_pnl) values (%s, %s, %s, %s, %s, %s, null)",
-                    (seq, ev.date, ev.symbol, f"OPEN-{ev.symbol}", ev.qty, ev.book_cost))
-            if isinstance(ev, ExecutionEvent):
-                r = ledger.execution_result(ev.exec_id)
-                buy = ev.side is Side.BUY
-                self.conn.execute(
-                    "insert into position_ledger (event_seq, trade_date, symbol, exec_id,"
-                    " qty_delta, cost_delta, realized_pnl) values (%s, %s, %s, %s, %s, %s, %s)",
-                    (seq, ev.trade_date, ev.symbol, ev.exec_id,
-                     ev.qty if buy else -ev.qty, r.gross if buy else -r.cost_of_sale,
-                     r.realized_pnl))
+                    " qty_delta, cost_delta, realized_pnl) values (%s, %s, %s, %s, %s, %s, %s)", (seq, *row))
 
     # ----- read path -----
 
@@ -142,31 +149,5 @@ class PostgresLedgerStore:
 
     def verify(self, ledger: Ledger) -> list[str]:
         """Compare stored projections with the ledger. Empty list = consistent."""
-        problems = []
-        rows = self.conn.execute(
-            "select e.entry_id, e.date, e.kind, e.source_id, l.account_code, l.debit, l.credit"
-            " from journal_entries e join journal_lines l using (entry_id)"
-            " order by e.entry_id, l.line_id").fetchall()
-        stored: dict[int, tuple] = {}
-        for eid, date, kind, src, acct, dr, cr in rows:
-            head, lines = stored.get(eid, ((date, kind, src), []))
-            lines.append((acct, dr, cr))
-            stored[eid] = (head, lines)
-        db_journal = [(h, sorted(ls)) for h, ls in stored.values()]
-        mem_journal = [((e.date, e.kind, e.source_id),
-                        sorted((ln.account.code, ln.debit, ln.credit) for ln in e.lines))
-                       for e in ledger.journal]
-        if db_journal != mem_journal:
-            problems.append("journal differs")
-        balances = dict(self.conn.execute("select code, balance from account_balances_v"))
-        for a in Account:
-            if balances.get(a.code, 0) != ledger.account_balance(a):
-                problems.append(f"account {a.code} differs")
-        db_pos = {s: (q, c) for s, q, c in self.conn.execute(
-            "select symbol, qty, book_cost from positions_v")}
-        mem_pos = {s: (p.qty, p.book_cost) for s, p in ledger.positions().items()}
-        if db_pos != mem_pos:
-            problems.append("positions differ")
-        if self.conn.execute("select balance from cash_balance_v").fetchone()[0] != ledger.cash_balance():
-            problems.append("cash differs")
-        return problems
+        from .integrity import projection_checks
+        return [f"{c.title}: {c.detail}" for c in projection_checks(self.conn, ledger) if not c.ok]

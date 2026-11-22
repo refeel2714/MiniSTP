@@ -94,6 +94,8 @@ def run(argv, *, environ=os.environ, client_factory=KisClient, connect=psycopg.c
     how.add_argument("--dry-run", action="store_true", help="적용해 보고 전부 되돌려요 (리허설)")
     how.add_argument("--apply", action="store_true", help="실제로 적용해요. 먼저 pg_dump로 백업하세요")
     p.add_argument("--sample", action="store_true", help="샘플 DB(ministp_sample)에 실행")
+    p = sub.add_parser("verify", help="원장 무결성 점검: 저장된 행이 이벤트를 다시 계산한 결과와 같은지 (읽기 전용)")
+    p.add_argument("--sample", action="store_true", help="샘플 DB(ministp_sample)를 점검")
     p = sub.add_parser("ui", help="업무화면(STP-UI)을 이 PC에서만 열기 (조회 전용)")
     p.add_argument("--sample", action="store_true", help="샘플 DB(ministp_sample)로 열기")
     p.add_argument("--port", type=int, default=8765)
@@ -125,6 +127,13 @@ def run(argv, *, environ=os.environ, client_factory=KisClient, connect=psycopg.c
                 target = (environ.get("MINISTP_SAMPLE_DATABASE_URL")
                           or psycopg.conninfo.make_conninfo(url, dbname=SAMPLE_DB))
             return _db_migrate(target, connect, dry_run=args.dry_run, apply=args.apply)
+
+        if args.cmd == "verify":
+            target = url
+            if args.sample:
+                target = (environ.get("MINISTP_SAMPLE_DATABASE_URL")
+                          or psycopg.conninfo.make_conninfo(url, dbname=SAMPLE_DB))
+            return _verify(target, connect, calendar, fees)
 
         with connect(url, autocommit=True) as conn:
             if args.cmd == "instrument":
@@ -294,6 +303,27 @@ def _sample_db(url: str, environ, connect, calendar, days: int) -> int:
             print(f"  {n}")
     print("운영 DB(ministp)는 건드리지 않았어요. pgAdmin에서 ministp_sample을 열어 보세요.")
     return 0
+
+
+def _verify(url: str, connect, calendar, fees) -> int:
+    """Print the integrity report. Takes no writer lock and writes nothing, so it can run beside `run`."""
+    from .ops import load_instruments
+    from .store.integrity import integrity_report
+    with connect(url, autocommit=True) as conn:
+        try:
+            checks = integrity_report(conn, calendar, fees, load_instruments(conn))
+        except psycopg.errors.UndefinedTable:
+            print("오류: 원장 테이블이 없어요. 먼저 db-init을 실행해 주세요.")
+            return 1
+        print(f"DB '{conn.info.dbname}' 원장 무결성 점검 (읽기만 해요)")
+        for c in checks:
+            print(f"  {'OK  ' if c.ok else '문제'}  {c.title}: {c.detail}")
+        bad = [c for c in checks if not c.ok]
+        if bad:
+            print(f"문제 {len(bad)}건. 원장을 쓰는 명령(run, order, daily)을 멈추고 원인을 먼저 확인해 주세요.")
+            return 1
+        print("이상 없음: 저장된 원장이 이벤트를 처음부터 다시 계산한 결과와 같아요.")
+        return 0
 
 
 def _db_migrate(url: str, connect, *, dry_run: bool, apply: bool) -> int:
