@@ -33,8 +33,11 @@ MAX_STEPS = 6
 PILL_COLORS = {"status", "side", "verdict"}
 # 그리드 보기: grid 표 · cards 한 행 요약 카드 · calendar 달력(하루가 한 칸, 칸 색은 상태 열의 색 규칙)
 #            · taccount T계정(분개 한 줄이 계정의 차변은 왼쪽, 대변은 오른쪽에. 표로 바꿔 볼 수 있음)
-VIEWS = {"grid", "cards", "calendar", "taccount"}
-VIEW_NAMES = {"cards": "카드", "calendar": "달력", "taccount": "T계정"}
+#            · map 구성 지도(행 하나가 타일 하나, 면적은 크기 열, 색은 부호 열. 표 보기의 그리드에 map만 적으면 바꿔 보는 보기로 붙음)
+VIEWS = {"grid", "cards", "calendar", "taccount", "map"}
+VIEW_NAMES = {"cards": "카드", "calendar": "달력", "taccount": "T계정", "map": "구성 지도"}
+MAP_NEEDS = {"label", "size"}       # map: 타일의 이름 열, 면적이 되는 열
+MAP_KEYS = MAP_NEEDS | {"tone"}     # tone: 색이 되는 열 (크기 대비 +는 빨강, -는 파랑)
 TACCOUNT_NEEDS = {"account", "debit", "credit"}       # view: taccount 에 꼭 적는 열
 TACCOUNT_KEYS = TACCOUNT_NEEDS | {"name", "entry"}     # name: 계정명 열 · entry: 전표를 가르는 열
 LOADS = {"search", "open", "master", "input"}
@@ -126,6 +129,7 @@ class Grid:
     view: str = "grid"          # VIEWS: grid | cards (one-row summaries) | calendar (a cell a day) | taccount
     calendar: dict | None = None  # view: calendar: {date: column, state: column}; the rest show on hover
     taccount: dict | None = None  # view: taccount: {account, debit, credit[, name][, entry]}: columns of this grid
+    map: dict | None = None       # 구성 지도: {label, size[, tone]}. With view: grid it is a second view next to the table
     meta: dict[str, str] = field(default_factory=dict)   # tx meta key -> label
     drill: dict | None = None   # {screen: STP-xxxx, params: {cond: column}}
     chart: dict | None = None   # {x: column, y: column}: a line over the rows
@@ -318,6 +322,27 @@ def _taccount_problems(g: Grid, s: Screen, gw: str) -> list[str]:
     return errs
 
 
+def _map_problems(g: Grid, gw: str) -> list[str]:
+    if g.map is None:
+        return [f"{gw}: 구성 지도 보기는 map에 label(이름 열)과 size(면적이 되는 열)를 적어요"] if g.view == "map" else []
+    if g.view not in ("grid", "map"):
+        return [f"{gw}: map(구성 지도)은 표 보기나 구성 지도 보기의 그리드에만 써요"]
+    if not MAP_NEEDS <= set(g.map) <= MAP_KEYS:
+        return [f"{gw}: 구성 지도는 map에 label(이름 열)과 size(면적이 되는 열)를 적어요 (tone 색이 되는 열은 있으면)"]
+    errs = []
+    cols = {c.name: c for c in g.columns}
+    for role, name in g.map.items():
+        if name not in cols:
+            errs.append(f"{gw}: 구성 지도의 {role} 열 {name}가 이 그리드에 없어요")
+        elif role != "label" and cols[name].format not in ("number", "money"):
+            errs.append(f"{gw}: 구성 지도의 {role} 열 {name}는 수량(number)이나 금액(money) 형식이어야 해요")
+    if len(set(g.map.values())) != len(g.map):
+        errs.append(f"{gw}: 구성 지도의 열은 서로 달라야 해요")
+    if g.chart:
+        errs.append(f"{gw}: 구성 지도와 차트를 한 그리드에 같이 두지 않아요")
+    return errs
+
+
 def lookup_problems(lookups: dict[str, Lookup], catalog: dict) -> list[str]:
     """찾기 팝업 definitions against the schema catalog and the read transactions."""
     errs = []
@@ -449,6 +474,7 @@ def validate(screens: dict[str, Screen], catalog: dict, lookups: dict[str, Looku
                 errs.append(f"{gw}: view는 {sorted(VIEWS)} 중 하나")
             errs += _calendar_problems(g, gw)
             errs += _taccount_problems(g, s, gw)
+            errs += _map_problems(g, gw)
             errs += _button_problems(g, s, gw, catalog, lookups)
             if not isinstance(g.weight, int) or not 1 <= g.weight <= 5:
                 errs.append(f"{gw}: weight(높이 비중)는 1~5 사이 정수")
