@@ -229,6 +229,32 @@ button.day:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--panel), 0 
 .tsum b { margin-left: 6px; }
 .tsum .pill { margin-left: auto; }
 
+/* 구성 지도: 타일 하나가 행 하나. 면적은 크기 열, 색은 부호 열(이익 빨강, 손실 파랑, 짙을수록 큼) */
+.tmapbox { padding: 10px 12px 10px; }
+.tmap { position: relative; height: clamp(220px, 36vh, 340px); outline: none; }
+.tmap:focus-visible { box-shadow: 0 0 0 2px var(--sel-line); border-radius: 6px; }
+.tile { position: absolute; display: flex; flex-direction: column; gap: 1px; padding: 7px 9px; overflow: hidden; border-radius: 5px;
+  background: var(--head); border: 1px solid var(--line); cursor: pointer; --k: 0%;
+  transition: left var(--t-slow) var(--ease), top var(--t-slow) var(--ease), width var(--t-slow) var(--ease), height var(--t-slow) var(--ease); }
+.tile.up { background: color-mix(in srgb, var(--up) var(--k), var(--panel)); border-color: color-mix(in srgb, var(--up) 35%, var(--line)); }
+.tile.down { background: color-mix(in srgb, var(--down) var(--k), var(--panel)); border-color: color-mix(in srgb, var(--down) 35%, var(--line)); }
+.tile.none { background: repeating-linear-gradient(135deg, var(--head) 0 6px, var(--panel) 6px 12px); border-style: dashed; border-color: var(--line-strong); }
+.tile b { font-size: 13px; font-weight: 650; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tile .tshare { font-size: 18px; font-weight: 650; line-height: 1.2; }
+.tile .tsize { font-size: 12px; opacity: .78; white-space: nowrap; }
+.tile .ttone { margin-top: auto; font-size: 12px; white-space: nowrap; }
+.tile.up .ttone { color: var(--up); } .tile.down .ttone { color: var(--down); } .tile.none .ttone { color: var(--muted); }
+.tile.sm { padding: 5px 7px; } .tile.sm .ttone, .tile.sm .tsize { display: none; } .tile.sm .tshare { font-size: 12px; }
+.tile.xs > * { display: none; }
+.tile:hover { border-color: var(--sel-line); }
+.tile.sel { border-color: var(--sel-line); box-shadow: inset 0 0 0 2px var(--sel-line); }
+.tlegend { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 14px; padding-top: 8px; font-size: 12px; color: var(--muted); }
+.tlegend .lg::before { content: ""; display: inline-block; width: 10px; height: 10px; margin-right: 5px; border-radius: 2px; vertical-align: -1px; }
+.tlegend .lg.up::before { background: color-mix(in srgb, var(--up) 40%, var(--panel)); }
+.tlegend .lg.down::before { background: color-mix(in srgb, var(--down) 40%, var(--panel)); }
+.tlegend .lg.none::before { background: repeating-linear-gradient(135deg, var(--line-strong) 0 3px, var(--panel) 3px 6px); }
+@media (prefers-reduced-motion: reduce) { .tile { transition: none; } }
+
 /* home */
 .home .lead { color: var(--muted); max-width: 760px; }
 .tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 10px; margin-top: 16px; }

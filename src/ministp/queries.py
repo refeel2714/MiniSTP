@@ -324,14 +324,26 @@ def close_trends(ledger: Ledger, days: int = 20) -> dict[str, list[int]]:
 
 
 def holdings_view(base: Dataset, ledger: Ledger) -> Dataset:
-    """보유에 비중(장부금액 ÷ 장부금액 합계)과 최근 종가 추세를 붙여요. 화면이 막대와 추세선으로 그리는 값이에요."""
+    """보유에 비중(장부금액 ÷ 장부금액 합계), 최근 종가 추세, 평가금액과 평가손익을 붙여요.
+
+    화면이 막대, 추세선, 구성 지도로 그리는 값이에요. 평가금액은 보유수량 × 원장이 아는 가장 최근 종가
+    (`last_closes`, 계좌정보의 평가금액과 같은 값)이고, 그 종가가 아직 없는 종목은 비워 둬요."""
     cost = base.columns.index("book_cost")
     symbol = base.columns.index("symbol")
+    qty = base.columns.index("qty")
     total = sum(r[cost] for r in base.rows)
     trends = close_trends(ledger)
-    rows = tuple((*r, round(float(r[cost]) / float(total), 4) if total else None, trends.get(r[symbol], []))
+    _, closes = last_closes(ledger)
+
+    def valued(r) -> tuple:
+        if r[symbol] not in closes:
+            return None, None
+        value = r[qty] * closes[r[symbol]]
+        return value, value - r[cost]
+
+    rows = tuple((*r, round(float(r[cost]) / float(total), 4) if total else None, trends.get(r[symbol], []), *valued(r))
                  for r in base.rows)
-    return Dataset((*base.columns, "weight", "trend"), rows)
+    return Dataset((*base.columns, "weight", "trend", "market_value", "unrealized_pnl"), rows)
 
 
 def cash_summary(ledger: Ledger, open_orders) -> Dataset:

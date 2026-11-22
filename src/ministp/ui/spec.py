@@ -88,6 +88,11 @@ def screen_markdown(screen: Screen, catalog: dict, lookups=None) -> str:
         if g.view == "calendar":
             facts.append(f"- 표시: 달력 (하루가 한 칸, 날짜 `{g.calendar['date']}`, 칸 색 `{g.calendar['state']}`)."
                          " 달마다 한 덩어리로 오래된 달부터 그리고, 나머지 열은 칸에 마우스를 올리면 보여요. 칸을 누르면 그날이 골라져요 (←→ 하루, ↑↓ 한 주)")
+        if g.map:
+            m = g.map
+            facts.append(f"- {'표시' if g.view == 'map' else '바꿔 보기'}: 구성 지도 (행 하나가 타일 하나, 이름 `{m['label']}`, 면적 `{m['size']}`"
+                         + (f", 색 `{m['tone']}`: 면적 값 대비 +는 빨강, -는 파랑, 값이 없으면 빗금" if m.get("tone") else "")
+                         + "). 그리드 머리의 버튼으로 표와 바꿔 보고, 타일을 누르면 그 행이 골라져요")
         if g.view == "taccount":
             t = g.taccount
             facts.append(f"- 표시: T계정 (계정 `{t['account']}`마다 T 하나, 차변 `{t['debit']}`은 왼쪽, 대변 `{t['credit']}`은 오른쪽)."

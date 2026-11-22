@@ -308,6 +308,36 @@ def test_nothing_hangs_on_a_row_of_a_t_account_view():
     assert any("T계정 보기는 행을 고르지 않아요" in e for e in validate(s, CATALOG))
 
 
+MAP_COLUMNS = [Column("name", label="이름"), Column("cost", label="장부금액", format="money"),
+               Column("pnl", label="평가손익", format="money", hidden=True)]
+MAP_ROLES = {"label": "name", "size": "cost", "tone": "pnl"}
+
+
+def test_a_table_can_offer_a_map_of_its_rows():
+    """구성 지도: 표 보기의 그리드에 map을 적으면 바꿔 보는 보기가 붙고, view: map이면 지도가 먼저 나와요."""
+    for view in ("grid", "map"):
+        s = screen(MAP_COLUMNS, view=view, map=MAP_ROLES) if view == "grid" else screen(MAP_COLUMNS[:2], view=view, map={"label": "name", "size": "cost"})
+        assert validate(s, CATALOG) == []
+        assert resolve(s["STP-1100"], CATALOG)["grids"][0]["map"]["size"] == "cost"
+    shipped = next(g for g in load_screens()["STP-1100"].grids if g.id == "holdings")
+    assert shipped.view == "grid" and shipped.map == {"label": "instrument_name", "size": "book_cost", "tone": "unrealized_pnl"}
+
+
+@pytest.mark.parametrize("s, problem", [
+    (screen(MAP_COLUMNS[:2], view="map"), "label(이름 열)과 size(면적이 되는 열)를 적어요"),
+    (screen(MAP_COLUMNS, map={"label": "name"}), "label(이름 열)과 size(면적이 되는 열)를 적어요"),
+    (screen(MAP_COLUMNS, map={**MAP_ROLES, "depth": "pnl"}), "label(이름 열)과 size(면적이 되는 열)를 적어요"),
+    (screen(MAP_COLUMNS, map={**MAP_ROLES, "tone": "nope"}), "tone 열 nope가 이 그리드에 없어요"),
+    (screen(MAP_COLUMNS, map={**MAP_ROLES, "size": "name"}), "수량(number)이나 금액(money) 형식이어야 해요"),
+    (screen(MAP_COLUMNS, map={**MAP_ROLES, "tone": "cost"}), "구성 지도의 열은 서로 달라야 해요"),
+    (screen(MAP_COLUMNS[:2], view="cards", map={"label": "name", "size": "cost"}), "표 보기나 구성 지도 보기의 그리드에만 써요"),
+    (screen(MAP_COLUMNS, map=MAP_ROLES, chart={"x": "name", "y": "cost"}), "구성 지도와 차트를 한 그리드에 같이 두지 않아요"),
+])
+def test_map_problems(s, problem):
+    errs = validate(s, CATALOG)
+    assert any(problem in e for e in errs), errs
+
+
 def calendar_grid(columns=None, **grid):
     cols = columns or [Column("date", label="날짜", format="date"), Column("state", label="결과", color="status"),
                        Column("qty", "positions_v.qty", format="number")]

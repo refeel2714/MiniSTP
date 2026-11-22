@@ -609,7 +609,7 @@
     let changed = new Map();   // row key -> Set of changed columns ("*" = new row), shown once
     let previous = new Map();  // row key -> the row before this fill (numbers roll from here)
     let loaded = false;
-    let mode = g.view;         // a T계정 grid can be turned into a table and back (the button next to the count)
+    let mode = g.view;         // a T계정 grid or one with a 구성 지도 can be turned into a table and back (buttons next to the count)
     const keyCol = g.key || g.columns[0].name;
     const rowKey = g.view === "cards" ? () => "card" : r => String(r[keyCol]);   // cards show one row
     const count = h("span", { class: "count" });
@@ -617,9 +617,15 @@
     const aboutBox = h("span", { class: "about", title: "목록에서 고른 행" });
     const body = h("div", { class: "gbody" });
     const chartBox = g.chart ? h("div", { class: "chart" }) : null;
-    const modes = g.view === "taccount" ? [["taccount", "T계정"], ["grid", "표"]].map(([m, text]) =>
-      h("button", { type: "button", "aria-pressed": m === mode ? "true" : "false", "data-m": m,
-        onclick: () => { if (m !== mode) { mode = m; modes.forEach(b => b.setAttribute("aria-pressed", b.dataset.m === m ? "true" : "false")); if (loaded) morph(body, apply); } } }, text)) : null;
+    const MODES = { taccount: "T계정", map: "지도", grid: "표" };
+    const offered = [...new Set([g.view, g.map ? "map" : null, "grid"])].filter(m => m in MODES);
+    const modes = offered.length > 1 ? offered.map(m =>
+      h("button", { type: "button", "aria-pressed": m === mode ? "true" : "false", "data-m": m, onclick: () => {
+        if (m === mode) return;
+        mode = m;
+        modes.forEach(b => b.setAttribute("aria-pressed", b.dataset.m === m ? "true" : "false"));
+        if (loaded) { morph(body, apply); mark(false); }
+      } }, MODES[m])) : null;
     // 처리 버튼 live at the top right of their grid.
     const acts = (g.actions || []).map(b => ({ b, btn: h("button", { type: "button", class: "act",
       onclick: () => onAction(b, b.needs_row ? view[sel] : null) }, b.label) }));
@@ -731,7 +737,81 @@
         });
       }
       count.textContent = g.view === "grid" || g.view === "taccount" ? `${nf.format(rows.length)}건` : "";
-      mode === "cards" ? renderCards() : mode === "calendar" ? renderCalendar() : mode === "taccount" ? renderTAccounts() : renderTable();
+      mode === "cards" ? renderCards() : mode === "calendar" ? renderCalendar() : mode === "taccount" ? renderTAccounts()
+        : mode === "map" ? renderMap() : renderTable();
+    }
+
+    // 구성 지도: a tile a row. The area is the row's share of the size column, the colour is the tone
+    // column against the size (+ red, - blue, deeper the further from zero; no value = hatched).
+    // Tiles are the rows: a click picks the row, a double click or Enter moves on like a table row.
+    const mapWatch = window.ResizeObserver ? new ResizeObserver(() => placeTiles()) : null;
+    function squarify(items, x, y, w, hgt) {          // items: [{ v }] largest first; gives each x, y, w, h in px
+      const total = items.reduce((a, it) => a + it.v, 0);
+      let rest = items.map(it => ({ it, a: it.v / total * w * hgt }));
+      while (rest.length && w > 0 && hgt > 0) {
+        const short = Math.min(w, hgt);
+        const worst = (s, n) => Math.max(short * short * rest[0].a / (s * s), s * s / (short * short * rest[n - 1].a));
+        let n = 1, sum = rest[0].a;
+        while (n < rest.length && worst(sum + rest[n].a, n + 1) <= worst(sum, n)) { sum += rest[n].a; n++; }
+        const thick = sum / short;
+        let off = 0;
+        for (const e of rest.slice(0, n)) {
+          const len = e.a / thick;
+          if (w >= hgt) Object.assign(e.it, { x, y: y + off, w: thick, h: len });
+          else Object.assign(e.it, { x: x + off, y, w: len, h: thick });
+          off += len;
+        }
+        if (w >= hgt) { x += thick; w -= thick; } else { y += thick; hgt -= thick; }
+        rest = rest.slice(n);
+      }
+    }
+    function placeTiles() {
+      const box = body.querySelector(".tmap");
+      if (!box || !box.clientWidth) return;
+      const tiles = [...box.children].map(el => ({ el, v: Number(el.dataset.v) }));
+      squarify(tiles, 0, 0, box.clientWidth, box.clientHeight);
+      for (const t of tiles) {
+        t.el.style.left = t.x + "px"; t.el.style.top = t.y + "px";
+        t.el.style.width = Math.max(0, t.w - 2) + "px"; t.el.style.height = Math.max(0, t.h - 2) + "px";
+        t.el.classList.toggle("sm", t.w < 96 || t.h < 58);     // room for the name only
+        t.el.classList.toggle("xs", t.w < 44 || t.h < 24);     // room for nothing: the hover text says it
+      }
+    }
+    function renderMap() {
+      const m = g.map, col = n => g.columns.find(c => c.name === n);
+      const size = col(m.size), toneCol = m.tone ? col(m.tone) : null;
+      const sized = view.map((r, i) => ({ r, i, v: Number(r[m.size]) || 0 })).filter(x => x.v > 0).sort((a, b) => b.v - a.v);
+      if (!sized.length) return body.replaceChildren(h("div", { class: "empty", text: rows.length ? `${size.label}이 있는 행이 없어요` : "조회된 내역이 없어요" }));
+      const total = sized.reduce((a, x) => a + x.v, 0);
+      const box = h("div", { class: "tmap", role: "listbox", "aria-label": `${g.title} 구성 지도`, tabindex: "0",
+        onkeydown: e => {
+          const step = { ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1 }[e.key];
+          const at = sized.findIndex(x => x.i === sel);
+          if (step) { e.preventDefault(); const to = sized[Math.max(0, Math.min(sized.length - 1, at + step))]; if (to) select(to.i); }
+          else if (e.key === "Enter" && view[sel]) { e.preventDefault(); onDrill(view[sel]); }
+        } },
+        sized.map(({ r, i, v }) => {
+          const t = toneCol ? r[m.tone] : undefined;
+          const known = t !== null && t !== undefined;
+          const ratio = known ? Number(t) / v : 0;
+          const share = pf.format(v / total);
+          const lines = [`${r[m.label]}`, `${size.label} ${fmt(v, size.format)} (${share})`];
+          if (toneCol) lines.push(known ? `${toneCol.label} ${Number(t) > 0 ? "+" : ""}${fmt(t, toneCol.format)} (${ratio > 0 ? "+" : ""}${pf.format(ratio)})` : `${toneCol.label} 없음`);
+          const el = h("div", { class: ["tile", !toneCol ? "" : !known ? "none" : ratio > 0 ? "up" : ratio < 0 ? "down" : ""].join(" ").trim(),
+            role: "option", "aria-selected": "false", "data-i": i, "data-v": v, title: lines.join("\n"), "aria-label": lines.join(", "),
+            onclick: () => select(i), ondblclick: () => onDrill(r) },
+            h("b", { text: r[m.label] }), h("span", { class: "tshare", text: share }), h("span", { class: "tsize", text: fmt(v, size.format) }),
+            toneCol ? h("span", { class: "ttone", text: known ? `${Number(t) > 0 ? "+" : ""}${fmt(t, toneCol.format)} (${ratio > 0 ? "+" : ""}${pf.format(ratio)})` : "평가 전" }) : null);
+          el.style.setProperty("--k", (known ? 10 + 38 * Math.min(1, Math.abs(ratio) / 0.08) : 0).toFixed(1) + "%");   // full depth at 8%
+          return el;
+        }));
+      body.replaceChildren(h("div", { class: "tmapbox" }, box,
+        h("div", { class: "tlegend" }, h("span", { text: `면적 ${size.label}` }),
+          toneCol ? [h("span", { text: `색 ${toneCol.label}` }), h("span", { class: "lg up", text: "이익" }), h("span", { class: "lg down", text: "손실" }),
+            sized.some(x => x.r[m.tone] === null || x.r[m.tone] === undefined) ? h("span", { class: "lg none", text: "값 없음" }) : null] : null,
+          sized.length < rows.length ? h("span", { text: `${size.label}이 없는 ${rows.length - sized.length}건은 그리지 않았어요` }) : null)));
+      if (mapWatch) { mapWatch.disconnect(); mapWatch.observe(box); }
+      placeTiles();
     }
 
     // T계정 보기: a journal the way it is taught. A T an account, 차변 on the left and 대변 on the right,
@@ -912,6 +992,13 @@
       flip(body, () => { apply(); sel = keep ? view.indexOf(keep) : -1; mark(false); });   // the bar slides with its row
     }
     function mark(scroll = true) {
+      if (mode === "map") {
+        body.querySelectorAll(".tile").forEach(el => {
+          const hit = Number(el.dataset.i) === sel;
+          el.classList.toggle("sel", hit); el.setAttribute("aria-selected", hit ? "true" : "false");
+        });
+        return syncActions();
+      }
       if (g.view === "calendar") {
         let on = null;
         body.querySelectorAll("button.day").forEach(b => {

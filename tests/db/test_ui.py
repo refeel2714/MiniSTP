@@ -283,6 +283,30 @@ def test_holdings_carry_the_weight_and_the_closing_prices_the_ledger_recorded(cl
         assert 2 <= len(r["trend"]) <= 20 and r["trend"][-1] == closes[r["symbol"]]
 
 
+def test_holdings_are_valued_at_the_last_close_the_ledger_recorded(client, conn, sample):
+    """구성 지도의 색이 되는 평가손익: 보유수량 × 원장의 최근 종가 − 장부금액. 계좌정보의 평가금액과 같은 값이에요."""
+    from ministp.ledger import Ledger
+    from ministp.ops import load_books
+    from ministp.queries import Dataset, holdings_view, last_closes
+    rows, _ = _rows(client, "STP1100R01")
+    _, closes = last_closes(load_books(conn, CAL, FEES).ledger)
+    assert rows and all(r["symbol"] in closes for r in rows)
+    for r in rows:
+        assert r["market_value"] == r["qty"] * closes[r["symbol"]]
+        assert r["unrealized_pnl"] == r["market_value"] - r["book_cost"]
+    account = _rows(client, "STP4200R01")[0][0]
+    assert sum(r["market_value"] for r in rows) == account["market_value"]
+    grid = next(g for g in client.get("/api/screen/STP-1100").json()["grids"] if g["id"] == "holdings")
+    cols = {c["name"]: c for c in grid["columns"]}
+    assert grid["map"] == {"label": "instrument_name", "size": "book_cost", "tone": "unrealized_pnl"}
+    assert cols["market_value"]["hidden"] and cols["unrealized_pnl"]["hidden"]      # on the map, not one more column of the table
+
+    # a holding the ledger has no close for yet (bought today, before the day's close) is left unvalued, not guessed
+    bare = holdings_view(Dataset(("symbol", "qty", "book_cost"), (("999999", 3, 30_000),)), Ledger(CAL, FEES, {}))
+    assert dict(zip(bare.columns, bare.rows[0]))["market_value"] is None
+    assert dict(zip(bare.columns, bare.rows[0]))["unrealized_pnl"] is None
+
+
 def test_close_trends_keep_the_last_days_only(conn, sample):
     from ministp.ops import load_books
     from ministp.queries import close_trends
@@ -300,7 +324,7 @@ def test_holdings_screen_draws_the_badge_bar_meter_and_trend(client):
     assert cols["symbol"]["inside"] == cols["asset_type"]["inside"] == "instrument_name"
     assert [cols[n]["display"] for n in ("book_cost", "weight", "trend")] == ["bar", "meter", "spark"]
     # 그림을 더한 만큼 열을 줄여요: 일곱 열이던 그리드가 여섯 열로 보여요
-    assert len([c for c in grid["columns"] if not c["inside"]]) == 6
+    assert len([c for c in grid["columns"] if not c["inside"] and not c["hidden"]]) == 6     # 숨긴 열(구성 지도의 평가금액·평가손익)은 표에 안 나와요
     spec = client.get("/spec/STP-1100").text
     assert "배지 안에 표시" in spec and "추세선" in spec
 
