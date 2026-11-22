@@ -115,6 +115,28 @@ def test_event_trace_through_the_api_balances(client, conn):
     assert len(body["datasets"]["positions"]["rows"]) == 1
 
 
+def test_the_t_accounts_of_every_event_balance_entry_by_entry(client, conn):
+    """STP-3100 분개의 T계정 보기: 전표마다 차변 합계와 대변 합계가 같고, T에 놓이는 금액은 분개 줄 그대로예요."""
+    grid = next(g for g in client.get("/api/screen/STP-3100").json()["grids"] if g["id"] == "journal")
+    t = grid["taccount"]
+    assert grid["view"] == "taccount" and set(t.values()) <= {c["name"] for c in grid["columns"]}
+    seen = 0
+    for (seq,) in conn.execute("select seq from ledger_events order by seq").fetchall():
+        ds = client.post("/api/tx/STP3100R02", json={"params": {"seq": seq}}).json()["datasets"]["journal"]
+        lines = [dict(zip(ds["columns"], r)) for r in ds["rows"]]
+        entries = {}
+        for ln in lines:
+            assert (ln[t["debit"]] == 0) != (ln[t["credit"]] == 0)          # a line sits on one side of its T
+            entries.setdefault(ln[t["entry"]], []).append(ln)
+        for entry_id, mine in entries.items():
+            assert sum(ln[t["debit"]] for ln in mine) == sum(ln[t["credit"]] for ln in mine), (seq, entry_id)
+            want = conn.execute("select account_code, debit, credit from journal_lines where entry_id = %s"
+                                " order by line_id", (entry_id,)).fetchall()
+            assert sorted((ln[t["account"]], ln[t["debit"]], ln[t["credit"]]) for ln in mine) == sorted(want)
+        seen += len(entries)
+    assert seen == conn.execute("select count(*) from journal_entries").fetchone()[0] > 0
+
+
 def test_values_are_json_ready(client, sample):
     nav = client.post("/api/tx/STP2200R01", json={"params": {}}).json()
     assert nav["meta"] == {"clean_streak": sample.streak, "gate_days": 20}

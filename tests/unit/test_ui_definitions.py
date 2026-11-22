@@ -263,6 +263,51 @@ def test_a_meter_reads_as_text_next_to_its_bar():
 
 # ---------- 달력 보기 ----------
 
+T_COLUMNS = [Column("entry", label="전표", format="number"), Column("account", label="계정", format="code"),
+             Column("name", label="계정명"), Column("debit", label="차변", format="money"),
+             Column("credit", label="대변", format="money")]
+T_ROLES = {"entry": "entry", "account": "account", "name": "name", "debit": "debit", "credit": "credit"}
+
+
+def t_grid(columns=None, **grid):
+    return screen(columns or T_COLUMNS, **{"view": "taccount", "taccount": T_ROLES, **grid})
+
+
+def test_t_account_view_names_the_account_and_both_sides():
+    """T계정 보기: 어느 열이 계정이고 어느 열이 차변·대변인지를 정의가 말해요."""
+    s = t_grid()
+    assert validate(s, CATALOG) == []
+    assert resolve(s["STP-1100"], CATALOG)["grids"][0]["taccount"] == T_ROLES
+    assert validate(t_grid(taccount={"account": "account", "debit": "debit", "credit": "credit"}), CATALOG) == []   # name, entry: optional
+    shipped = next(g for g in load_screens()["STP-3100"].grids if g.id == "journal")
+    assert shipped.view == "taccount" and shipped.taccount == {
+        "entry": "entry_id", "account": "account_code", "name": "account_name", "debit": "debit", "credit": "credit"}
+
+
+@pytest.mark.parametrize("s, problem", [
+    (t_grid(taccount=None), "account(계정 열), debit(차변 열), credit(대변 열)을 적어요"),
+    (t_grid(taccount={"account": "account", "debit": "debit"}), "account(계정 열), debit(차변 열), credit(대변 열)을 적어요"),
+    (t_grid(taccount={**T_ROLES, "side": "name"}), "account(계정 열), debit(차변 열), credit(대변 열)을 적어요"),
+    (t_grid(taccount={**T_ROLES, "credit": "nope"}), "credit 열 nope가 이 그리드에 없어요"),
+    (t_grid(taccount={**T_ROLES, "debit": "entry"}), "debit 열 entry는 금액(money) 형식이어야 해요"),
+    (t_grid(taccount={**T_ROLES, "credit": "debit"}), "T계정의 열은 서로 달라야 해요"),
+    (t_grid(drill={"screen": "STP-1100", "params": {}}), "차트·화면 이동을 쓰지 않아요"),
+    (t_grid([*T_COLUMNS[:3], Column("debit", label="차변", format="money", display="bar"), T_COLUMNS[4]]),
+     "T계정 보기에는 표시 유형을 쓰지 않아요"),
+    (screen(T_COLUMNS, taccount=T_ROLES), "taccount는 T계정 보기(view: taccount)에만 써요"),
+])
+def test_t_account_view_problems(s, problem):
+    errs = validate(s, CATALOG)
+    assert any(problem in e for e in errs), errs
+
+
+def test_nothing_hangs_on_a_row_of_a_t_account_view():
+    s = t_grid()
+    s["STP-1100"].grids.append(Grid("d", "상세", "STP1100R01", [Column("qty", "positions_v.qty", format="number")],
+                                    load="master", master="g", link={}))
+    assert any("T계정 보기는 행을 고르지 않아요" in e for e in validate(s, CATALOG))
+
+
 def calendar_grid(columns=None, **grid):
     cols = columns or [Column("date", label="날짜", format="date"), Column("state", label="결과", color="status"),
                        Column("qty", "positions_v.qty", format="number")]
