@@ -24,7 +24,7 @@ import urllib.parse
 
 import psycopg
 
-from .broker import KisClient, KisConfig, KisError
+from .broker import KisClient, KisConfig, KisError, trading_env
 from .calendar import CalendarNotLoadedError
 from .cli import ask_missing, krx_calendar
 from .fees import FeeSchedule
@@ -410,12 +410,20 @@ def _ui(url: str, environ, calendar, fees, sample: bool, port: int, serve=None, 
     dsn = ui_database_url(url, environ, sample)
     write_dsn = dsn if sample else url if write else None
     try:
+        # 실전 테두리: the sample DB is never a broker's; otherwise the screens follow the same
+        # environment variable the commands read, so a shell set up for 실전 opens 실전 screens.
+        env = "sample" if sample else trading_env(environ)
         app = create_app(dsn, calendar=calendar, fees=fees, today=sample_today(dsn) if sample else None,
-                         label="샘플" if sample else "", write_dsn=write_dsn)
+                         label="샘플" if sample else "", write_dsn=write_dsn, env=env)
+    except KisError:
+        print("오류: MINISTP_KIS_ENV는 paper(모의)나 live(실전)여야 해요.")
+        return 1
     except DefinitionError as e:
         print(f"오류: {e}")
         return 1
     mode = "처리 버튼 켜짐" if write_dsn else "조회 전용, 처리 버튼은 ui --write"
+    if env == "live":
+        print("주의: 실전 환경(MINISTP_KIS_ENV=live)으로 열어요. 모든 화면에 실전 테두리가 보여요.")
     print(f"STP-UI: http://127.0.0.1:{port}  ({mode}. 이 PC에서만 열려요. 끝낼 때 Ctrl+C)")
     if serve is None:
         import uvicorn

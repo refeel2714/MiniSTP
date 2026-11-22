@@ -1,6 +1,6 @@
 id: STP-1100
 title: 실시간 잔고
-purpose: 장중 보유·예수금·주문가능금액(IBOR)을 한 화면에서 확인해요. 주문가능금액은 주문 검증과 같은 계산(R-37)이에요.
+purpose: 장중 보유·예수금·주문가능금액(IBOR)을 한 화면에서 확인해요. 종목별 보유는 구성 지도로 바꿔 보면 어느 종목이 얼마나 큰지(면적)와 평가손익(색)이 한눈에 보여요. 주문가능금액은 주문 검증과 같은 계산(R-37)이에요.
 grids:
   - id: cash
     title: 예수금과 주문가능금액
@@ -21,6 +21,7 @@ grids:
     load: open
     totals: [book_cost]
     drill: {screen: STP-3100, params: {symbol: symbol}}
+    map: {label: instrument_name, size: book_cost, tone: unrealized_pnl}
     columns:
       - {name: symbol, source: instruments.symbol, format: code}
       - {name: instrument_name, source: instruments.name, display: badge, code: symbol, shape: asset_type}
@@ -30,3 +31,5 @@ grids:
       - {name: weight, label: 비중, format: rate, display: meter}
       - {name: trend, label: 최근 종가 추세, format: series, display: spark}
       - {name: today_qty, label: 오늘 체결 수량, format: number, color: sign}
+      - {name: market_value, label: 평가금액(최근 종가), format: money, hidden: true}
+      - {name: unrealized_pnl, label: 평가손익(최근 종가), format: money, color: sign, hidden: true}

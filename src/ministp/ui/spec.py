@@ -6,7 +6,7 @@ index adds 영향도 (which screens show a DB column), so a schema change shows
 at once which screens it touches.
 """
 from .actions import ACTIONS
-from .definitions import Screen, column_comment, load_lookups, resolve, short, split_sides, usages
+from .definitions import Screen, column_comment, jump_targets, load_lookups, resolve, short, split_sides, usages
 from .transactions import TRANSACTIONS
 
 LOAD_TEXT = {"search": "조회 버튼", "open": "화면 열 때 + 조회 버튼", "master": "목록(마스터)에서 행 선택",
@@ -88,6 +88,16 @@ def screen_markdown(screen: Screen, catalog: dict, lookups=None) -> str:
         if g.view == "calendar":
             facts.append(f"- 표시: 달력 (하루가 한 칸, 날짜 `{g.calendar['date']}`, 칸 색 `{g.calendar['state']}`)."
                          " 달마다 한 덩어리로 오래된 달부터 그리고, 나머지 열은 칸에 마우스를 올리면 보여요. 칸을 누르면 그날이 골라져요 (←→ 하루, ↑↓ 한 주)")
+        if g.map:
+            m = g.map
+            facts.append(f"- {'표시' if g.view == 'map' else '바꿔 보기'}: 구성 지도 (행 하나가 타일 하나, 이름 `{m['label']}`, 면적 `{m['size']}`"
+                         + (f", 색 `{m['tone']}`: 면적 값 대비 +는 빨강, -는 파랑, 값이 없으면 빗금" if m.get("tone") else "")
+                         + "). 그리드 머리의 버튼으로 표와 바꿔 보고, 타일을 누르면 그 행이 골라져요")
+        if g.view == "taccount":
+            t = g.taccount
+            facts.append(f"- 표시: T계정 (계정 `{t['account']}`마다 T 하나, 차변 `{t['debit']}`은 왼쪽, 대변 `{t['credit']}`은 오른쪽)."
+                         + (f" 전표(`{t['entry']}`)마다 묶고" if t.get("entry") else " 한 묶음으로 그리고")
+                         + " 그 아래에 차변 합계, 대변 합계와 대차 일치 여부를 보여요. 나머지 열은 묶음의 머리말에 나오고, 오른쪽 위에서 표로 바꿔 볼 수 있어요")
         if g.totals:
             facts.append(f"- 합계: {', '.join(f'`{t}`' for t in g.totals)}")
         if g.meta:
@@ -155,6 +165,14 @@ def index_markdown(screens: dict[str, Screen], catalog: dict) -> str:
         txs = ", ".join(dict.fromkeys([*(f"`{g.tx}`" for g in s.grids),
                                        *(f"`{b.tx}`" for g in s.grids for b in g.actions)]))
         out.append(f"| [{s.id}]({s.id}.md) | {s.title} | {len(s.grids)} | {txs} |")
+    out += ["", "## 바로 가기 창 (Ctrl+K)", "",
+            "어느 화면에서나 Ctrl+K로 열어 화면번호나 화면명을 넣고 Enter로 옮겨 가요. "
+            "조회조건이 찾기 팝업으로 받는 코드는 그 코드로 화면을 바로 열 수 있어요(여러 화면이 받으면 다음 단계에서 화면을 골라요).",
+            "", "| 찾는 것 | 목록을 주는 트랜잭션 | 열 수 있는 화면 (넘기는 조회조건) |", "|---|---|---|",
+            f"| 화면 | - | 화면 {len(screens)}개 모두 |"]
+    for j in jump_targets(screens, catalog):
+        into = ", ".join(f"{t['id']} {t['title']}(`{t['param']}`)" for t in j["into"])
+        out.append(f"| {j['title'].removesuffix('찾기').strip()} | `{j['tx']}` | {into} |")
     out += ["", "## 영향도: DB 컬럼 → 화면", "",
             "스키마를 바꾸기 전에 이 표에서 그 컬럼을 쓰는 화면을 확인해요.", "",
             "| DB 컬럼 | 한글명 | 쓰는 화면·그리드 |", "|---|---|---|"]
