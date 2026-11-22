@@ -47,8 +47,9 @@ grids:
       - {name: exec_id, label: 체결ID, format: code}
       - {name: trade_date, label: 체결일, format: date}
       - {name: settle_date, label: 결제일, format: date}
+      - {name: instrument_name, source: instruments.name, display: badge, code: symbol, shape: asset_type}
       - {name: symbol, source: instruments.symbol, format: code}
-      - {name: instrument_name, source: instruments.name}
-      - {name: side, source: oms_orders.side, format: code, color: side}
+      - {name: asset_type, source: instruments.asset_type, format: code}
+      - {name: side, source: oms_orders.side, format: code, color: side, display: pill}
       - {name: qty, label: 수량, format: number}
       - {name: amount, label: 결제금액(+받음/−냄), format: money, color: sign}
