@@ -5,10 +5,10 @@ column, the DB column and the Korean name taken from the schema COMMENT. The
 index adds 영향도 (which screens show a DB column), so a schema change shows
 at once which screens it touches.
 """
-from .definitions import Screen, column_comment, resolve, short, usages
+from .definitions import Screen, column_comment, resolve, short, split_sides, usages
 from .transactions import TRANSACTIONS
 
-LOAD_TEXT = {"search": "조회 버튼", "open": "화면 열 때 + 조회 버튼", "master": "마스터 행 선택",
+LOAD_TEXT = {"search": "조회 버튼", "open": "화면 열 때 + 조회 버튼", "master": "목록(마스터)에서 행 선택",
              "input": "조회조건을 바꿀 때마다 (입력 즉시 재계산)"}
 FORMAT_TEXT = {"text": "문자", "code": "코드", "number": "수량", "money": "금액", "rate": "비율·단가",
                "date": "날짜", "datetime": "일시", "json": "JSON"}
@@ -19,11 +19,22 @@ def _cell(s) -> str:
     return str(s if s is not None else "").replace("|", "\\|").replace("\n", " ")
 
 
+def _names(grids) -> str:
+    return ", ".join(f"`{g.id}` {g.title}" for g in grids)
+
+
 def screen_markdown(screen: Screen, catalog: dict) -> str:
     r = resolve(screen, catalog)
     out = [f"# {screen.id} {screen.title}", "", f"> 이 문서는 `src/ministp/ui/screens/{screen.file}`에서 생성돼요."
            " 직접 고치지 말고 화면 정의를 고친 뒤 `python scripts/gen_screen_docs.py`를 실행하세요.", "",
            "## 목적", "", screen.purpose, ""]
+    if screen.layout == "split":
+        left, right, below = split_sides(screen)
+        out += ["## 화면 구성", "", "좌우 구성이에요. 왼쪽 목록에서 행을 고르면 오른쪽이 그 행의 상세로 바뀌어요.", "",
+                f"- 왼쪽 (너비 {screen.left}%): {_names(left)}", f"- 오른쪽: {_names(right)}"]
+        if below:
+            out.append(f"- 아래 (고른 행과 무관): {_names(below)}")
+        out.append("")
     if screen.conditions:
         out += ["## 조회조건", "", "| 조건 | 한글명 | 형식 | DB 컬럼 | 필수 | 기본값 | 선택값 |",
                 "|---|---|---|---|---|---|---|"]
@@ -46,6 +57,8 @@ def screen_markdown(screen: Screen, catalog: dict) -> str:
         if g.master:
             link = ", ".join(f"`{p}` ← `{g.master}.{c}`" for p, c in g.link.items())
             facts.append(f"- 마스터: `{g.master}` ({link})")
+        if g.weight != 1:
+            facts.append(f"- 높이 비중: {g.weight} (좌우 구성에서 같은 쪽 그리드와 나눠 쓰는 높이)")
         if g.view != "grid":
             facts.append("- 표시: 요약 카드")
         if g.totals:
