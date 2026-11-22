@@ -12,6 +12,7 @@
     python -m ministp sample-db                   # 데모용 샘플 DB(ministp_sample) 만들기, 운영 DB와 별개
     python -m ministp account list                # 계좌 목록. open/run/order/daily/status는 --account 계좌ID
     python -m ministp code list                   # 공통코드 그룹. code list 그룹ID는 그 그룹의 코드와 코드명
+    python -m ministp audit                       # 감사 로그: 누가 언제 무엇을 했고 어떻게 끝났는지 (거부·실패 포함)
 
 Paper (모의투자) only until Phase 4. Keys are asked for and never saved.
 """
@@ -27,6 +28,7 @@ import urllib.parse
 
 import psycopg
 
+from . import audit
 from .broker import KisClient, KisConfig, KisError, trading_env
 from .calendar import CalendarNotLoadedError
 from .cli import ask_missing, krx_calendar
@@ -82,8 +84,56 @@ def _print_recon(report) -> None:
         print(f"  이상: {a.kind} {a.ref} {a.detail}")
 
 
-def run(argv, *, environ=os.environ, client_factory=KisClient, connect=psycopg.connect,
-        now=dt.datetime.now, sleep=time.sleep, feed_factory=None, console=None) -> int:
+CODE_ACTIONS = {"rename": "CODE_RENAME", "group-add": "CODE_GROUP_ADD", "add": "CODE_ADD", "use": "CODE_USE"}
+
+
+def audited(args, today: dt.date):
+    """The request a command makes, as the audit log names it: (action, account, target, detail).
+    None for a command that changes nothing. Used for the row of a request that was refused or failed;
+    a request that goes through is recorded by the function that does it."""
+    cmd, what = args.cmd, getattr(args, "what", None)
+    if cmd == "instrument":
+        return "INSTRUMENT_ADD", None, args.symbol, {"name": args.name}
+    if cmd == "open":
+        return "OPEN", args.account, today.isoformat(), None
+    if cmd == "order":
+        return "ORDER", args.account, None, {"symbol": args.symbol, "side": args.side.upper(), "qty": args.qty,
+                                             "limit_price": args.limit, "date": today}
+    if cmd in ("daily", "close"):
+        return cmd.upper(), args.account, (args.date or today).isoformat(), None
+    if cmd == "resolve":
+        return "RESOLVE", None, str(args.result_id), {"cause": args.cause, "note": args.note}
+    if cmd == "customer":
+        return "CUSTOMER_ADD", None, args.customer_id, {"alias": args.alias}
+    if cmd == "account" and what == "add":
+        return "ACCOUNT_ADD", args.account_id, args.account_id, {"customer_id": args.customer_id, "alias": args.alias,
+                                                                "credential_ref": args.credential}
+    if cmd == "account" and what == "status":
+        return "ACCOUNT_STATUS", args.account_id, args.account_id, {"to": args.status, "reason": args.reason,
+                                                                   "effective_from": args.effective_from}
+    if cmd == "code" and what in CODE_ACTIONS:
+        target = args.group_id + (f".{args.code}" if what != "group-add" else "")
+        return CODE_ACTIONS[what], None, target, {"name": getattr(args, "name", None),
+                                                  "state": getattr(args, "state", None)}
+    return None
+
+
+def _not_now(conn, args, today: dt.date, message: str) -> int:
+    """A command asked for at the wrong time: said, and kept as a refused request."""
+    print(message)
+    action, account_id, target, detail = audited(args, today)
+    audit.record_refusal(conn, action, OpsError(message), account_id=account_id, target=target, detail=detail)
+    return 2
+
+
+def run(argv, **kw) -> int:
+    """Every audit row this command writes: from the console, by whoever is logged in to this PC."""
+    with audit.acting_as("CLI"):
+        return _run(argv, **kw)
+
+
+def _run(argv, *, environ=os.environ, client_factory=KisClient, connect=psycopg.connect,
+         now=dt.datetime.now, sleep=time.sleep, feed_factory=None, console=None) -> int:
     ap = argparse.ArgumentParser(prog="python -m ministp")
     sub = ap.add_subparsers(dest="cmd", required=True)
     sub.add_parser("db-init")
@@ -145,6 +195,10 @@ def run(argv, *, environ=os.environ, client_factory=KisClient, connect=psycopg.c
     p = sub.add_parser("sample-db")
     p.add_argument("--days", type=int, default=40, help="시뮬레이션할 영업일 수")
     p.add_argument("--accounts", type=int, default=3, choices=[1, 2, 3], help="계좌 수 (기본 3: 고객 2명, 계좌 3개)")
+    p = sub.add_parser("audit", help="감사 로그 보기: 처리·거부·실패한 요청을 최근 것부터 (읽기 전용)")
+    p.add_argument("--limit", type=int, default=30, metavar="N", help="보여줄 줄 수 (기본 30)")
+    p.add_argument("--account", metavar="계좌ID"), p.add_argument("--action", choices=sorted(audit.ACTIONS))
+    p.add_argument("--outcome", choices=sorted(audit.OUTCOMES))
     p = sub.add_parser("db-migrate", help="기존 DB를 다음 ERD 버전으로 (기본은 상태와 계획만 보여줘요)")
     how = p.add_mutually_exclusive_group()
     how.add_argument("--dry-run", action="store_true", help="적용해 보고 전부 되돌려요 (리허설)")
@@ -192,7 +246,14 @@ def run(argv, *, environ=os.environ, client_factory=KisClient, connect=psycopg.c
                           or psycopg.conninfo.make_conninfo(url, dbname=SAMPLE_DB))
             return _verify(target, connect, calendar, fees)
 
-        with connect(url, autocommit=True) as conn:
+        # R-86: a request that a rule refuses, or that fails, changes nothing. Its audit row is written here.
+        with connect(url, autocommit=True) as conn, audit.refusals(
+                conn, lambda: audited(args, today), refused=(OpsError,),
+                failed=(KisError, CalendarNotLoadedError, SchemaError, psycopg.Error)):
+            if args.cmd == "audit":
+                require_current_schema(conn)
+                return _audit(conn, args)
+
             if args.cmd == "instrument":
                 market = Market.KOSDAQ if args.kosdaq else Market.KOSPI
                 asset = AssetType.ETF if args.etf else AssetType.STOCK
@@ -267,8 +328,7 @@ def run(argv, *, environ=os.environ, client_factory=KisClient, connect=psycopg.c
 
             if args.cmd == "order":
                 if not (MARKET_OPEN <= started.time() <= MARKET_CLOSE) or not calendar.is_business_day(today):
-                    print("장중(영업일 09:00~15:20)에만 주문해요.")
-                    return 2
+                    return _not_now(conn, args, today, "장중(영업일 09:00~15:20)에만 주문해요.")
                 polls = iter(range(15))  # up to ~30 seconds
 
                 def wait() -> bool:
@@ -295,11 +355,9 @@ def run(argv, *, environ=os.environ, client_factory=KisClient, connect=psycopg.c
             if args.cmd == "daily":
                 day = args.date or today
                 if not calendar.is_business_day(day):
-                    print(f"{day}는 영업일이 아니에요.")
-                    return 2
+                    return _not_now(conn, args, today, f"{day}는 영업일이 아니에요.")
                 if args.date is None and started.time() < DAILY_FROM:
-                    print("장 마감 후(15:40 이후)에 실행해 주세요.")
-                    return 2
+                    return _not_now(conn, args, today, "장 마감 후(15:40 이후)에 실행해 주세요.")
                 report = daily_close(books, broker, day)
                 print(f"[{day}] 결제 {len(report.settled)}건, 신규 체결 {len(report.booked)}건")
                 if report.nav:
@@ -461,6 +519,37 @@ def _codes(conn, args) -> int:
     return 0
 
 
+AUDIT_KEYS = ("tx", "symbol", "side", "qty", "limit_price", "order_no", "date", "reason", "from", "to")
+
+
+def _audit(conn, args) -> int:
+    """`audit`: the latest rows, newest first, then where the chain ends."""
+    from . import codes
+    found = audit.rows(conn, limit=args.limit, account_id=args.account, action=args.action, outcome=args.outcome)
+    action_names = codes.names(conn, "AUDIT_ACTION")
+    for r in found:
+        about = " ".join(x for x in (r.account_id, r.target) if x)
+        said = "  ".join(f"{k}={v}" for k, v in sorted(   # jsonb keeps no key order: the order a person reads in
+            r.detail.items(), key=lambda kv: (AUDIT_KEYS.index(kv[0]) if kv[0] in AUDIT_KEYS else len(AUDIT_KEYS), kv[0])))
+        print(f"{r.id:>6}  {r.at.astimezone():%Y-%m-%d %H:%M:%S}  {audit.CHANNELS[r.channel]} {r.actor}  "
+              f"{audit.OUTCOMES[r.outcome]}  {action_names.get(r.action, r.action)}" + (f"  {about}" if about else ""))
+        if said:
+            print(f"        {said}")
+        if r.message:
+            print(f"        → {r.message}")
+    n, last, bad = audit.chain_problems(conn)
+    if not n:
+        print("감사 로그가 아직 비어 있어요.")
+        return 0
+    if not found:
+        print("조건에 맞는 줄이 없어요.")
+    if bad:
+        print(f"주의: 해시 사슬이 이어지지 않는 줄이 있어요 ({', '.join(map(str, bad))}번). verify로 확인해 주세요.")
+        return 1
+    print(f"전체 {n:,}줄, 마지막 줄 {n:,}번의 해시 {last[:16]}. 이 값을 따로 적어 두면 나중에 끝이 잘렸는지도 알 수 있어요.")
+    return 0
+
+
 def _print_checks(checks) -> None:
     many = len({c.account for c in checks if c.account}) > 1
     for c in checks:
@@ -512,8 +601,12 @@ def _db_migrate(url: str, connect, calendar, fees, *, dry_run: bool, apply: bool
 
     try:
         migrations = mg.discover()
-        with connect(url, autocommit=True) as conn:
+        asked = []   # what --apply was about to apply, for the audit row of a failure
+        with connect(url, autocommit=True) as conn, audit.refusals(
+                conn, lambda: ("DB_MIGRATE", None, None, {"pending": asked}) if apply and asked else None,
+                refused=(OpsError,), failed=(mg.MigrationError, psycopg.Error)):
             todo = mg.pending(conn, migrations)
+            asked += [m.label for m in todo]
             done = mg.applied(conn)
             print(f"DB '{conn.info.dbname}': 적용된 마이그레이션 {len(done)}개, 남은 것 {len(todo)}개 "
                   f"(코드의 ERD v{erd.schema_version(erd.schema_sql())})")
@@ -544,9 +637,12 @@ def _db_migrate(url: str, connect, calendar, fees, *, dry_run: bool, apply: bool
             for r in mg.migrate(conn, migrations):
                 print(f"적용: {r.migration.label}")
             print(f"  적용된 DB에서 {ledger_still_verifies(conn)}")
+            if audit.has_log(conn):   # from ERD v2.3 on; the migration that creates the log is its first row
+                audit.record(conn, "DB_MIGRATE", target=f"ERD v{erd.schema_version(erd.schema_sql())}",
+                             detail={"applied": asked})
             print("마이그레이션 완료.")
             return 0
-    except mg.MigrationError as e:
+    except (mg.MigrationError, OpsError) as e:
         print(f"오류: {e}")
         return 1
 

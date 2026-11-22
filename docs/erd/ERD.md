@@ -1,6 +1,6 @@
 # MiniSTP ERD
 
-ERD 버전: v2.2 · 스키마 해시: `6a45ddeec34a`
+ERD 버전: v2.3 · 스키마 해시: `79c5222953a7`
 
 이 문서는 `scripts/gen_erd.py`가 `src/ministp/store/schema.sql`로 만든 DB에서 읽어 생성해요. 직접 고치지 말고 스키마의 한글 주석(COMMENT)을 고친 뒤 다시 생성하세요. 모든 원장 테이블은 append-only(수정·삭제 불가)예요.
 
@@ -89,6 +89,20 @@ erDiagram
         numeric(18,2) nav_per_1000 "마감 기준가 (1,000좌당)"
         timestamptz closed_at "마감 기록 시각"
     }
+    audit_log {
+        bigint id PK "행 번호 (1부터 빈 번호 없이)"
+        timestamptz at "기록 시각"
+        text channel "경로 (CLI 명령 / UI 화면 / SYSTEM 시스템)"
+        text actor "실행한 PC 계정"
+        text action "행위 코드"
+        text outcome "결과 (DONE 처리 / REFUSED 거부 / FAILED 실패)"
+        text account_id FK "계좌 ID (계좌와 무관한 행위는 비움)"
+        text target "대상 (주문번호, 대사 행 번호, 코드 등)"
+        jsonb detail "입력 내용 (인증키·계좌번호 제외)"
+        text message "결과 메시지 (거부·실패 사유)"
+        text prev_hash "앞 행의 해시"
+        text hash UK "이 행의 해시 (앞 행 해시 + 이 행 내용)"
+    }
     instruments {
         text symbol PK "종목코드"
         text name "종목명"
@@ -171,6 +185,7 @@ erDiagram
     ledger_events ||--o{ position_ledger : "event_seq, account_id"
     ledger_events ||--o{ cash_ledger : "event_seq, account_id"
     ledger_events ||--o{ day_closes : "event_seq, account_id"
+    trading_accounts ||--o{ audit_log : "account_id"
     instruments ||--o{ oms_orders : "symbol"
     trading_accounts ||--o{ oms_orders : "account_id"
     oms_orders ||--o{ oms_order_acks : "client_id"
@@ -292,6 +307,23 @@ erDiagram
 | `units` | 마감 좌수 | bigint | Y |  |
 | `nav_per_1000` | 마감 기준가 (1,000좌당) | numeric(18,2) | Y |  |
 | `closed_at` | 마감 기록 시각 | timestamp with time zone | Y |  |
+
+### audit_log — 감사 로그 (누가 언제 무엇을 했고 어떻게 끝났는지, 수정·삭제 불가) (테이블)
+
+| 컬럼 | 한글명 | 타입 | 필수 | 키 |
+|---|---|---|---|---|
+| `id` | 행 번호 (1부터 빈 번호 없이) | bigint | Y | PK |
+| `at` | 기록 시각 | timestamp with time zone | Y |  |
+| `channel` | 경로 (CLI 명령 / UI 화면 / SYSTEM 시스템) | text | Y |  |
+| `actor` | 실행한 PC 계정 | text | Y |  |
+| `action` | 행위 코드 | text | Y |  |
+| `outcome` | 결과 (DONE 처리 / REFUSED 거부 / FAILED 실패) | text | Y |  |
+| `account_id` | 계좌 ID (계좌와 무관한 행위는 비움) | text |  | FK → trading_accounts.account_id |
+| `target` | 대상 (주문번호, 대사 행 번호, 코드 등) | text |  |  |
+| `detail` | 입력 내용 (인증키·계좌번호 제외) | jsonb | Y |  |
+| `message` | 결과 메시지 (거부·실패 사유) | text |  |  |
+| `prev_hash` | 앞 행의 해시 | text | Y |  |
+| `hash` | 이 행의 해시 (앞 행 해시 + 이 행 내용) | text | Y | UK |
 
 ### instruments — 종목 마스터 (테이블)
 
@@ -474,3 +506,4 @@ erDiagram
 | v2.0 | 2026-11-22 | 다계좌(스펙 D7). 고객 `customers`, 위탁계좌 `trading_accounts`, 계좌 상태 이력 `account_status_history` 신설. 원장·주문·대사 7개 테이블에 `account_id` 추가(파생 행은 이벤트와 같은 계좌만 참조하도록 복합 FK), 체결 ID 유일 범위를 계좌 안으로 변경. 뷰 3개를 계좌별로 바꾸고 `account_status_v`, `customer_positions_v` 추가. 마이그레이션 적용 기록 `schema_migrations` 포함. 기존 DB는 마이그레이션 `0001_multi_account`로 올림(기존 행 변경 없음). |
 | v2.1 | 2026-11-22 | 공통코드. 코드 그룹 `code_groups`와 코드 `common_codes` 신설(마이그레이션 `0002_common_codes`). 스키마 제약과 프로그램에 흩어져 있던 코드 18개 그룹(계좌 상태, 대사 결과·항목·원인, 이벤트·전표 유형 등)에 코드명을 붙였다. 코드는 지우지 않고 이름을 바꾸거나 끄기만 한다(DB 트리거). 계정과목은 원장이 직접 참조하므로 전용 테이블 `accounts_chart`에 그대로 둔다. 기존 테이블과 기존 행은 바뀌지 않는다. |
 | v2.2 | 2026-11-23 | 일 마감(스펙 D6, R-77~79). 마감 기록 `day_closes` 신설(마감 이벤트마다 한 행, 그날의 확정 순자산·좌수·기준가). 마감일과 그 이전 날짜로는 전표(`journal_entries`)·예수금 행(`cash_ledger`)·마감 행이 더 들어가지 않도록 DB 트리거 `ministp_forbid_closed_day` 추가. 뷰 `last_close_v`(계좌별 마지막 마감), `abor_positions_v`(마감 시점 보유), `unclosed_events_v`(마감 뒤 이벤트) 추가. 공통코드에 이벤트 유형 `LateExecutionEvent`·`DayClosedEvent`, 전표 유형 `LATE_EXECUTION` 추가. 기존 DB는 마이그레이션 `0003_day_close`로 올림(기존 행 변경 없음). |
+| v2.3 | 2026-11-23 | 감사 로그(R-85~87). `audit_log` 신설(마이그레이션 `0004_audit_log`): 밖에서 시스템에 한 일(주문, 일일 마감, 장부 마감, 불일치 판단, 종목·고객·계좌 등록, 계좌 상태와 공통코드 변경, 마이그레이션)마다 한 행, 처리된 것뿐 아니라 규칙이 거부한 요청과 실패한 요청도 남긴다. 번호·시각·해시는 DB 트리거 `ministp_audit_chain`이 채우고, 각 행은 앞 행의 해시를 이어 받아(`ministp_audit_hash`, SHA-256) 가운데 행을 고치거나 지우면 `verify`가 찾아낸다. 수정·삭제·비우기 금지 테이블 15개. 공통코드 그룹 3개(감사 로그 경로·결과·행위) 추가. 기존 데이터는 바뀌지 않는다. |

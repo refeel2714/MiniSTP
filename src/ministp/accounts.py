@@ -11,6 +11,7 @@ from dataclasses import dataclass
 
 import psycopg
 
+from . import audit
 from .ops import OpsError
 
 STATUSES = ("OPEN", "SUSPENDED", "CLOSED")
@@ -66,7 +67,9 @@ def add_customer(conn: psycopg.Connection, customer_id: str, alias: str) -> None
         raise OpsError("고객 별칭을 넣어 주세요.")
     if conn.execute("select 1 from customers where customer_id = %s", (customer_id,)).fetchone():
         raise OpsError(f"이미 있는 고객이에요: {customer_id}")
-    conn.execute("insert into customers (customer_id, alias) values (%s, %s)", (customer_id, alias.strip()))
+    with conn.transaction():
+        conn.execute("insert into customers (customer_id, alias) values (%s, %s)", (customer_id, alias.strip()))
+        audit.record(conn, "CUSTOMER_ADD", target=customer_id, detail={"alias": alias.strip()})
 
 
 def add_account(conn: psycopg.Connection, account_id: str, customer_id: str, alias: str, *,
@@ -97,6 +100,9 @@ def add_account(conn: psycopg.Connection, account_id: str, customer_id: str, ali
             (account_id, customer_id, alias.strip(), env, credential_ref, opened_on))
         conn.execute("insert into account_status_history (account_id, status, effective_from, reason)"
                      " values (%s, 'OPEN', %s, '계좌 등록')", (account_id, opened_on))
+        audit.record(conn, "ACCOUNT_ADD", account_id=account_id, target=account_id,
+                     detail={"customer_id": customer_id, "alias": alias.strip(), "env": env,
+                             "credential_ref": credential_ref, "opened_on": opened_on})
     return get_account(conn, account_id)
 
 
@@ -123,6 +129,10 @@ def set_status(conn: psycopg.Connection, account_id: str, status: str, effective
         if cash or held or owed:
             raise OpsError(f"계좌 {account_id}에 예수금 {int(cash):,}원, 보유 {held}종목, 미결제 {int(owed):,}원이 남아 있어 "
                            "해지할 수 없어요. 잔고가 0이 된 뒤에 해지해요.")
-    conn.execute("insert into account_status_history (account_id, status, effective_from, reason)"
-                 " values (%s, %s, %s, %s)", (account_id, status, effective_from, reason.strip()))
+    with conn.transaction():
+        conn.execute("insert into account_status_history (account_id, status, effective_from, reason)"
+                     " values (%s, %s, %s, %s)", (account_id, status, effective_from, reason.strip()))
+        audit.record(conn, "ACCOUNT_STATUS", account_id=account_id, target=account_id,
+                     detail={"from": acct.status, "to": status, "effective_from": effective_from,
+                             "reason": reason.strip()})
     return get_account(conn, account_id)

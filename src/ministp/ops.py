@@ -27,6 +27,7 @@ from .instruments import AssetType, Instrument, Market
 from .ledger import ExecutionEvent, LateExecutionEvent, Ledger, NavEvent, NavRow, Side, book_date
 from .oms import OrderStatus
 from .recon import Cause, ReconResult, Status
+from . import audit
 from .session import Anomaly, TradingSession, failure_text
 from .store import DEFAULT_ACCOUNT, PostgresLedgerStore, migrate
 
@@ -38,8 +39,13 @@ class OpsError(RuntimeError):
 # ---------- instruments ----------
 
 def add_instrument(conn: psycopg.Connection, inst: Instrument) -> None:
-    conn.execute("insert into instruments (symbol, name, market, asset_type) values (%s, %s, %s, %s)",
-                 (inst.symbol, inst.name, inst.market.value, inst.asset_type.value))
+    if conn.execute("select 1 from instruments where symbol = %s", (inst.symbol,)).fetchone():
+        raise OpsError(f"이미 등록된 종목이에요: {inst.symbol}")
+    with conn.transaction():
+        conn.execute("insert into instruments (symbol, name, market, asset_type) values (%s, %s, %s, %s)",
+                     (inst.symbol, inst.name, inst.market.value, inst.asset_type.value))
+        audit.record(conn, "INSTRUMENT_ADD", target=inst.symbol,
+                     detail={"name": inst.name, "market": inst.market.value, "asset_type": inst.asset_type.value})
 
 
 def load_instruments(conn: psycopg.Connection) -> dict[str, Instrument]:
@@ -121,6 +127,8 @@ def open_books(books: Books, broker: BrokerGateway, day: dt.date) -> None:
     for sym in sorted(bal.positions):
         p = bal.positions[sym]
         books.ledger.open_position(day, sym, p.qty, p.purchase_amount)
+    audit.record(books.conn, "OPEN", account_id=books.account_id, target=day.isoformat(),
+                 detail={"cash": bal.cash_d0, "positions": len(bal.positions)})
 
 
 # ---------- orders ----------
@@ -152,15 +160,34 @@ def session_for(books: Books, broker: BrokerGateway, day: dt.date) -> TradingSes
             " values (%s, %s, %s, %s, %s, %s, %s)", (cid, d, symbol, side.value, qty, limit_price, books.account_id))
 
     def on_ack(cid, ack, detail):
-        if ack is None:
-            books.conn.execute("insert into oms_order_acks (client_id, outcome, detail)"
-                               " values (%s, 'REJECTED', %s)", (cid, detail))
-        else:
-            books.conn.execute("insert into oms_order_acks (client_id, outcome, order_no, org_no)"
-                               " values (%s, 'ACCEPTED', %s, %s)", (cid, ack.order_no, ack.org_no))
+        o = session.oms.orders[cid]
+        asked = _order_detail(o.symbol, o.side, o.qty, o.limit_price)
+        with books.conn.transaction():   # the answer and its audit row together
+            if ack is None:
+                books.conn.execute("insert into oms_order_acks (client_id, outcome, detail)"
+                                   " values (%s, 'REJECTED', %s)", (cid, detail))
+                audit.record(books.conn, "ORDER", "FAILED", account_id=books.account_id, target=cid,
+                             detail=asked, message=detail)
+            else:
+                books.conn.execute("insert into oms_order_acks (client_id, outcome, order_no, org_no)"
+                                   " values (%s, 'ACCEPTED', %s, %s)", (cid, ack.order_no, ack.org_no))
+                audit.record(books.conn, "ORDER", account_id=books.account_id, target=cid,
+                             detail=asked | {"order_no": ack.order_no})
 
-    session.on_submit, session.on_ack = on_submit, on_ack
+    def on_refused(d, symbol, side, qty, limit_price, detail):
+        # R-85: an order the pre-check refused is in no order table. This row is all that is left of it.
+        kind, _, code = detail.partition(": ")
+        reason = code if kind == "risk" else "KILL_SWITCH" if kind == "kill switch engaged" else None
+        audit.record(books.conn, "ORDER", "REFUSED" if reason else "FAILED",   # a rule said no / the price call broke
+                     account_id=books.account_id, message=failure_text(detail),
+                     detail=_order_detail(symbol, side, qty, limit_price) | {"date": d, "reason": reason})
+
+    session.on_submit, session.on_ack, session.on_refused = on_submit, on_ack, on_refused
     return session
+
+
+def _order_detail(symbol: str, side, qty: int, limit_price: int | None) -> dict:
+    return {"symbol": symbol, "side": getattr(side, "value", side), "qty": qty, "limit_price": limit_price or None}
 
 
 def stored_open_orders(books: Books, day: dt.date) -> list[OpenOrder]:
@@ -246,10 +273,13 @@ def close_books(books: Books, day: dt.date) -> NavRow:
     reason = books.ledger.close_blocker(day)
     if reason:
         raise OpsError(f"{day} 장부를 마감할 수 없어요: {CLOSE_BLOCKER_TEXT[reason]}.")
-    nav = books.ledger.close_day(day)
-    problems = books.store.verify(books.ledger)
-    if problems:
-        raise OpsError(f"DB 원장 검증 실패: {problems}")
+    with books.conn.transaction():   # the close and its audit row together
+        nav = books.ledger.close_day(day)
+        problems = books.store.verify(books.ledger)
+        if problems:
+            raise OpsError(f"DB 원장 검증 실패: {problems}")
+        audit.record(books.conn, "CLOSE", account_id=books.account_id, target=day.isoformat(),
+                     detail={"net_assets": nav.net_assets, "nav_per_1000": nav.nav_per_1000})
     return nav
 
 
@@ -309,6 +339,10 @@ def daily_close(books: Books, broker: BrokerGateway, day: dt.date) -> DailyRepor
     problems = books.store.verify(ledger)
     if problems:
         raise OpsError(f"DB 원장 검증 실패: {problems}")
+    breaks = sum(r.status is not Status.MATCH for r in results)
+    audit.record(books.conn, "DAILY", account_id=books.account_id, target=day.isoformat(),
+                 detail={"run_id": run_id, "settled": len(settled), "booked": len(booked), "breaks": breaks,
+                         "closed": closed, "nav_per_1000": nav.nav_per_1000 if nav else None})
     return DailyReport(day, settled, booked, nav, results, session.anomalies, run_id, notes, closed)
 
 
@@ -371,10 +405,15 @@ def resolve_break(conn: psycopg.Connection, result_id: int, cause: Cause, note: 
                        " from recon_results where id = %s", (result_id,)).fetchone()
     if row is None or row[8] != "BREAK":
         raise OpsError(f"불일치 행이 아니에요: {result_id}")
-    return conn.execute(   # the judgement belongs to the account of the row it judges
-        "insert into recon_results (run_id, date, item, key, internal_value, broker_value, diff, account_id,"
-        " status, cause_code, note, supersedes_id) values (%s, %s, %s, %s, %s, %s, %s, %s, 'RESOLVED',"
-        " %s, %s, %s) returning id", (*row[:8], cause.value, note, result_id)).fetchone()[0]
+    with conn.transaction():
+        new_id = conn.execute(   # the judgement belongs to the account of the row it judges
+            "insert into recon_results (run_id, date, item, key, internal_value, broker_value, diff, account_id,"
+            " status, cause_code, note, supersedes_id) values (%s, %s, %s, %s, %s, %s, %s, %s, 'RESOLVED',"
+            " %s, %s, %s) returning id", (*row[:8], cause.value, note, result_id)).fetchone()[0]
+        audit.record(conn, "RESOLVE", account_id=row[7], target=str(result_id),
+                     detail={"cause": cause.value, "note": note, "date": row[1], "item": row[2], "key": row[3],
+                             "row": new_id})
+    return new_id
 
 
 def _insert_results(conn: psycopg.Connection, run_id: int, results, account_id: str) -> None:
@@ -503,6 +542,9 @@ class IntradayRunner:
                 limit = int(parts[3]) if len(parts) == 4 else None
                 if symbol not in self.books.instruments:
                     self.out(f"종목 등록이 필요해요: {symbol}")
+                    audit.record_refusal(self.books.conn, "ORDER", OpsError(f"종목 등록이 필요해요: {symbol}"),
+                                         account_id=self.books.account_id,
+                                         detail=_order_detail(symbol, cmd.upper(), qty, limit) | {"date": self.day})
                     return True
                 cid = self.session.submit(self.day, symbol, Side(cmd.upper()), qty, limit)
                 if cid is None:

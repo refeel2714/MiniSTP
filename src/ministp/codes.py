@@ -23,6 +23,7 @@ from dataclasses import dataclass
 import psycopg
 from psycopg import sql
 
+from . import audit
 from .ops import OpsError
 
 GROUP_ID_RE = re.compile(r"^[A-Z][A-Z0-9_]{1,39}$")
@@ -39,7 +40,7 @@ class CodeGroup:
 
 
 # The codes a new database gets (`init_schema`). An existing one gets the same rows from the migrations:
-# 0002 inserted the codes of ERD v2.1, 0003 the three of the day close (v2.2).
+# 0002 inserted the codes of ERD v2.1, 0003 the three of the day close (v2.2), 0004 the three audit groups (v2.3).
 SEED: tuple[CodeGroup, ...] = (
     CodeGroup("ACCOUNT_STATUS", "계좌 상태", "위탁계좌의 상태. 정상 계좌만 주문을 받아요 (R-39).",
               "account_status_history.status", (
@@ -133,6 +134,29 @@ SEED: tuple[CodeGroup, ...] = (
     CodeGroup("NORMAL_SIDE", "정상잔액 방향", "계정과목의 잔액이 늘어나는 쪽.", "accounts_chart.normal_side", (
         ("D", "차변", "자산, 비용"),
         ("C", "대변", "부채, 자본, 수익"))),
+    CodeGroup("AUDIT_CHANNEL", "감사 로그 경로", "어디로 들어온 요청인지.", "audit_log.channel", (
+        ("CLI", "명령", "PC의 명령 창에서 실행"),
+        ("UI", "화면", "업무화면의 처리 버튼"),
+        ("SYSTEM", "시스템", "사람이 아닌 프로그램 (샘플 생성 등)"))),
+    CodeGroup("AUDIT_OUTCOME", "감사 로그 결과", "요청이 어떻게 끝났는지.", "audit_log.outcome", (
+        ("DONE", "처리", "요청대로 처리함"),
+        ("REFUSED", "거부", "규칙에 맞지 않아 시스템이 거부함. 바뀐 것은 없어요"),
+        ("FAILED", "실패", "증권사 응답 등 바깥 문제로 끝내지 못함"))),
+    CodeGroup("AUDIT_ACTION", "감사 로그 행위", "밖에서 시스템에 한 일의 종류.", "audit_log.action", (
+        ("OPEN", "원장 시작", "증권사 잔고를 원장 시작값으로 기록"),
+        ("ORDER", "주문", "주문 한 건. 검증에서 거부된 주문도 남아요"),
+        ("DAILY", "일일 마감·대사", "결제, 체결 반영, 기준가, 대사"),
+        ("CLOSE", "장부 마감", "불일치를 판단한 날을 직접 마감"),
+        ("RESOLVE", "불일치 원인 판단", ""),
+        ("INSTRUMENT_ADD", "종목 등록", ""),
+        ("CUSTOMER_ADD", "고객 등록", ""),
+        ("ACCOUNT_ADD", "계좌 등록", ""),
+        ("ACCOUNT_STATUS", "계좌 상태 변경", ""),
+        ("CODE_GROUP_ADD", "코드 그룹 추가", ""),
+        ("CODE_ADD", "코드 추가", ""),
+        ("CODE_RENAME", "코드명 변경", ""),
+        ("CODE_USE", "코드 사용 여부 변경", ""),
+        ("DB_MIGRATE", "스키마 마이그레이션", "ERD 버전을 올림"))),
 )
 
 
@@ -191,6 +215,9 @@ def program_codes() -> dict[str, set[str]]:
         "ORDER_REJECT": {r for r in REASON_TEXT if r},
         "RECON_STATUS": {s.value for s in Status} | {"RESOLVED"},   # RESOLVED is written by the judgment row
         "RECON_CAUSE": {c.value for c in Cause},
+        "AUDIT_CHANNEL": set(audit.CHANNELS),
+        "AUDIT_OUTCOME": set(audit.OUTCOMES),
+        "AUDIT_ACTION": set(audit.ACTIONS),
     }
 
 
@@ -240,8 +267,12 @@ def rename(conn: psycopg.Connection, group_id: str, code: str, name: str, descri
     old = _code(conn, group_id, code)[1]
     if not name.strip():
         raise OpsError("코드명을 넣어 주세요.")
-    conn.execute("update common_codes set name = %s, description = coalesce(%s, description)"
-                 " where group_id = %s and code = %s", (name.strip(), description, group_id, code))
+    with conn.transaction():
+        conn.execute("update common_codes set name = %s, description = coalesce(%s, description)"
+                     " where group_id = %s and code = %s", (name.strip(), description, group_id, code))
+        # common_codes is not append-only (a name is a label, not a fact): the old name is kept here
+        audit.record(conn, "CODE_RENAME", target=f"{group_id}.{code}",
+                     detail={"from": old, "to": name.strip(), "description": description})
     return old
 
 
@@ -251,7 +282,9 @@ def set_in_use(conn: psycopg.Connection, group_id: str, code: str, in_use: bool)
     _code(conn, group_id, code)
     if fixed:
         raise OpsError(f"{group_id}는 프로그램이 정한 코드라서 끌 수 없어요. 코드명만 바꿀 수 있어요 (code rename).")
-    conn.execute("update common_codes set in_use = %s where group_id = %s and code = %s", (in_use, group_id, code))
+    with conn.transaction():
+        conn.execute("update common_codes set in_use = %s where group_id = %s and code = %s", (in_use, group_id, code))
+        audit.record(conn, "CODE_USE", target=f"{group_id}.{code}", detail={"in_use": in_use})
 
 
 def add_group(conn: psycopg.Connection, group_id: str, name: str, description: str = "") -> None:
@@ -262,8 +295,11 @@ def add_group(conn: psycopg.Connection, group_id: str, name: str, description: s
         raise OpsError("코드 그룹명을 넣어 주세요.")
     if conn.execute("select 1 from code_groups where group_id = %s", (group_id,)).fetchone():
         raise OpsError(f"이미 있는 코드 그룹이에요: {group_id}")
-    conn.execute("insert into code_groups (group_id, name, description, fixed) values (%s, %s, %s, false)",
-                 (group_id, name.strip(), description.strip() or None))
+    with conn.transaction():
+        conn.execute("insert into code_groups (group_id, name, description, fixed) values (%s, %s, %s, false)",
+                     (group_id, name.strip(), description.strip() or None))
+        audit.record(conn, "CODE_GROUP_ADD", target=group_id,
+                     detail={"name": name.strip(), "description": description.strip() or None})
 
 
 def add_code(conn: psycopg.Connection, group_id: str, code: str, name: str, description: str = "") -> None:
@@ -277,8 +313,11 @@ def add_code(conn: psycopg.Connection, group_id: str, code: str, name: str, desc
         raise OpsError(f"이미 있는 코드예요: {group_id} {code}")
     last = conn.execute("select coalesce(max(sort_order), 0) from common_codes where group_id = %s",
                         (group_id,)).fetchone()[0]
-    conn.execute("insert into common_codes (group_id, code, name, description, sort_order) values (%s, %s, %s, %s, %s)",
-                 (group_id, code.strip(), name.strip(), description.strip() or None, last + 1))
+    with conn.transaction():
+        conn.execute("insert into common_codes (group_id, code, name, description, sort_order) values (%s, %s, %s, %s, %s)",
+                     (group_id, code.strip(), name.strip(), description.strip() or None, last + 1))
+        audit.record(conn, "CODE_ADD", target=f"{group_id}.{code.strip()}",
+                     detail={"name": name.strip(), "description": description.strip() or None})
 
 
 # ---------- the check ----------

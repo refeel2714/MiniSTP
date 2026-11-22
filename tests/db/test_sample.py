@@ -5,6 +5,7 @@ import pytest
 
 from db.test_ops import CAL, FEES, books, conn  # noqa: F401
 from ministp.ledger import NavEvent
+from ministp import audit
 from ministp.sample import SampleError, build_sample, guard_sample_db
 
 
@@ -90,6 +91,11 @@ def test_the_sample_shows_a_suspension_that_refuses_orders_but_not_the_close(con
     assert [st for st, _ in history] == ["OPEN", "SUSPENDED", "OPEN"] and third.status == "OPEN"
     suspended_from, reopened = history[1][1], history[2][1]
     assert third.refused >= 1 and any("ACCOUNT_NOT_OPEN" in n for n in third.notes)
+    # R-85: the refused orders are in no order table; the audit log is where they are kept, as the generator's rows
+    refused = audit.rows(conn, limit=1000, account_id=third.account_id, action="ORDER", outcome="REFUSED")
+    assert len(refused) == third.refused and {r.detail["reason"] for r in refused} == {"ACCOUNT_NOT_OPEN"}
+    assert {(r.channel, r.actor) for r in audit.rows(conn, limit=5000)} == {("SYSTEM", "sample")}
+    assert audit.chain_problems(conn)[2] == []
     assert conn.execute("select count(*) from oms_orders where account_id = 'A0003' and trade_date >= %s"
                         " and trade_date < %s", (suspended_from, reopened)).fetchone()[0] == 0
     assert conn.execute("select count(distinct date) from broker_snapshots where account_id = 'A0003'"

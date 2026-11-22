@@ -17,6 +17,7 @@ from dataclasses import dataclass, field
 import psycopg
 
 from .broker.sim import SimBroker
+from . import audit
 from .calendar import BusinessCalendar
 from .fees import FeeSchedule
 from .instruments import AssetType, Instrument, Market
@@ -107,7 +108,13 @@ def build_sample(conn: psycopg.Connection, calendar: BusinessCalendar, fees: Fee
                  accounts: int = 1) -> SampleSummary:
     """Wipe the sample database and fill it with `days` business days of trading.
 
-    `accounts` is 1 (the default account only) up to 1 + len(SAMPLE_ACCOUNTS)."""
+    `accounts` is 1 (the default account only) up to 1 + len(SAMPLE_ACCOUNTS).
+    The audit rows it leaves say who made them: the generator, not a person at the console."""
+    with audit.acting_as("SYSTEM", "sample"):
+        return _build_sample(conn, calendar, fees, start, days, seed, accounts)
+
+
+def _build_sample(conn, calendar, fees, start, days, seed, accounts) -> SampleSummary:
     guard_sample_db(conn)
     if not 1 <= accounts <= 1 + len(SAMPLE_ACCOUNTS):
         raise SampleError(f"샘플 계좌 수는 1~{1 + len(SAMPLE_ACCOUNTS)}개예요.")
