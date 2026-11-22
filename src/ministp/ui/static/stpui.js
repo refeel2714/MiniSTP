@@ -8,7 +8,7 @@
  * 찾기 팝업 to pick it from a list.
  * Keys: Enter in a condition = 조회, ↑/↓ moves the row (in a calendar ←/→ a day, ↑/↓ a week), Enter or double-click on
  * a row = move to the linked screen, Ctrl+Enter anywhere = 조회, F2 in an input
- * with a 찾기 button = open the list.
+ * with a 찾기 button = open the list, Ctrl+K anywhere = 바로 가기 창 (a screen, or a code and the screen to open for it).
  */
 (function () {
   "use strict";
@@ -318,6 +318,134 @@
     }).catch(e => box.replaceChildren(h("div", { class: "err", role: "alert", text: e.message })));
   }
 
+  // ---------- 바로 가기 창 (Ctrl+K) ----------
+  // One box that goes anywhere: a screen by its number or name, or a code a screen can be opened for
+  // (종목 and the like: whatever a 조회조건 picks from a 찾기 팝업). A code that more than one screen
+  // takes asks which screen next. Nothing here knows a screen: the list comes from the definitions.
+  const jumpRows = {};                       // 찾기 목록 이름 -> rows, read once per page
+  const squash = v => String(v ?? "").toLowerCase().replace(/\s+/g, "");
+  function rank(q, ...texts) {               // lower is closer; -1 is no match
+    let best = -1;
+    texts.forEach((t, i) => {
+      const at = squash(t).indexOf(q);
+      if (at < 0) return;
+      const score = (at === 0 ? 0 : 10) + i;
+      if (best < 0 || score < best) best = score;
+    });
+    return best;
+  }
+  function openJump() {
+    if (document.querySelector("dialog[open]")) return;
+    const here = DATA.screen ? DATA.screen.id : null;
+    let items = [], sel = 0, picked = null, typed = "";   // picked: the code whose screen is being chosen
+    const input = h("input", { type: "text", class: "lkfilter", autocomplete: "off", spellcheck: "false",   // text, not search: Esc closes at once
+      role: "combobox", "aria-expanded": "true", "aria-controls": "jump-list", "aria-label": "바로 가기" });
+    const crumb = h("div", { class: "jcrumb" });
+    const box = h("div", { class: "jbody", id: "jump-list", role: "listbox", "aria-label": "바로 가기" });
+    const hint = h("span", { class: "hint" });
+    const dlg = h("dialog", { class: "dlg jump", "aria-label": "바로 가기" }, crumb, input, box, h("div", { class: "dfoot" }, hint));
+
+    const screenRow = (m, note) => ({
+      el: [h("span", { class: "sid", text: m.id }), h("span", { class: "jt", text: m.title }),
+        note || m.id === here ? h("span", { class: "jnote", text: note || "지금 화면" }) : null],
+      go: () => { location.href = "/screen/" + m.id; },
+    });
+    const mark = (lk, row) => badge(row, { name: lk.shows || lk.value, code: lk.value,
+      shape: lk.columns.some(c => c.name === "asset_type") ? "asset_type" : null });
+    const open = (lk, row, t) => { location.href = `/screen/${t.id}?${t.param}=${encodeURIComponent(row[lk.value])}`; };
+
+    function build() {
+      const q = squash(input.value);
+      if (picked) {                                           // which screen to open for the code
+        const { lk, row } = picked;
+        crumb.replaceChildren(mark(lk, row), h("span", { text: "이 코드로 열 화면을 고르세요" }));
+        input.placeholder = "화면번호나 화면명";
+        hint.textContent = "↑↓ 이동 · Enter 열기 · Esc 뒤로";
+        return [{ title: null, rows: lk.into.filter(t => !q || rank(q, t.id, t.id.slice(4), t.title) >= 0).map(t => ({
+          el: [h("span", { class: "sid", text: t.id }), h("span", { class: "jt", text: t.title }),
+            t.id === here ? h("span", { class: "jnote", text: "지금 화면" }) : null],
+          go: () => open(lk, row, t), here: t.id === here })) }];
+      }
+      crumb.replaceChildren();
+      input.placeholder = "화면번호, 화면명, 종목코드나 종목명";
+      hint.textContent = "↑↓ 이동 · Enter 열기 · Esc 닫기 · Ctrl+K 어디서나";
+      const groups = [];
+      const screens = DATA.menu.map(m => [q ? rank(q, m.id, m.id.slice(4), m.title) : 0, m]).filter(x => x[0] >= 0);
+      if (q) screens.sort((a, b) => a[0] - b[0]);
+      if (screens.length) groups.push({ title: "화면", rows: screens.map(x => screenRow(x[1])) });
+      for (const lk of DATA.jump) {
+        const rows = jumpRows[lk.name];
+        const what = lk.title.replace(/\s*찾기$/, "");
+        if (!q) continue;
+        if (!rows) { groups.push({ title: what, note: "불러오는 중이에요", rows: [] }); continue; }
+        const hit = rows.map(r => [rank(q, r[lk.value], lk.shows ? r[lk.shows] : ""), r]).filter(x => x[0] >= 0)
+          .sort((a, b) => a[0] - b[0]);
+        if (!hit.length) continue;
+        groups.push({ title: what, note: hit.length > 8 ? `${nf.format(hit.length)}건 중 8건` : null,
+          rows: hit.slice(0, 8).map(x => ({
+            el: [mark(lk, x[1]), h("span", { class: "jnote",
+              text: lk.into.length === 1 ? `${lk.into[0].id} ${lk.into[0].title}` : `화면 ${lk.into.length}곳 ›` })],
+            go: () => { if (lk.into.length === 1) open(lk, x[1], lk.into[0]); else pick(lk, x[1]); } })) });
+      }
+      return groups;
+    }
+    function render(keep) {
+      const groups = build();
+      items = groups.flatMap(g => g.rows);
+      const at = items.findIndex(it => it.here);
+      sel = keep ? Math.max(0, Math.min(sel, items.length - 1)) : (picked && at >= 0 ? at : 0);
+      let i = 0;
+      box.replaceChildren(...groups.flatMap(g => [
+        g.title ? h("div", { class: "jgroup" }, g.title, g.note ? h("span", { text: g.note }) : null) : null,
+        ...g.rows.map(it => { const n = i++; return h("div", { class: "jitem", role: "option", id: "jump-" + n,
+          onclick: () => { sel = n; go(); } }, it.el); }),
+      ]).filter(Boolean));
+      if (!items.length) {
+        box.append(h("div", { class: "jempty", text: squash(input.value) ? "맞는 화면이나 코드가 없어요" : "열 수 있는 화면이 없어요" }));
+      } else if (!picked && !squash(input.value) && DATA.jump.length) {
+        box.append(h("div", { class: "jtip", text: `코드나 이름을 넣으면 ${DATA.jump.map(lk => lk.title.replace(/\s*찾기$/, "")).join(", ")}도 찾아요` }));
+      }
+      show();
+    }
+    function show() {
+      box.querySelectorAll(".jitem").forEach((el, i) => {
+        el.classList.toggle("sel", i === sel); el.setAttribute("aria-selected", i === sel ? "true" : "false");
+      });
+      const el = box.querySelectorAll(".jitem")[sel];
+      if (el) { el.scrollIntoView({ block: "nearest" }); input.setAttribute("aria-activedescendant", el.id); }
+      else input.removeAttribute("aria-activedescendant");
+    }
+    function go() { const it = items[sel]; if (it) it.go(); }
+    function pick(lk, row) { typed = input.value; picked = { lk, row }; input.value = ""; render(); input.focus(); }
+    function back() { picked = null; input.value = typed; render(); input.focus(); }
+
+    input.addEventListener("input", () => render());
+    input.addEventListener("keydown", e => {
+      if (e.isComposing) return;                              // 한글 조합 중의 Enter는 글자를 끝내는 키
+      if (e.key === "ArrowDown") { e.preventDefault(); sel = Math.min(sel + 1, items.length - 1); show(); }
+      else if (e.key === "ArrowUp") { e.preventDefault(); sel = Math.max(sel - 1, 0); show(); }
+      else if (e.key === "Enter") { e.preventDefault(); go(); }
+      else if (e.key === "Backspace" && picked && input.value === "") { e.preventDefault(); back(); }
+    });
+    dlg.addEventListener("cancel", e => { if (picked) { e.preventDefault(); back(); } });   // Esc: one step back first
+    dlg.addEventListener("click", e => { if (e.target === dlg) dlg.close(); });               // outside the box
+    dlg.addEventListener("close", () => dlg.remove());
+    document.body.append(dlg);
+    dlg.showModal();
+    render();
+    input.focus();
+    for (const lk of DATA.jump) {
+      if (jumpRows[lk.name]) continue;
+      call(lk.tx, {}).then(res => {
+        const ds = res.datasets.main;
+        jumpRows[lk.name] = ds.rows.map(r => Object.fromEntries(ds.columns.map((c, i) => [c, r[i]])));
+      }).catch(() => { jumpRows[lk.name] = []; }).finally(() => { if (dlg.open && !picked) render(true); });
+    }
+  }
+  document.addEventListener("keydown", e => {
+    if ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === "k") { e.preventDefault(); openJump(); }
+  });
+
   // ---------- 처리 입력 창 ----------
   // A 처리 button opens this: the row it works on at the top, the inputs, and one button that
   // calls the 처리 transaction. A refusal from the server is shown here and the window stays open.
@@ -378,6 +506,7 @@
       h("form", { onsubmit: submit, novalidate: true, oninput: () => { err.textContent = ""; } },
         h("div", { class: "dhead" }, h("h2", { id: "dlg-title", text: b.label }),
           h("span", { class: "txid", title: "처리 트랜잭션: " + b.title, text: b.tx })),
+        DATA.env === "live" ? h("p", { class: "flive", role: "note", text: "실전 환경이에요. 이 처리는 실전 원장에 기록돼요." }) : null,
         shows, b.note ? h("p", { class: "fnote", text: b.note }) : null,
         h("div", { class: "fields" }, fields), err,
         h("div", { class: "dfoot" }, h("button", { type: "button", class: "ghost", onclick: () => dlg.close() }, "취소"), ok)));
@@ -389,6 +518,11 @@
   }
 
   // ---------- shell ----------
+  const ENV_TITLES = {
+    sample: "샘플 DB: 연습용이라 증권사 계좌와 이어져 있지 않아요",
+    paper: "모의투자 환경 (MINISTP_KIS_ENV=paper)",
+    live: "실전 환경 (MINISTP_KIS_ENV=live): 이 화면의 숫자와 처리는 실전 원장의 것이에요",
+  };
   function topbar(screen) {
     const nav = h("nav", { class: "menu", "aria-label": "화면 목록" },
       DATA.menu.map(m => h("a", {
@@ -398,12 +532,16 @@
     return h("header", { class: "top" },
       h("a", { class: "brand", href: "/" }, "MiniSTP ", h("b", { text: "STP-UI" })),
       nav,
+      h("button", { type: "button", class: "jumpbtn", title: "화면이나 종목으로 바로 가기 (Ctrl+K)", onclick: openJump },
+        "바로 가기", h("kbd", { text: "Ctrl K" })),
       accountPicker(),
       h("span", { class: "env", title: DATA.writable
         ? `DB ${DATA.db} · 조회는 읽기 전용 연결, 처리 버튼을 누를 때만 쓰기 연결`
         : `DB ${DATA.db} · 읽기 전용 연결 (처리 버튼은 ui --write 로 열었을 때만)` },
         h("span", { class: "dot", id: "live-dot" }),
-        `${DATA.label || DATA.db} · 기준일 ${DATA.today} · ${DATA.writable ? "처리 가능" : "조회 전용"}`));
+        // 실전 테두리: which environment this is, said in a word next to the DB (the frame itself is CSS on body[data-env])
+        h("b", { class: "envchip " + DATA.env, title: ENV_TITLES[DATA.env], text: DATA.env_name }),
+        `${DATA.env === "sample" ? "" : DATA.db + " · "}기준일 ${DATA.today} · ${DATA.writable ? "처리 가능" : "조회 전용"}`));
   }
   // Keep the current screen's tab in view when the menu is wider than the bar.
   function revealTab() {
@@ -643,6 +781,7 @@
     let changed = new Map();   // row key -> Set of changed columns ("*" = new row), shown once
     let previous = new Map();  // row key -> the row before this fill (numbers roll from here)
     let loaded = false;
+    let mode = g.view;         // a T계정 grid or one with a 구성 지도 can be turned into a table and back (buttons next to the count)
     const keyCol = g.key || g.columns[0].name;
     const rowKey = g.view === "cards" ? () => "card" : r => String(r[keyCol]);   // cards show one row
     const count = h("span", { class: "count" });
@@ -650,6 +789,15 @@
     const aboutBox = h("span", { class: "about", title: "목록에서 고른 행" });
     const body = h("div", { class: "gbody" });
     const chartBox = g.chart ? h("div", { class: "chart" }) : null;
+    const MODES = { taccount: "T계정", map: "지도", grid: "표" };
+    const offered = [...new Set([g.view, g.map ? "map" : null, "grid"])].filter(m => m in MODES);
+    const modes = offered.length > 1 ? offered.map(m =>
+      h("button", { type: "button", "aria-pressed": m === mode ? "true" : "false", "data-m": m, onclick: () => {
+        if (m === mode) return;
+        mode = m;
+        modes.forEach(b => b.setAttribute("aria-pressed", b.dataset.m === m ? "true" : "false"));
+        if (loaded) { morph(body, apply); mark(false); }
+      } }, MODES[m])) : null;
     // 처리 버튼 live at the top right of their grid.
     const acts = (g.actions || []).map(b => ({ b, btn: h("button", { type: "button", class: "act",
       onclick: () => onAction(b, b.needs_row ? view[sel] : null) }, b.label) }));
@@ -657,6 +805,7 @@
       h("div", { class: "phead" }, h("h2", { text: g.title }), aboutBox,
         g.live ? h("span", { class: "livechip", title: "DB가 바뀌면 자동으로 다시 조회해요" }, "실시간") : null,
         metaBox, count,
+        modes ? h("div", { class: "seg", role: "group", "aria-label": "보기" }, modes) : null,
         h("span", { class: "txid", title: "조회 트랜잭션", text: g.tx }),
         acts.length ? h("div", { class: "acts" }, acts.map(a => a.btn)) : null),
       chartBox, body);
@@ -759,8 +908,121 @@
           return (num ? x - y : String(x).localeCompare(String(y), "ko")) * sortDir;
         });
       }
-      count.textContent = g.view === "grid" ? `${nf.format(rows.length)}건` : "";
-      g.view === "cards" ? renderCards() : g.view === "calendar" ? renderCalendar() : renderTable();
+      count.textContent = g.view === "grid" || g.view === "taccount" ? `${nf.format(rows.length)}건` : "";
+      mode === "cards" ? renderCards() : mode === "calendar" ? renderCalendar() : mode === "taccount" ? renderTAccounts()
+        : mode === "map" ? renderMap() : renderTable();
+    }
+
+    // 구성 지도: a tile a row. The area is the row's share of the size column, the colour is the tone
+    // column against the size (+ red, - blue, deeper the further from zero; no value = hatched).
+    // Tiles are the rows: a click picks the row, a double click or Enter moves on like a table row.
+    const mapWatch = window.ResizeObserver ? new ResizeObserver(() => placeTiles()) : null;
+    function squarify(items, x, y, w, hgt) {          // items: [{ v }] largest first; gives each x, y, w, h in px
+      const total = items.reduce((a, it) => a + it.v, 0);
+      let rest = items.map(it => ({ it, a: it.v / total * w * hgt }));
+      while (rest.length && w > 0 && hgt > 0) {
+        const short = Math.min(w, hgt);
+        const worst = (s, n) => Math.max(short * short * rest[0].a / (s * s), s * s / (short * short * rest[n - 1].a));
+        let n = 1, sum = rest[0].a;
+        while (n < rest.length && worst(sum + rest[n].a, n + 1) <= worst(sum, n)) { sum += rest[n].a; n++; }
+        const thick = sum / short;
+        let off = 0;
+        for (const e of rest.slice(0, n)) {
+          const len = e.a / thick;
+          if (w >= hgt) Object.assign(e.it, { x, y: y + off, w: thick, h: len });
+          else Object.assign(e.it, { x: x + off, y, w: len, h: thick });
+          off += len;
+        }
+        if (w >= hgt) { x += thick; w -= thick; } else { y += thick; hgt -= thick; }
+        rest = rest.slice(n);
+      }
+    }
+    function placeTiles() {
+      const box = body.querySelector(".tmap");
+      if (!box || !box.clientWidth) return;
+      const tiles = [...box.children].map(el => ({ el, v: Number(el.dataset.v) }));
+      squarify(tiles, 0, 0, box.clientWidth, box.clientHeight);
+      for (const t of tiles) {
+        t.el.style.left = t.x + "px"; t.el.style.top = t.y + "px";
+        t.el.style.width = Math.max(0, t.w - 2) + "px"; t.el.style.height = Math.max(0, t.h - 2) + "px";
+        t.el.classList.toggle("sm", t.w < 96 || t.h < 58);     // room for the name only
+        t.el.classList.toggle("xs", t.w < 44 || t.h < 24);     // room for nothing: the hover text says it
+      }
+    }
+    function renderMap() {
+      const m = g.map, col = n => g.columns.find(c => c.name === n);
+      const size = col(m.size), toneCol = m.tone ? col(m.tone) : null;
+      const sized = view.map((r, i) => ({ r, i, v: Number(r[m.size]) || 0 })).filter(x => x.v > 0).sort((a, b) => b.v - a.v);
+      if (!sized.length) return body.replaceChildren(h("div", { class: "empty", text: rows.length ? `${size.label}이 있는 행이 없어요` : "조회된 내역이 없어요" }));
+      const total = sized.reduce((a, x) => a + x.v, 0);
+      const box = h("div", { class: "tmap", role: "listbox", "aria-label": `${g.title} 구성 지도`, tabindex: "0",
+        onkeydown: e => {
+          const step = { ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1 }[e.key];
+          const at = sized.findIndex(x => x.i === sel);
+          if (step) { e.preventDefault(); const to = sized[Math.max(0, Math.min(sized.length - 1, at + step))]; if (to) select(to.i); }
+          else if (e.key === "Enter" && view[sel]) { e.preventDefault(); onDrill(view[sel]); }
+        } },
+        sized.map(({ r, i, v }) => {
+          const t = toneCol ? r[m.tone] : undefined;
+          const known = t !== null && t !== undefined;
+          const ratio = known ? Number(t) / v : 0;
+          const share = pf.format(v / total);
+          const lines = [`${r[m.label]}`, `${size.label} ${fmt(v, size.format)} (${share})`];
+          if (toneCol) lines.push(known ? `${toneCol.label} ${Number(t) > 0 ? "+" : ""}${fmt(t, toneCol.format)} (${ratio > 0 ? "+" : ""}${pf.format(ratio)})` : `${toneCol.label} 없음`);
+          const el = h("div", { class: ["mtile", !toneCol ? "" : !known ? "none" : ratio > 0 ? "up" : ratio < 0 ? "down" : ""].join(" ").trim(),
+            role: "option", "aria-selected": "false", "data-i": i, "data-v": v, title: lines.join("\n"), "aria-label": lines.join(", "),
+            onclick: () => select(i), ondblclick: () => onDrill(r) },
+            h("b", { text: r[m.label] }), h("span", { class: "tshare", text: share }), h("span", { class: "tsize", text: fmt(v, size.format) }),
+            toneCol ? h("span", { class: "ttone", text: known ? `${Number(t) > 0 ? "+" : ""}${fmt(t, toneCol.format)} (${ratio > 0 ? "+" : ""}${pf.format(ratio)})` : "평가 전" }) : null);
+          el.style.setProperty("--k", (known ? 10 + 38 * Math.min(1, Math.abs(ratio) / 0.08) : 0).toFixed(1) + "%");   // full depth at 8%
+          return el;
+        }));
+      body.replaceChildren(h("div", { class: "tmapbox" }, box,
+        h("div", { class: "tlegend" }, h("span", { text: `면적 ${size.label}` }),
+          toneCol ? [h("span", { text: `색 ${toneCol.label}` }), h("span", { class: "lg up", text: "이익" }), h("span", { class: "lg down", text: "손실" }),
+            sized.some(x => x.r[m.tone] === null || x.r[m.tone] === undefined) ? h("span", { class: "lg none", text: "값 없음" }) : null] : null,
+          sized.length < rows.length ? h("span", { text: `${size.label}이 없는 ${rows.length - sized.length}건은 그리지 않았어요` }) : null)));
+      if (mapWatch) { mapWatch.disconnect(); mapWatch.observe(box); }
+      placeTiles();
+    }
+
+    // T계정 보기: a journal the way it is taught. A T an account, 차변 on the left and 대변 on the right,
+    // a block a 전표; under each block both sums and whether they agree. The columns that are not the
+    // account or an amount are the block's heading. The amounts are the rows': nothing is worked out but the sums.
+    function renderTAccounts() {
+      if (!rows.length) return body.replaceChildren(h("div", { class: "empty", text: "조회된 내역이 없어요" }));
+      const t = g.taccount, col = n => g.columns.find(c => c.name === n);
+      const facts = g.columns.filter(c => ![t.account, t.name, t.debit, t.credit].includes(c.name));
+      const blocks = new Map();
+      for (const r of view) {
+        const k = t.entry ? String(r[t.entry]) : "";
+        if (!blocks.has(k)) blocks.set(k, []);
+        blocks.get(k).push(r);
+      }
+      const amount = v => fmt(v, "money");
+      const side = (label, values) => h("div", { class: "tside" }, h("div", { class: "tl", text: label }),
+        values.map(v => h("div", { class: "tv", text: amount(v) })));
+      body.replaceChildren(h("div", { class: "tview" }, [...blocks.values()].map(lines => {
+        const accounts = new Map();
+        for (const r of lines) {
+          const k = String(r[t.account]);
+          if (!accounts.has(k)) accounts.set(k, { name: t.name ? r[t.name] : null, dr: [], cr: [] });
+          if (Number(r[t.debit])) accounts.get(k).dr.push(r[t.debit]);
+          if (Number(r[t.credit])) accounts.get(k).cr.push(r[t.credit]);
+        }
+        const dr = lines.reduce((a, r) => a + (Number(r[t.debit]) || 0), 0);
+        const cr = lines.reduce((a, r) => a + (Number(r[t.credit]) || 0), 0);
+        const shown = facts.filter(c => lines[0][c.name] !== null && lines[0][c.name] !== undefined && lines[0][c.name] !== "");
+        return h("section", { class: "tentry", "aria-label": t.entry ? `${col(t.entry).label} ${lines[0][t.entry]}` : g.title },
+          shown.length ? h("div", { class: "tfacts" }, shown.map(c => h("span", {}, c.label, h("b", { text: fmt(lines[0][c.name], c.format) })))) : null,
+          h("div", { class: "taccs" }, [...accounts].map(([code, a]) => h("div", { class: "tacc", role: "group",
+            "aria-label": `${a.name || code} 차변 ${a.dr.map(amount).join(", ") || "없음"}, 대변 ${a.cr.map(amount).join(", ") || "없음"}` },
+            h("h3", {}, a.name || code, a.name ? h("span", { text: code }) : null),
+            h("div", { class: "tsides" }, side("차변", a.dr), side("대변", a.cr))))),
+          h("div", { class: "tsum" },
+            h("span", {}, "차변 합계", h("b", { text: amount(dr) })), h("span", {}, "대변 합계", h("b", { text: amount(cr) })),
+            h("span", { class: "pill " + (dr === cr ? "st-ok" : "st-bad"), text: dr === cr ? "차대 일치" : `차대 불일치 ${amount(dr - cr)}` })));
+      })));
     }
 
     function flashed(r, col) {
@@ -902,6 +1164,13 @@
       flip(body, () => { apply(); sel = keep ? view.indexOf(keep) : -1; mark(false); });   // the bar slides with its row
     }
     function mark(scroll = true) {
+      if (mode === "map") {
+        body.querySelectorAll(".mtile").forEach(el => {
+          const hit = Number(el.dataset.i) === sel;
+          el.classList.toggle("sel", hit); el.setAttribute("aria-selected", hit ? "true" : "false");
+        });
+        return syncActions();
+      }
       if (g.view === "calendar") {
         let on = null;
         body.querySelectorAll("button.day").forEach(b => {

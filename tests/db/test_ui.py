@@ -74,6 +74,28 @@ def test_server_refuses_to_start_when_a_screen_drifts_from_the_schema(sample, mo
         ui_app.create_app(URL, calendar=CAL, fees=FEES)
 
 
+def test_every_page_carries_what_the_jump_box_can_open(client, conn):
+    """바로 가기 창(Ctrl+K): 모든 화면과, 화면을 열 수 있는 코드(종목)의 목록이 어느 페이지에나 실려요."""
+    import json
+    import re
+    for path in ("/", "/screen/STP-2100"):
+        data = json.loads(re.search(r'<script id="stpui-data" type="application/json">(.*?)</script>',
+                                    client.get(path).text, re.S).group(1))
+        assert [m["id"] for m in data["menu"]] == list(load_screens())
+        (jump,) = data["jump"]
+        assert jump["name"] == "symbol" and {t["id"]: t["param"] for t in jump["into"]} == {
+            "STP-1300": "symbol", "STP-3100": "symbol"}
+    listed = client.post(f"/api/tx/{jump['tx']}", json={"params": {}}).json()["datasets"]["main"]
+    assert {jump["value"], jump["shows"]} <= set(listed["columns"])     # what the box matches on and shows
+    at = listed["columns"].index(jump["value"])
+    assert sorted(r[at] for r in listed["rows"]) == [r[0] for r in conn.execute("select symbol from instruments order by 1")]
+    for t in jump["into"]:                                                # each target opens for that code
+        screen = load_screens()[t["id"]]
+        assert any(c.name == t["param"] and c.lookup == "symbol" for c in screen.conditions)
+        assert client.get(f"/screen/{t['id']}?{t['param']}={listed['rows'][0][at]}").status_code == 200
+    assert "openJump" in client.get("/static/stpui.js").text
+
+
 def test_screen_page_carries_the_resolved_definition(client):
     r = client.get("/screen/STP-3100")
     assert r.status_code == 200 and 'id="stpui-data"' in r.text
@@ -91,6 +113,28 @@ def test_event_trace_through_the_api_balances(client, conn):
     rows = [dict(zip(journal["columns"], r)) for r in journal["rows"]]
     assert rows and sum(r["debit"] for r in rows) == sum(r["credit"] for r in rows)
     assert len(body["datasets"]["positions"]["rows"]) == 1
+
+
+def test_the_t_accounts_of_every_event_balance_entry_by_entry(client, conn):
+    """STP-3100 분개의 T계정 보기: 전표마다 차변 합계와 대변 합계가 같고, T에 놓이는 금액은 분개 줄 그대로예요."""
+    grid = next(g for g in client.get("/api/screen/STP-3100").json()["grids"] if g["id"] == "journal")
+    t = grid["taccount"]
+    assert grid["view"] == "taccount" and set(t.values()) <= {c["name"] for c in grid["columns"]}
+    seen = 0
+    for (seq,) in conn.execute("select seq from ledger_events order by seq").fetchall():
+        ds = client.post("/api/tx/STP3100R02", json={"params": {"seq": seq}}).json()["datasets"]["journal"]
+        lines = [dict(zip(ds["columns"], r)) for r in ds["rows"]]
+        entries = {}
+        for ln in lines:
+            assert (ln[t["debit"]] == 0) != (ln[t["credit"]] == 0)          # a line sits on one side of its T
+            entries.setdefault(ln[t["entry"]], []).append(ln)
+        for entry_id, mine in entries.items():
+            assert sum(ln[t["debit"]] for ln in mine) == sum(ln[t["credit"]] for ln in mine), (seq, entry_id)
+            want = conn.execute("select account_code, debit, credit from journal_lines where entry_id = %s"
+                                " order by line_id", (entry_id,)).fetchall()
+            assert sorted((ln[t["account"]], ln[t["debit"]], ln[t["credit"]]) for ln in mine) == sorted(want)
+        seen += len(entries)
+    assert seen == conn.execute("select count(*) from journal_entries").fetchone()[0] > 0
 
 
 def test_values_are_json_ready(client, sample):
@@ -261,6 +305,30 @@ def test_holdings_carry_the_weight_and_the_closing_prices_the_ledger_recorded(cl
         assert 2 <= len(r["trend"]) <= 20 and r["trend"][-1] == closes[r["symbol"]]
 
 
+def test_holdings_are_valued_at_the_last_close_the_ledger_recorded(client, conn, sample):
+    """구성 지도의 색이 되는 평가손익: 보유수량 × 원장의 최근 종가 − 장부금액. 계좌정보의 평가금액과 같은 값이에요."""
+    from ministp.ledger import Ledger
+    from ministp.ops import load_books
+    from ministp.queries import Dataset, holdings_view, last_closes
+    rows, _ = _rows(client, "STP1100R01")
+    _, closes = last_closes(load_books(conn, CAL, FEES).ledger)
+    assert rows and all(r["symbol"] in closes for r in rows)
+    for r in rows:
+        assert r["market_value"] == r["qty"] * closes[r["symbol"]]
+        assert r["unrealized_pnl"] == r["market_value"] - r["book_cost"]
+    account = _rows(client, "STP4200R01")[0][0]
+    assert sum(r["market_value"] for r in rows) == account["market_value"]
+    grid = next(g for g in client.get("/api/screen/STP-1100").json()["grids"] if g["id"] == "holdings")
+    cols = {c["name"]: c for c in grid["columns"]}
+    assert grid["map"] == {"label": "instrument_name", "size": "book_cost", "tone": "unrealized_pnl"}
+    assert cols["market_value"]["hidden"] and cols["unrealized_pnl"]["hidden"]      # on the map, not one more column of the table
+
+    # a holding the ledger has no close for yet (bought today, before the day's close) is left unvalued, not guessed
+    bare = holdings_view(Dataset(("symbol", "qty", "book_cost"), (("999999", 3, 30_000),)), Ledger(CAL, FEES, {}))
+    assert dict(zip(bare.columns, bare.rows[0]))["market_value"] is None
+    assert dict(zip(bare.columns, bare.rows[0]))["unrealized_pnl"] is None
+
+
 def test_close_trends_keep_the_last_days_only(conn, sample):
     from ministp.ops import load_books
     from ministp.queries import close_trends
@@ -278,7 +346,7 @@ def test_holdings_screen_draws_the_badge_bar_meter_and_trend(client):
     assert cols["symbol"]["inside"] == cols["asset_type"]["inside"] == "instrument_name"
     assert [cols[n]["display"] for n in ("book_cost", "weight", "trend")] == ["bar", "meter", "spark"]
     # 그림을 더한 만큼 열을 줄여요: 일곱 열이던 그리드가 여섯 열로 보여요
-    assert len([c for c in grid["columns"] if not c["inside"]]) == 6
+    assert len([c for c in grid["columns"] if not c["inside"] and not c["hidden"]]) == 6     # 숨긴 열(구성 지도의 평가금액·평가손익)은 표에 안 나와요
     spec = client.get("/spec/STP-1100").text
     assert "배지 안에 표시" in spec and "추세선" in spec
 
