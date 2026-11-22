@@ -68,8 +68,7 @@ button.primary { font: inherit; font-weight: 600; background: var(--accent); col
 button.primary:hover { filter: brightness(1.08); }
 
 .grids { display: flex; flex-direction: column; gap: 12px; }
-.panel { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
-.panel.busy .gbody { opacity: .45; }
+.panel { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; overflow: hidden; position: relative; }
 .phead { display: flex; align-items: center; gap: 10px; padding: 7px 12px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
 .phead h2 { font-size: 13px; margin: 0; font-weight: 650; }
 .count { color: var(--muted); font-size: 12px; }
@@ -80,7 +79,7 @@ button.primary:hover { filter: brightness(1.08); }
 .badge.ok { background: var(--ok-bg); color: var(--ok); } .badge.ok b { color: var(--ok); }
 .badge.bad { background: var(--bad-bg); color: var(--bad); } .badge.bad b { color: var(--bad); }
 
-.gbody { max-height: 360px; overflow: auto; }
+.gbody { max-height: 360px; overflow: auto; position: relative; }
 .cards-panel .gbody { max-height: none; }
 .grid { border-collapse: separate; border-spacing: 0; width: 100%; white-space: nowrap; }
 .grid th, .grid td { padding: 0 10px; height: 26px; border-bottom: 1px solid var(--grid-line); text-align: left; }
@@ -91,8 +90,6 @@ button.primary:hover { filter: brightness(1.08); }
 .grid .rn { color: var(--muted); font-size: 11px; text-align: right; width: 1%; }
 .grid tbody tr { cursor: default; }
 .grid tbody tr:hover td { background: var(--hover); }
-.grid tbody tr.sel td { background: var(--sel); }
-.grid tbody tr.sel td:first-child { box-shadow: inset 3px 0 0 var(--sel-line); }
 .drillable .grid tbody tr { cursor: pointer; }
 .grid tfoot td { position: sticky; bottom: 0; background: var(--head); font-weight: 650; border-top: 1px solid var(--line-strong); }
 .grid td.js { max-width: 360px; overflow: hidden; text-overflow: ellipsis; font: 11.5px ui-monospace, Consolas, monospace; color: var(--muted); }
@@ -144,4 +141,58 @@ button.primary:hover { filter: brightness(1.08); }
 .grid tr.new td { animation: stpui-flash 2.4s ease-out; }
 @media (prefers-reduced-motion: reduce) {
   .grid td.flash, .cv.flash, .grid tr.new td { animation: none; outline: 1px solid var(--warn); outline-offset: -1px; }
+}
+
+/* ---------- motion ----------
+   One curve, short times. Motion says what changed or where something went; it never decorates. */
+:root { --ease: cubic-bezier(.2, .8, .2, 1); --t-fast: 120ms; --t: 200ms; --t-slow: 280ms; }
+
+/* screen to screen: the top bar stays, the active tab slides, the content rises in */
+@view-transition { navigation: auto; }
+.top { view-transition-name: top; }
+.menu a.on { view-transition-name: menu-on; }
+main { view-transition-name: content; }
+::view-transition-group(menu-on) { animation-duration: var(--t-slow); animation-timing-function: var(--ease); }
+::view-transition-old(content) { animation: var(--t-fast) ease-out both stpui-out; }
+::view-transition-new(content) { animation: var(--t-slow) var(--ease) both stpui-in; }
+@keyframes stpui-out { to { opacity: 0; } }
+@keyframes stpui-in { from { opacity: 0; transform: translateY(10px); } }
+
+/* the selected row: one highlight that glides */
+.grid { position: relative; z-index: 1; }
+.selbar { position: absolute; left: 0; right: 0; top: 0; height: 0; z-index: 0; pointer-events: none; opacity: 0;
+  background: var(--sel); box-shadow: inset 3px 0 0 var(--sel-line);
+  transition: transform var(--t) var(--ease), height var(--t) var(--ease), opacity var(--t-fast) ease-out; }
+.selbar.on { opacity: 1; }
+.selbar.instant { transition: none; }
+.grid tbody tr.sel:hover td { background: transparent; }
+.grid tbody tr td { transition: background-color var(--t-fast) ease-out; }
+
+/* a query in progress: keep the old numbers, show a thin bar (only if it takes a moment) */
+.panel::after { content: ""; position: absolute; left: 0; top: 0; height: 2px; width: 30%; opacity: 0;
+  background: var(--accent); pointer-events: none; z-index: 3; }
+.panel.busy::after { animation: stpui-progress 1s var(--ease) 150ms infinite; }
+@keyframes stpui-progress { 0% { opacity: 1; transform: translateX(-100%); } 100% { opacity: 1; transform: translateX(340%); } }
+
+/* first load: a calm placeholder instead of a blank */
+.skeleton { padding: 12px; display: flex; flex-direction: column; gap: 10px; }
+.cards-panel .skeleton { padding: 18px 14px; }
+.sk { height: 12px; border-radius: 6px; background: linear-gradient(90deg, var(--head) 0%, var(--hover) 50%, var(--head) 100%);
+  background-size: 200% 100%; animation: stpui-shimmer 1.2s linear infinite; }
+.sk:nth-child(2) { width: 85%; } .sk:nth-child(3) { width: 92%; } .sk:nth-child(4) { width: 70%; }
+@keyframes stpui-shimmer { from { background-position: 100% 0; } to { background-position: -100% 0; } }
+
+/* touch feedback */
+button.primary, .tile, .menu a { transition: transform var(--t-fast) var(--ease), background-color var(--t-fast) ease-out, border-color var(--t-fast) ease-out, filter var(--t-fast) ease-out; }
+button.primary:active, .tile:active { transform: scale(.97); }
+.tile:hover { transform: translateY(-1px); }
+.cond input, .cond select { transition: border-color var(--t-fast) ease-out, box-shadow var(--t-fast) ease-out; }
+.cond input:focus, .cond select:focus { outline: none; border-color: var(--sel-line); box-shadow: 0 0 0 3px color-mix(in srgb, var(--sel-line) 22%, transparent); }
+
+@media (prefers-reduced-motion: reduce) {
+  ::view-transition-group(*), ::view-transition-old(*), ::view-transition-new(*) { animation: none !important; }
+  .selbar, .grid tbody tr td, button.primary, .tile, .menu a { transition: none; }
+  .sk, .panel.busy::after { animation: none; }
+  .panel.busy::after { opacity: 1; width: 100%; }
+  .tile:hover, button.primary:active, .tile:active { transform: none; }
 }
