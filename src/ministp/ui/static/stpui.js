@@ -309,7 +309,7 @@
     function fitSplit() {
       const split = app.querySelector(".split");
       if (!split) return;
-      const room = window.innerHeight - split.getBoundingClientRect().top - window.scrollY - 40;
+      const room = window.innerHeight - split.getBoundingClientRect().top - window.scrollY - 56;   // the status line and the page margin stay in view
       split.style.setProperty("--fit", Math.max(380, Math.round(room)) + "px");
     }
 
