@@ -17,6 +17,7 @@
   const NUMERIC = new Set(["number", "money", "rate"]);
   const nf = new Intl.NumberFormat("ko-KR");
   const rf = new Intl.NumberFormat("ko-KR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const pf = new Intl.NumberFormat("ko-KR", { style: "percent", minimumFractionDigits: 1, maximumFractionDigits: 1 });
   const dtf = new Intl.DateTimeFormat("sv-SE", {
     timeZone: "Asia/Seoul", year: "numeric", month: "2-digit", day: "2-digit",
     hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false,
@@ -146,6 +147,46 @@
     if (rule === "side") return v === "BUY" ? "up" : v === "SELL" ? "down" : "";
     if (rule === "status") return STATUS[v] ? "st-" + STATUS[v] : "";
     return "";
+  }
+
+  // ---------- 셀 표시 유형 ----------
+  // A column's `display` draws a small picture next to the value. The value is never replaced:
+  // the number, the name and the code stay readable, the picture adds size, trend or state.
+  const HUES = 8;
+  const ROUND = new Set(["STOCK"]);   // 주식은 원, 그 밖(ETF, ETN ...)은 둥근 사각
+  function hue(code) {
+    let n = 0;
+    for (const ch of String(code ?? "")) n = (n * 31 + ch.codePointAt(0)) % 9973;
+    return n % HUES;   // the same code is the same colour on every screen
+  }
+  function badge(r, c) {
+    const name = String(r[c.name] ?? "").trim();
+    const code = c.code ? r[c.code] : null, kind = c.shape ? r[c.shape] : null;
+    const mark = h("span", { class: `ib h${hue(code ?? name)} ${ROUND.has(kind) ? "round" : ""}`.trim(), "aria-hidden": "true",
+      text: (Array.from(name)[0] || "?").toUpperCase() });
+    const sub = [code, kind].filter(v => v !== null && v !== undefined && v !== "").join(" · ");
+    return h("div", { class: "ibox" }, mark,
+      h("div", { class: "iname" }, h("b", { text: name || "-" }), sub ? h("span", { text: sub }) : null));
+  }
+  function meter(v) {
+    if (v === null || v === undefined) return h("span", { class: "none", text: "-" });
+    const fill = h("i");
+    fill.style.width = (Math.max(0, Math.min(1, Number(v))) * 100).toFixed(1) + "%";
+    return h("div", { class: "meter" }, h("span", { text: pf.format(v) }), h("div", { class: "mtrack", "aria-hidden": "true" }, fill));
+  }
+  function spark(values) {
+    const pts = (Array.isArray(values) ? values : []).map(Number).filter(Number.isFinite);
+    if (pts.length < 2) return h("span", { class: "none", title: "종가가 이틀 치 이상 쌓이면 그려요", text: "-" });
+    const W = 72, H = 20, P = 2.5, lo = Math.min(...pts), hi = Math.max(...pts), first = pts[0], last = pts[pts.length - 1];
+    const x = i => P + i * (W - 2 * P) / (pts.length - 1);
+    const y = v => hi === lo ? H / 2 : H - P - (v - lo) * (H - 2 * P) / (hi - lo);
+    const s = svg("svg", { class: ("spark " + (last > first ? "up" : last < first ? "down" : "")).trim(), viewBox: `0 0 ${W} ${H}`,
+      width: W, height: H, role: "img",
+      "aria-label": `최근 ${pts.length}일 종가 ${nf.format(first)}에서 ${nf.format(last)}, 최저 ${nf.format(lo)} 최고 ${nf.format(hi)}` });
+    const tip = svg("title", {}); tip.textContent = `최근 ${pts.length}일: ${nf.format(first)} → ${nf.format(last)} (최저 ${nf.format(lo)}, 최고 ${nf.format(hi)})`;
+    s.append(tip, svg("polyline", { points: pts.map((v, i) => `${x(i).toFixed(1)},${y(v).toFixed(1)}`).join(" ") }),
+      svg("circle", { cx: x(pts.length - 1).toFixed(1), cy: y(last).toFixed(1), r: 2 }));
+    return s;
   }
 
   // ---------- 찾기 팝업 ----------
@@ -688,33 +729,44 @@
 
     function renderTable() {
       if (!rows.length) return body.replaceChildren(h("div", { class: "empty", text: "조회된 내역이 없어요" }));
-      const head = h("tr", {}, h("th", { class: "rn", scope: "col", text: "#" }), g.columns.map(c => {
+      const cols = g.columns.filter(c => !c.inside);   // a column drawn inside a badge has no column of its own
+      const head = h("tr", {}, h("th", { class: "rn", scope: "col", text: "#" }), cols.map(c => {
         const on = sortCol === c.name;
         const th = h("th", { scope: "col", class: c.align === "right" ? "r" : null,
           "aria-sort": on ? (sortDir > 0 ? "ascending" : "descending") : null, title: c.source || "화면 계산 값" },
-          h("button", { type: "button", onclick: () => sortBy(c.name) }, c.label, on ? (sortDir > 0 ? " ▲" : " ▼") : ""));
+          c.display === "spark" ? c.label   // a run of numbers has no order to sort by
+            : h("button", { type: "button", onclick: () => sortBy(c.name) }, c.label, on ? (sortDir > 0 ? " ▲" : " ▼") : ""));
         if (c.width) th.style.width = c.width + "px";
         return th;
       }));
+      // 셀 안 막대: each bar is the value against the largest one in its column
+      const peak = Object.fromEntries(cols.filter(c => c.display === "bar").map(c =>
+        [c.name, Math.max(0, ...rows.map(r => Math.abs(Number(r[c.name]) || 0)))]));
       const rolls = [];
       const tbody = h("tbody", {}, view.map((r, i) => h("tr", {
         "data-k": rowKey(r),
         class: [i === sel ? "sel" : "", changed.get(rowKey(r))?.has("*") ? "new" : ""].join(" ").trim() || null,
         "aria-selected": i === sel ? "true" : "false",
         onclick: () => select(i), ondblclick: () => onDrill(view[i]),
-      }, h("td", { class: "rn", text: i + 1 }), g.columns.map(c => {
+      }, h("td", { class: "rn", text: i + 1 }), cols.map(c => {
         const v = r[c.name];
         const text = fmt(v, c.format);
-        const td = h("td", { class: [c.align === "right" ? "r" : "", tone(v, c.color, r), c.format === "json" ? "js" : "",
-          flashed(r, c.name) ? "flash" : ""].join(" ").trim() || null,
-          title: c.format === "json" ? text : null, text });
-        if (NUMERIC.has(c.format) && flashed(r, c.name)) {
+        const drawn = c.display && c.display !== "bar";   // the cell holds an element, not just text
+        const td = h("td", { class: [c.align === "right" ? "r" : "", drawn ? "" : tone(v, c.color, r), c.format === "json" ? "js" : "",
+          c.display ? "d-" + c.display : "", flashed(r, c.name) ? "flash" : ""].filter(Boolean).join(" ") || null,
+          title: c.format === "json" ? text : null, text: drawn ? null : text });
+        if (c.display === "badge") td.append(badge(r, c));
+        else if (c.display === "meter") td.append(meter(v));
+        else if (c.display === "spark") td.append(spark(v));
+        else if (c.display === "pill" && text) td.append(h("span", { class: ("pill " + tone(v, c.color, r)).trim(), text }));
+        else if (c.display === "bar" && peak[c.name]) td.style.setProperty("--p", (Math.abs(Number(v) || 0) / peak[c.name] * 100).toFixed(1) + "%");
+        if (NUMERIC.has(c.format) && !drawn && flashed(r, c.name)) {
           const was = previous.get(rowKey(r));
           if (was) rolls.push([td, was[c.name], v, c.format]);
         }
         return td;
       }))));
-      const foot = g.totals.length ? h("tfoot", {}, h("tr", {}, h("td", { class: "rn", text: "합계" }), g.columns.map(c =>
+      const foot = g.totals.length ? h("tfoot", {}, h("tr", {}, h("td", { class: "rn", text: "합계" }), cols.map(c =>
         g.totals.includes(c.name)
           ? h("td", { class: "r", text: fmt(rows.reduce((s, r) => s + (Number(r[c.name]) || 0), 0), c.format) })
           : h("td", {})))) : null;
