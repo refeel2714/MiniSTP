@@ -17,6 +17,7 @@
 | [STP-4300](STP-4300.md) | 기준정보 | 5 | `STP4300R01`, `STP4300R02`, `STP4300R03`, `STP4300R04`, `STP4300R05` |
 | [STP-4400](STP-4400.md) | 계좌 목록 | 3 | `STP4400R01`, `STP4400R03`, `STP4400R02` |
 | [STP-4500](STP-4500.md) | 고객별 보유 | 3 | `STP4500R01`, `STP4500R02`, `STP4500R03` |
+| [STP-4600](STP-4600.md) | 코드 조회 | 2 | `STP4600R01`, `STP4600R02` |
 
 ## 영향도: DB 컬럼 → 화면
 
@@ -38,6 +39,13 @@
 | `cash_ledger.date` | 일자 | STP-3100 cash |
 | `cash_ledger.reason` | 사유 | STP-3100 cash |
 | `cash_ledger.ref_id` | 참조 ID | STP-3100 cash |
+| `code_groups.group_id` | 코드 그룹 ID | STP-4600 groups |
+| `code_groups.name` | 코드 그룹명 | STP-4600 groups |
+| `code_groups.used_by` | 쓰는 곳 | STP-4600 groups |
+| `common_codes.code` | 코드 | STP-4600 codes |
+| `common_codes.description` | 코드 설명 | STP-4600 codes |
+| `common_codes.in_use` | 사용 여부 | STP-4600 codes |
+| `common_codes.name` | 코드명 | STP-4600 codes |
 | `customer_positions_v.book_cost` | 장부금액 | STP-4500 positions |
 | `customer_positions_v.qty` | 보유수량 | STP-4500 positions |
 | `customer_positions_v.symbol` | 종목코드 | STP-4500 positions |

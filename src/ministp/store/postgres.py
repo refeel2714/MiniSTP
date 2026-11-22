@@ -116,6 +116,8 @@ class PostgresLedgerStore:
                 cur.executemany(
                     f"insert into {mg.TABLE} (version, name, erd_version, checksum) values (%s, %s, %s, %s)",
                     [(m.version, m.name, m.erd_version, m.checksum) for m in migrations])
+            from ..codes import seed as seed_codes   # 공통코드, as migration 0002 leaves them
+            seed_codes(self.conn)
             # The default customer and account, as the 0001 migration leaves them on an existing database.
             self.conn.execute("insert into customers (customer_id, alias) values (%s, '기본 고객')",
                               (DEFAULT_CUSTOMER,))

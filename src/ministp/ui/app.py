@@ -53,8 +53,9 @@ HEAD_SQL = """select (select coalesce(max(seq), 0) from ledger_events),
                      (select count(*) from oms_orders),
                      (select count(*) from oms_order_acks),
                      (select coalesce(max(snapshot_id), 0) from broker_snapshots),
-                     (select coalesce(max(id), 0) from recon_results)"""
-HEAD_NAMES = ("ledger_seq", "orders", "acks", "snapshot", "recon")
+                     (select coalesce(max(id), 0) from recon_results),
+                     (select count(*) || ':' || coalesce(max(updated_at)::text, '') from common_codes)"""
+HEAD_NAMES = ("ledger_seq", "orders", "acks", "snapshot", "recon", "codes")
 
 
 def read_head(conn: psycopg.Connection) -> dict:

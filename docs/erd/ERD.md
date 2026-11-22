@@ -1,6 +1,6 @@
 # MiniSTP ERD
 
-ERD 버전: v2.0 · 스키마 해시: `aa861c56a169`
+ERD 버전: v2.1 · 스키마 해시: `3198c23cb1a8`
 
 이 문서는 `scripts/gen_erd.py`가 `src/ministp/store/schema.sql`로 만든 DB에서 읽어 생성해요. 직접 고치지 말고 스키마의 한글 주석(COMMENT)을 고친 뒤 다시 생성하세요. 모든 원장 테이블은 append-only(수정·삭제 불가)예요.
 
@@ -128,6 +128,23 @@ erDiagram
         timestamptz created_at "기록 시각"
         text account_id FK "계좌 ID"
     }
+    code_groups {
+        text group_id PK "코드 그룹 ID"
+        text name "코드 그룹명"
+        text description "코드 그룹 설명"
+        text used_by "쓰는 곳 (이 코드를 저장하는 테이블.컬럼)"
+        boolean fixed "코드 고정 여부 (프로그램이 정한 코드는 이름만 바꿀 수 있음)"
+        timestamptz created_at "등록 시각"
+    }
+    common_codes {
+        text group_id PK,FK "코드 그룹 ID"
+        text code PK "코드"
+        text name "코드명"
+        text description "코드 설명"
+        integer sort_order "표시 순서"
+        boolean in_use "사용 여부"
+        timestamptz updated_at "수정 시각"
+    }
     schema_migrations {
         integer version PK "마이그레이션 번호"
         text name "마이그레이션 이름"
@@ -150,6 +167,7 @@ erDiagram
     trading_accounts ||--o{ broker_snapshots : "account_id"
     broker_snapshots ||--o{ recon_results : "run_id, account_id"
     recon_results ||--o{ recon_results : "supersedes_id"
+    code_groups ||--o{ common_codes : "group_id"
 ```
 
 ## 데이터 사전
@@ -316,6 +334,29 @@ erDiagram
 | `created_at` | 기록 시각 | timestamp with time zone | Y |  |
 | `account_id` | 계좌 ID | text | Y | FK → broker_snapshots.account_id |
 
+### code_groups — 공통코드 그룹 (테이블)
+
+| 컬럼 | 한글명 | 타입 | 필수 | 키 |
+|---|---|---|---|---|
+| `group_id` | 코드 그룹 ID | text | Y | PK |
+| `name` | 코드 그룹명 | text | Y |  |
+| `description` | 코드 그룹 설명 | text |  |  |
+| `used_by` | 쓰는 곳 (이 코드를 저장하는 테이블.컬럼) | text |  |  |
+| `fixed` | 코드 고정 여부 (프로그램이 정한 코드는 이름만 바꿀 수 있음) | boolean | Y |  |
+| `created_at` | 등록 시각 | timestamp with time zone | Y |  |
+
+### common_codes — 공통코드 (코드와 코드명) (테이블)
+
+| 컬럼 | 한글명 | 타입 | 필수 | 키 |
+|---|---|---|---|---|
+| `group_id` | 코드 그룹 ID | text | Y | PK, FK → code_groups.group_id |
+| `code` | 코드 | text | Y | PK |
+| `name` | 코드명 | text | Y |  |
+| `description` | 코드 설명 | text |  |  |
+| `sort_order` | 표시 순서 | integer | Y |  |
+| `in_use` | 사용 여부 | boolean | Y |  |
+| `updated_at` | 수정 시각 | timestamp with time zone | Y |  |
+
 ### schema_migrations — 스키마 마이그레이션 적용 기록 (테이블)
 
 | 컬럼 | 한글명 | 타입 | 필수 | 키 |
@@ -378,3 +419,4 @@ erDiagram
 | v1.0 | 2026-11-21 | 최초 공개. 원장(이벤트·분개·보유·예수금), 계정과목, 종목, 주문 의도·접수, 증권사 응답 원본, 대사 결과 11개 테이블과 뷰 3개. 전 컬럼 한글 명칭. |
 | v1.1 | 2026-11-21 | `oms_order_acks.order_no` 유일 제약 제거(증권사 주문번호는 영업일마다 다시 시작될 수 있음, 조회용 인덱스로 대체). 체결 ID를 `YYYYMMDD-주문번호-순번`으로 변경. |
 | v2.0 | 2026-11-22 | 다계좌(스펙 D7). 고객 `customers`, 위탁계좌 `trading_accounts`, 계좌 상태 이력 `account_status_history` 신설. 원장·주문·대사 7개 테이블에 `account_id` 추가(파생 행은 이벤트와 같은 계좌만 참조하도록 복합 FK), 체결 ID 유일 범위를 계좌 안으로 변경. 뷰 3개를 계좌별로 바꾸고 `account_status_v`, `customer_positions_v` 추가. 마이그레이션 적용 기록 `schema_migrations` 포함. 기존 DB는 마이그레이션 `0001_multi_account`로 올림(기존 행 변경 없음). |
+| v2.1 | 2026-11-22 | 공통코드. 코드 그룹 `code_groups`와 코드 `common_codes` 신설(마이그레이션 `0002_common_codes`). 스키마 제약과 프로그램에 흩어져 있던 코드 18개 그룹(계좌 상태, 대사 결과·항목·원인, 이벤트·전표 유형 등)에 코드명을 붙였다. 코드는 지우지 않고 이름을 바꾸거나 끄기만 한다(DB 트리거). 계정과목은 원장이 직접 참조하므로 전용 테이블 `accounts_chart`에 그대로 둔다. 기존 테이블과 기존 행은 바뀌지 않는다. |
