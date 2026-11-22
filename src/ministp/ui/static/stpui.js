@@ -797,7 +797,7 @@
           const share = pf.format(v / total);
           const lines = [`${r[m.label]}`, `${size.label} ${fmt(v, size.format)} (${share})`];
           if (toneCol) lines.push(known ? `${toneCol.label} ${Number(t) > 0 ? "+" : ""}${fmt(t, toneCol.format)} (${ratio > 0 ? "+" : ""}${pf.format(ratio)})` : `${toneCol.label} 없음`);
-          const el = h("div", { class: ["tile", !toneCol ? "" : !known ? "none" : ratio > 0 ? "up" : ratio < 0 ? "down" : ""].join(" ").trim(),
+          const el = h("div", { class: ["mtile", !toneCol ? "" : !known ? "none" : ratio > 0 ? "up" : ratio < 0 ? "down" : ""].join(" ").trim(),
             role: "option", "aria-selected": "false", "data-i": i, "data-v": v, title: lines.join("\n"), "aria-label": lines.join(", "),
             onclick: () => select(i), ondblclick: () => onDrill(r) },
             h("b", { text: r[m.label] }), h("span", { class: "tshare", text: share }), h("span", { class: "tsize", text: fmt(v, size.format) }),
@@ -993,7 +993,7 @@
     }
     function mark(scroll = true) {
       if (mode === "map") {
-        body.querySelectorAll(".tile").forEach(el => {
+        body.querySelectorAll(".mtile").forEach(el => {
           const hit = Number(el.dataset.i) === sel;
           el.classList.toggle("sel", hit); el.setAttribute("aria-selected", hit ? "true" : "false");
         });
