@@ -27,6 +27,9 @@ DISPLAYS = {None, "badge", "bar", "meter", "spark", "pill"}
 DISPLAY_FORMATS = {"badge": {"text"}, "bar": {"number", "money"}, "meter": {"rate"}, "spark": {"series"},
                    "pill": {"text", "code"}}
 PILL_COLORS = {"status", "side", "verdict"}
+# 그리드 보기: grid 표 · cards 한 행 요약 카드 · calendar 달력(하루가 한 칸, 칸 색은 상태 열의 색 규칙)
+VIEWS = {"grid", "cards", "calendar"}
+VIEW_NAMES = {"cards": "카드", "calendar": "달력"}
 LOADS = {"search", "open", "master", "input"}
 LAYOUTS = {"stack", "split"}   # stack: grids one under another · split: 목록 왼쪽, 상세 오른쪽
 MAX_DETAILS = 3                # a split screen shows at most this many detail grids next to its list
@@ -109,7 +112,8 @@ class Grid:
     master: str | None = None
     link: dict[str, str] = field(default_factory=dict)   # tx param -> master column
     totals: list[str] = field(default_factory=list)
-    view: str = "grid"          # grid | cards (one-row summaries)
+    view: str = "grid"          # VIEWS: grid | cards (one-row summaries) | calendar (a cell a day)
+    calendar: dict | None = None  # view: calendar: {date: column, state: column}; the rest show on hover
     meta: dict[str, str] = field(default_factory=dict)   # tx meta key -> label
     drill: dict | None = None   # {screen: STP-xxxx, params: {cond: column}, account: column}
                                 # account: open the target screen for the account in that column
@@ -247,6 +251,26 @@ def _display_problems(c: Column, where: str) -> list[str]:
     return errs
 
 
+def _calendar_problems(g: Grid, gw: str) -> list[str]:
+    if g.view != "calendar":
+        return [f"{gw}: calendar는 달력 보기(view: calendar)에만 써요"] if g.calendar else []
+    cal = g.calendar or {}
+    if set(cal) != {"date", "state"}:
+        return [f"{gw}: 달력 보기는 calendar에 date(날짜 열)와 state(상태 열)를 적어요"]
+    errs = []
+    cols = {c.name: c for c in g.columns}
+    day, state = cols.get(cal["date"]), cols.get(cal["state"])
+    if day is None or day.format != "date":
+        errs.append(f"{gw}: 달력의 날짜 열 {cal['date']}는 이 그리드의 날짜(date) 형식 열이어야 해요")
+    if state is None or state.color != "status":
+        errs.append(f"{gw}: 달력의 상태 열 {cal['state']}는 색 규칙이 status인 이 그리드의 열이어야 해요")
+    if (g.key or g.columns[0].name) != cal["date"]:
+        errs.append(f"{gw}: 달력은 하루가 한 칸이라 행 식별 열(key)이 날짜 열이어야 해요")
+    if g.totals or g.chart or g.drill:
+        errs.append(f"{gw}: 달력 보기에는 합계·차트·화면 이동을 쓰지 않아요")
+    return errs
+
+
 def lookup_problems(lookups: dict[str, Lookup], catalog: dict) -> list[str]:
     """찾기 팝업 definitions against the schema catalog and the read transactions."""
     errs = []
@@ -363,11 +387,14 @@ def validate(screens: dict[str, Screen], catalog: dict, lookups: dict[str, Looku
             ids.add(g.id)
             for c in g.columns:
                 errs += _column_problems(c, gw, catalog)
-                if c.display and g.view == "cards":
-                    errs.append(f"{gw}.{c.name}: 카드 보기에는 표시 유형을 쓰지 않아요")
+                if c.display and g.view in VIEW_NAMES:
+                    errs.append(f"{gw}.{c.name}: {VIEW_NAMES[g.view]} 보기에는 표시 유형을 쓰지 않아요")
                 for inside in (c.code, c.shape):
                     if inside and (inside == c.name or inside not in {x.name for x in g.columns}):
                         errs.append(f"{gw}.{c.name}: 배지 안에 넣을 열 {inside}가 이 그리드의 다른 열이 아니에요")
+            if g.view not in VIEWS:
+                errs.append(f"{gw}: view는 {sorted(VIEWS)} 중 하나")
+            errs += _calendar_problems(g, gw)
             errs += _button_problems(g, s, gw, catalog, lookups)
             if not isinstance(g.weight, int) or not 1 <= g.weight <= 5:
                 errs.append(f"{gw}: weight(높이 비중)는 1~5 사이 정수")

@@ -249,3 +249,35 @@ def test_pictures_are_for_grid_rows_only():
 def test_a_meter_reads_as_text_next_to_its_bar():
     assert Column("w", label="비중", format="rate", display="meter").align == "left"
     assert Column("w", label="비중", format="rate").align == "right"
+
+
+# ---------- 달력 보기 ----------
+
+def calendar_grid(columns=None, **grid):
+    cols = columns or [Column("date", label="날짜", format="date"), Column("state", label="결과", color="status"),
+                       Column("qty", "positions_v.qty", format="number")]
+    return screen(cols, **{"view": "calendar", "calendar": {"date": "date", "state": "state"}, **grid})
+
+
+def test_calendar_view_names_its_date_and_state_columns():
+    s = calendar_grid()
+    assert validate(s, CATALOG) == []
+    assert resolve(s["STP-1100"], CATALOG)["grids"][0]["calendar"] == {"date": "date", "state": "state"}
+
+
+@pytest.mark.parametrize("s, problem", [
+    (calendar_grid(calendar=None), "date(날짜 열)와 state(상태 열)를 적어요"),
+    (calendar_grid(calendar={"date": "date"}), "date(날짜 열)와 state(상태 열)를 적어요"),
+    (calendar_grid(calendar={"date": "qty", "state": "state"}), "날짜(date) 형식 열이어야 해요"),
+    (calendar_grid(calendar={"date": "date", "state": "qty"}), "색 규칙이 status인"),
+    (calendar_grid(calendar={"date": "date", "state": "nope"}), "색 규칙이 status인"),
+    (calendar_grid(key="state"), "행 식별 열(key)이 날짜 열이어야 해요"),
+    (calendar_grid(totals=["qty"]), "합계·차트·화면 이동을 쓰지 않아요"),
+    (calendar_grid([Column("date", label="날짜", format="date"),
+                    Column("state", label="결과", color="status", display="pill")]), "달력 보기에는 표시 유형"),
+    (calendar_grid(view="grid"), "달력 보기(view: calendar)에만 써요"),
+    (calendar_grid(view="timeline"), "view는"),
+])
+def test_calendar_problems(s, problem):
+    errs = validate(s, CATALOG)
+    assert any(problem in e for e in errs), errs
