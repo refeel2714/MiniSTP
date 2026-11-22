@@ -3,8 +3,9 @@ from decimal import Decimal
 
 from conftest import d
 from ministp.capacity import OpenOrder, capacity, check, pending_buy_value
+from ministp.instruments import AssetType
 from ministp.ledger import Side
-from ministp.risk import RiskLimits
+from ministp.risk import REASON_TEXT, RiskLimits, explain
 
 DAY = d("11-02")
 
@@ -51,3 +52,53 @@ def test_sell_check_uses_sellable_qty(ledger):
     cap = capacity(ledger, [OpenOrder("C1", "A", Side.SELL, 4, None)], "A", 50_000)
     assert check(cap, Side.SELL, 6).ok
     assert check(cap, Side.SELL, 7).reason == "SHORT_SELL"
+
+
+# ---------- R-38 주문 형식: 호가단위와 영업일 ----------
+
+def test_limit_price_must_be_on_a_tick(ledger):
+    ledger.deposit(DAY, 10_000_000)
+    stock = dict(asset_type=AssetType.STOCK)
+    assert check(capacity(ledger, [], "A", 60_000), Side.BUY, 1, limit_price=60_000, **stock).ok
+    assert check(capacity(ledger, [], "A", 60_050), Side.BUY, 1, limit_price=60_050, **stock).reason == "BAD_TICK"
+    assert check(capacity(ledger, [], "A", 1_999), Side.BUY, 1, limit_price=1_999, **stock).ok       # 1원 단위
+    assert check(capacity(ledger, [], "A", 2_001), Side.BUY, 1, limit_price=2_001, **stock).reason == "BAD_TICK"
+    # 구간 경계: 50,000원부터 100원 단위
+    assert check(capacity(ledger, [], "A", 49_950), Side.BUY, 1, limit_price=49_950, **stock).ok
+    assert check(capacity(ledger, [], "A", 50_050), Side.BUY, 1, limit_price=50_050, **stock).reason == "BAD_TICK"
+
+
+def test_etf_tick_is_five_won_at_any_price(ledger):
+    ledger.deposit(DAY, 10_000_000)
+    etf = dict(asset_type=AssetType.ETF)
+    assert check(capacity(ledger, [], "E", 80_545), Side.BUY, 1, limit_price=80_545, **etf).ok
+    assert check(capacity(ledger, [], "E", 80_543), Side.BUY, 1, limit_price=80_543, **etf).reason == "BAD_TICK"
+
+
+def test_market_order_has_no_price_to_check(ledger):
+    ledger.deposit(DAY, 10_000_000)
+    cap = capacity(ledger, [], "A", 60_050)          # 기준 단가는 현재가라 호가단위와 무관
+    assert check(cap, Side.BUY, 1, limit_price=None, asset_type=AssetType.STOCK).ok
+
+
+def test_no_order_on_a_closed_day(ledger):
+    ledger.deposit(DAY, 10_000_000)
+    cap = capacity(ledger, [], "A", 60_000)
+    assert check(cap, Side.BUY, 1, business_day=False).reason == "NOT_BUSINESS_DAY"
+
+
+def test_a_mistyped_order_is_reported_as_mistyped_not_as_short_of_cash(ledger):
+    ledger.deposit(DAY, 100_000)
+    cap = capacity(ledger, [], "A", 60_050)
+    over = cap.max_buy_qty + 1
+    assert check(cap, Side.BUY, over).reason == "INSUFFICIENT_CASH"
+    assert check(cap, Side.BUY, over, limit_price=60_050, asset_type=AssetType.STOCK).reason == "BAD_TICK"
+    assert check(cap, Side.BUY, over, limit_price=60_050, asset_type=AssetType.STOCK,
+                 business_day=False).reason == "NOT_BUSINESS_DAY"
+
+
+def test_every_refusal_has_a_wording():
+    for reason in ("KILL_SWITCH", "NOT_BUSINESS_DAY", "BAD_QTY", "BAD_TICK", "MAX_ORDER_VALUE",
+                   "SHORT_SELL", "INSUFFICIENT_CASH"):
+        assert REASON_TEXT[reason] and explain(reason).endswith(f"[{reason}]")
+    assert explain("SOMETHING_NEW") == "SOMETHING_NEW"

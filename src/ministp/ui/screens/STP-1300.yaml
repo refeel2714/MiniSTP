@@ -1,6 +1,6 @@
 id: STP-1300
 title: 주문가능 조회
-purpose: 종목·매매구분·수량·지정가를 넣는 즉시 주문가능 여부를 판단해요. 판단은 실제 주문 검증(session.submit)과 같은 계산(R-36·37)을 백엔드에서 해서, 화면과 주문 결과가 어긋나지 않아요. 지정가가 없으면 최근 종가를 기준 단가로 써요. 주문은 하지 않아요.
+purpose: 종목·매매구분·수량·지정가를 넣는 즉시 주문가능 여부를 판단해요. 판단은 실제 주문 검증(session.submit)과 같은 판단(R-36~38)을 백엔드에서 해서, 화면과 주문 결과가 어긋나지 않아요. 지정가가 없으면 최근 종가를 기준 단가로 써요. 주문은 하지 않아요.
 conditions:
   - {name: symbol, type: text, source: instruments.symbol, required: true}
   - {name: side, type: select, source: oms_orders.side, options: [BUY, SELL], default: BUY, required: true}

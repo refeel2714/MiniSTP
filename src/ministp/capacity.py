@@ -6,8 +6,10 @@ what the order check says can never disagree (화면 기획서, 결정 사항).
 """
 from dataclasses import dataclass
 
+from .instruments import AssetType
 from .ledger import Ledger, Side
 from .risk import RiskDecision, RiskLimits, check_order
+from .ticks import tick_size
 
 
 @dataclass(frozen=True)
@@ -77,8 +79,14 @@ def capacity(ledger: Ledger, open_orders: list[OpenOrder], symbol: str, ref_pric
 
 
 def check(cap: Capacity, side: Side, qty: int, limits: RiskLimits = RiskLimits(),
-          halted: bool = False) -> RiskDecision:
-    """The backend order check (R-36), fed by the same numbers the screen shows."""
+          halted: bool = False, *, limit_price: int | None = None,
+          asset_type: AssetType | None = None, business_day: bool = True) -> RiskDecision:
+    """The backend order check (R-36~38), fed by the same numbers the screen shows.
+
+    A limit price is checked against the tick size of `asset_type`; a market order
+    (`limit_price` None) has no price to check."""
+    tick = tick_size(limit_price, asset_type) if limit_price and asset_type is not None else None
     return check_order(limits, side=side, qty=qty, ref_price=cap.ref_price, held_qty=cap.held_qty,
                        pending_sell_qty=cap.pending_sell_qty, buying_power=cap.projected_cash,
-                       pending_buy_value=cap.pending_buy_value, halted=halted)
+                       pending_buy_value=cap.pending_buy_value, halted=halted,
+                       limit_price=limit_price or None, tick=tick, business_day=business_day)

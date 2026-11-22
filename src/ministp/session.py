@@ -13,12 +13,18 @@ from .ledger import ExecutionEvent, Ledger, Side
 from .oms import OrderManager, OrderStatus, OverfillError
 from .recon import ReconItem, ReconResult, reconcile
 from .capacity import OpenOrder, capacity, check
-from .risk import RiskLimits
+from .risk import RiskLimits, explain
 
 
 def exec_prefix(day: dt.date, order_no: str) -> str:
     """Execution ids are `YYYYMMDD-주문번호-순번`: brokers reuse order numbers on other days."""
     return f"{day:%Y%m%d}-{order_no}-"
+
+
+def failure_text(detail: str) -> str:
+    """An anomaly detail for a person: `risk: BAD_TICK` -> `주문 검증: 호가단위에 맞지 않는 … [BAD_TICK]`."""
+    kind, _, rest = detail.partition(": ")
+    return f"주문 검증: {explain(rest)}" if kind == "risk" else detail
 
 
 @dataclass(frozen=True)
@@ -94,7 +100,10 @@ class TradingSession:
         except Exception as exc:
             self.anomalies.append(Anomaly(day, "SUBMIT_FAILED", cid, f"price: {exc}"))
             return None
-        decision = check(self.capacity(symbol, ref), side, qty, self.limits, self.oms.halted)
+        inst = self.ledger.instruments.get(symbol)
+        decision = check(self.capacity(symbol, ref), side, qty, self.limits, self.oms.halted,
+                         limit_price=limit_price, asset_type=inst.asset_type if inst else None,
+                         business_day=self.ledger.calendar.is_business_day(day))
         self.oms.create(cid, symbol=symbol, side=side, qty=qty, limit_price=limit_price or 0)
         if not decision.ok:
             self.oms.on_rejected(cid)

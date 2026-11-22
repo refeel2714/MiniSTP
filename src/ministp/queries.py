@@ -12,6 +12,7 @@ from dataclasses import dataclass
 import psycopg
 
 from .ledger import Ledger
+from .risk import REASON_TEXT
 
 
 @dataclass(frozen=True)
@@ -187,16 +188,6 @@ def cash_summary(ledger: Ledger, open_orders) -> Dataset:
 
 # ---------- STP-1300 주문가능 조회 ----------
 
-REASON_TEXT = {
-    "": "주문 가능",
-    "KILL_SWITCH": "킬 스위치가 켜져 있어요",
-    "BAD_QTY": "수량을 1주 이상 넣어 주세요",
-    "MAX_ORDER_VALUE": "1회 주문 금액 한도를 넘어요",
-    "SHORT_SELL": "매도가능수량보다 많아요 (공매도 금지, R-36)",
-    "INSUFFICIENT_CASH": "주문가능금액이 모자라요",
-    "BAD_TICK": "호가단위에 맞지 않는 가격이에요",
-    "NO_PRICE": "기준 단가가 없어요: 지정가를 넣어 주세요",
-}
 
 
 def last_closes(ledger: Ledger) -> tuple[dt.date | None, dict[str, int]]:
@@ -231,7 +222,6 @@ def order_check(books, day: dt.date, symbol: str, side: str, qty: int, limit_pri
     from .ledger import Side
     from .ops import order_capacity
     from .risk import RiskLimits
-    from .ticks import tick_size
     if symbol not in books.instruments:
         raise KeyError(f"등록되지 않은 종목이에요: {symbol}")
     inst = books.instruments[symbol]
@@ -245,10 +235,8 @@ def order_check(books, day: dt.date, symbol: str, side: str, qty: int, limit_pri
         return Dataset(columns, ((symbol, inst.name, side, qty, None, None, None, None, None, None, None, None,
                                   None, None, None, None, False, "NO_PRICE", REASON_TEXT["NO_PRICE"]),))
     cap = order_capacity(books, day, symbol, ref, closes)
-    decision = check(cap, s, qty, halted=halted)
-    reason = decision.reason
-    if decision.ok and limit_price and limit_price % tick_size(limit_price, inst.asset_type):
-        reason = "BAD_TICK"
+    reason = check(cap, s, qty, halted=halted, limit_price=limit_price, asset_type=inst.asset_type,
+                   business_day=books.ledger.calendar.is_business_day(day)).reason
     value = qty * ref
     required = int(value * (1 + RiskLimits().cash_buffer_rate)) if s is Side.BUY else 0
     return Dataset(columns, ((symbol, inst.name, side, qty, ref, "지정가" if limit_price else "최근 종가", value,

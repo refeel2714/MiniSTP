@@ -156,6 +156,16 @@ def test_order_capacity_uses_the_limit_price_and_checks_ticks(client):
     assert not ok and row["reason"] == "BAD_TICK"
 
 
+def test_order_capacity_says_no_on_a_closed_day(sample):
+    """The screen and the order path share one check, so the screen also knows the market is closed."""
+    day = sample.last_day
+    while CAL.is_business_day(day):
+        day += dt.timedelta(days=1)
+    app = ui_app.create_app(URL, calendar=CAL, fees=FEES, today=day, allowed_hosts=["testserver"])
+    ok, row = _check(TestClient(app), symbol="005930", side="BUY", qty=1, limit_price=60_000)
+    assert not ok and row["reason"] == "NOT_BUSINESS_DAY" and "영업일" in row["reason_text"]
+
+
 def test_order_capacity_needs_a_known_symbol(client):
     r = client.post("/api/tx/STP1300R02", json={"params": {"symbol": "999999", "side": "BUY", "qty": 1}})
     assert r.status_code == 400 and "등록되지 않은 종목" in r.json()["error"]

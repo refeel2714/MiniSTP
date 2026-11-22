@@ -34,6 +34,7 @@ from .oms import OrderStatus
 from .ops import (IntradayRunner, OpsError, acquire_writer, add_instrument, clean_streak, daily_close, load_books, open_books,
                   place_order, resolve_break)
 from .recon import Cause, Status
+from .session import failure_text
 from .store import PostgresLedgerStore
 
 GATE_DAYS = 20
@@ -187,7 +188,7 @@ def run(argv, *, environ=os.environ, client_factory=KisClient, connect=psycopg.c
                 session, cid = place_order(books, broker, today, args.symbol,
                                            Side(args.side.upper()), args.qty, args.limit, wait=wait)
                 if cid is None:
-                    print(f"주문 실패: {session.anomalies[-1].detail}")
+                    print(f"주문 실패: {failure_text(session.anomalies[-1].detail)}")
                     return 1
                 o = session.oms.orders[cid]
                 print(f"주문 {cid}: {o.status}, 체결 {o.filled_qty}/{o.qty}주")
