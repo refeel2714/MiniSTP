@@ -9,6 +9,7 @@
     python -m ministp status                      # 보유, 예수금, NAV, 무오류 연속일
     python -m ministp resolve 12 FEE_DIFF "메모"   # 불일치 판단 기록 (새 행으로 추가)
     python -m ministp sample-db                   # 데모용 샘플 DB(ministp_sample) 만들기, 운영 DB와 별개
+    python -m ministp account list                # 계좌 목록. open/run/order/daily/status는 --account 계좌ID
 
 Paper (모의투자) only until Phase 4. Keys are asked for and never saved.
 """
@@ -31,11 +32,12 @@ from .fees import FeeSchedule
 from .instruments import AssetType, Instrument, Market
 from .ledger import Side
 from .oms import OrderStatus
+from .accounts import STATUSES, add_account, add_customer, list_accounts, set_status
 from .ops import (IntradayRunner, OpsError, acquire_writer, add_instrument, clean_streak, daily_close, load_books, open_books,
-                  place_order, resolve_break)
+                  place_order, require_current_schema, resolve_break)
 from .recon import Cause, Status
 from .session import failure_text
-from .store import PostgresLedgerStore, SchemaError
+from .store import DEFAULT_ACCOUNT, PostgresLedgerStore, SchemaError
 from .store import migrate as mg
 
 GATE_DAYS = 20
@@ -51,10 +53,22 @@ def database_url(environ) -> str:
     return f"postgresql://postgres:{urllib.parse.quote(pw, safe='')}@localhost:5432/{DB_NAME}"
 
 
-def _broker(environ, client_factory):
-    cfg = KisConfig.from_env(ask_missing(environ))
-    if cfg.env != "paper":
-        raise OpsError("Phase 4 전까지는 모의투자 서버에서만 실행해요.")
+def _broker(environ, client_factory, acct, others=()):
+    """The broker client of one account, from that account's own environment variables.
+
+    Each account reads only the variables that start with its `credential_ref`, so an
+    order for one account cannot go out with another account's key by a slip of the hand."""
+    prefix = acct.env_prefix
+    who = "" if acct.account_id == DEFAULT_ACCOUNT else f"[{acct.account_id} {acct.alias}] "
+    env = ask_missing(environ, prefix, who)
+    cfg = KisConfig.from_env(env, prefix)
+    if cfg.env != "paper" or acct.env != "PAPER":
+        raise OpsError("Phase 4 전까지는 모의투자 서버와 모의투자(PAPER) 계좌에서만 실행해요.")
+    number = env[f"{prefix}_ACCOUNT"].replace("-", "")[:8]
+    for o in others:   # two ledger accounts must not point at one brokerage account
+        if o.account_id != acct.account_id and (environ.get(f"{o.env_prefix}_ACCOUNT") or "").replace("-", "")[:8] == number:
+            raise OpsError(f"{prefix}_ACCOUNT와 {o.env_prefix}_ACCOUNT가 같은 증권사 계좌예요. "
+                           f"계좌 {acct.account_id}와 {o.account_id}의 원장이 섞이지 않게 환경변수를 확인해 주세요.")
     return client_factory(cfg)
 
 
@@ -77,14 +91,33 @@ def run(argv, *, environ=os.environ, client_factory=KisClient, connect=psycopg.c
     kind = p.add_mutually_exclusive_group(required=True)
     kind.add_argument("--etf", action="store_true"), kind.add_argument("--stock", action="store_true")
     p.add_argument("--kosdaq", action="store_true")
-    sub.add_parser("open")
-    sub.add_parser("run")
-    p = sub.add_parser("order")
+    by_account = argparse.ArgumentParser(add_help=False)
+    by_account.add_argument("--account", default=DEFAULT_ACCOUNT, metavar="계좌ID",
+                            help=f"다룰 계좌 (기본 {DEFAULT_ACCOUNT}). account list로 확인")
+    sub.add_parser("open", parents=[by_account])
+    sub.add_parser("run", parents=[by_account])
+    p = sub.add_parser("order", parents=[by_account])
     p.add_argument("symbol"), p.add_argument("side", choices=["buy", "sell"])
     p.add_argument("qty", type=int), p.add_argument("--limit", type=int)
-    p = sub.add_parser("daily")
+    p = sub.add_parser("daily", parents=[by_account])
     p.add_argument("--date", type=dt.date.fromisoformat, help="지난 영업일을 다시 대사할 때")
-    sub.add_parser("status")
+    sub.add_parser("status", parents=[by_account])
+    p = sub.add_parser("customer", help="고객 등록 (별칭만, 개인정보는 넣지 않아요)")
+    what = p.add_subparsers(dest="what", required=True)
+    q = what.add_parser("add")
+    q.add_argument("customer_id", metavar="고객ID"), q.add_argument("alias", metavar="별칭")
+    p = sub.add_parser("account", help="위탁계좌 목록·등록·상태 변경 (계좌번호와 키는 DB에 넣지 않아요)")
+    what = p.add_subparsers(dest="what", required=True)
+    what.add_parser("list")
+    q = what.add_parser("add")
+    q.add_argument("account_id", metavar="계좌ID"), q.add_argument("customer_id", metavar="고객ID")
+    q.add_argument("alias", metavar="별칭")
+    q.add_argument("--credential", required=True, metavar="이름",
+                   help="이 계좌의 환경변수 이름 머리말. KIS_2면 MINISTP_KIS_2_APP_KEY 등을 읽어요")
+    q = what.add_parser("status")
+    q.add_argument("account_id", metavar="계좌ID"), q.add_argument("status", choices=list(STATUSES))
+    q.add_argument("reason", metavar="사유")
+    q.add_argument("--from", dest="effective_from", type=dt.date.fromisoformat, help="적용 시작일 (기본 오늘)")
     p = sub.add_parser("resolve")
     p.add_argument("result_id", type=int), p.add_argument("cause", choices=[c.value for c in Cause])
     p.add_argument("note")
@@ -144,15 +177,24 @@ def run(argv, *, environ=os.environ, client_factory=KisClient, connect=psycopg.c
                 print(f"등록: {args.symbol} {args.name} ({market.value} {asset.value})")
                 return 0
 
-            if args.cmd in ("open", "order", "daily", "run", "resolve"):
+            if args.cmd in ("open", "order", "daily", "run", "resolve", "customer") or (
+                    args.cmd == "account" and args.what != "list"):
                 acquire_writer(conn)
+
+            if args.cmd in ("customer", "account"):
+                require_current_schema(conn)
+                return _accounts(conn, args, today)
 
             if args.cmd == "resolve":
                 rid = resolve_break(conn, args.result_id, Cause(args.cause), args.note)
                 print(f"판단 기록 완료 (행 {rid}).")
                 return 0
 
-            books = load_books(conn, calendar, fees)
+            books = load_books(conn, calendar, fees, args.account)
+            accounts = list_accounts(conn)
+            acct = next(a for a in accounts if a.account_id == args.account)
+            if len(accounts) > 1:   # say whose books these are whenever there is a choice
+                print(f"계좌 {acct.account_id} {acct.alias} (고객 {acct.customer_id}, {acct.status})")
 
             if args.cmd == "status":
                 led = books.ledger
@@ -164,10 +206,10 @@ def run(argv, *, environ=os.environ, client_factory=KisClient, connect=psycopg.c
                     row = navs[-1]
                     print(f"최근 NAV {row.date}: 순자산 {row.net_assets:,}, 기준가 {row.nav_per_1000}")
                 last = navs[-1].date if navs else today
-                print(f"무오류 연속 영업일: {clean_streak(conn, calendar, last)} / {GATE_DAYS}")
+                print(f"무오류 연속 영업일: {clean_streak(conn, calendar, last, args.account)} / {GATE_DAYS}")
                 return 0
 
-            broker = _broker(environ, client_factory)
+            broker = _broker(environ, client_factory, acct, accounts)
 
             if args.cmd == "open":
                 open_books(books, broker, today)
@@ -181,7 +223,7 @@ def run(argv, *, environ=os.environ, client_factory=KisClient, connect=psycopg.c
                 if not (MARKET_OPEN <= started.time() <= MARKET_CLOSE) or not calendar.is_business_day(today):
                     print("장중(영업일 09:00~15:20)에 실행해 주세요.")
                     return 2
-                return _run_intraday(books, broker, today, environ, feed_factory, console, now)
+                return _run_intraday(books, broker, today, environ, feed_factory, console, now, acct.env_prefix)
 
             if args.cmd == "order":
                 if not (MARKET_OPEN <= started.time() <= MARKET_CLOSE) or not calendar.is_business_day(today):
@@ -226,7 +268,7 @@ def run(argv, *, environ=os.environ, client_factory=KisClient, connect=psycopg.c
                     print(n)
                 print("대사 결과:")
                 _print_recon(report)
-                streak = clean_streak(conn, calendar, day)
+                streak = clean_streak(conn, calendar, day, args.account)
                 verdict = "무오류" if report.clean else "불일치 있음"
                 print(f"{verdict}. 무오류 연속 영업일 {streak} / {GATE_DAYS}")
                 return 0 if report.clean else 3
@@ -253,10 +295,10 @@ def db_error_hint(message: str) -> str:
 RUN_UNTIL = dt.time(15, 30)
 
 
-def _run_intraday(books, broker, today, environ, feed_factory, console, now) -> int:
+def _run_intraday(books, broker, today, environ, feed_factory, console, now, prefix="MINISTP_KIS") -> int:
     """Fill notices and console commands share one queue; the runner is the only writer."""
     events = queue.Queue()
-    hts_id = environ.get("MINISTP_KIS_HTS_ID") or input("HTS ID (체결통보 구독용, 저장하지 않아요): ").strip()
+    hts_id = environ.get(f"{prefix}_HTS_ID") or input("HTS ID (체결통보 구독용, 저장하지 않아요): ").strip()
     if feed_factory is None:
         from .broker.kis_ws import NoticeFeed
 
@@ -303,6 +345,33 @@ def _sample_db(url: str, environ, connect, calendar, days: int) -> int:
         for n in s.notes:
             print(f"  {n}")
     print("운영 DB(ministp)는 건드리지 않았어요. pgAdmin에서 ministp_sample을 열어 보세요.")
+    return 0
+
+
+def _accounts(conn, args, today: dt.date) -> int:
+    """`customer add`, `account list | add | status`."""
+    if args.cmd == "customer":
+        add_customer(conn, args.customer_id, args.alias)
+        print(f"고객 등록: {args.customer_id} {args.alias}")
+        return 0
+    if args.what == "add":
+        a = add_account(conn, args.account_id, args.customer_id, args.alias,
+                        credential_ref=args.credential, opened_on=today)
+        print(f"계좌 등록: {a.account_id} {a.alias} (고객 {a.customer_id}, 모의투자, 개설일 {a.opened_on})")
+        print(f"이 계좌의 키는 환경변수 {a.env_prefix}_APP_KEY, {a.env_prefix}_APP_SECRET, {a.env_prefix}_ACCOUNT에서 읽어요. "
+              "없으면 실행할 때 물어보고 저장하지 않아요.")
+        print(f"다음: 종목이 등록돼 있으면 open --account {a.account_id} 로 증권사 잔고를 원장 시작값으로 기록해요.")
+        return 0
+    if args.what == "status":
+        a = set_status(conn, args.account_id, args.status, args.effective_from or today, args.reason)
+        print(f"계좌 {a.account_id} 상태: {a.status} ({a.status_from}부터). 이전 상태는 이력에 남아 있어요.")
+        return 0
+    for a in list_accounts(conn):
+        n, cash = conn.execute(
+            "select (select count(*) from ledger_events where account_id = %(a)s),"
+            " (select balance from cash_balance_v where account_id = %(a)s)", {"a": a.account_id}).fetchone()
+        print(f"{a.account_id} {a.alias}: 고객 {a.customer_id}, {a.broker} {a.env}, {a.status} ({a.status_from}부터), "
+              f"이벤트 {n:,}건, 예수금 {int(cash):,}원, 환경변수 {a.env_prefix}_*")
     return 0
 
 

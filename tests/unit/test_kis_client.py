@@ -51,6 +51,18 @@ def cfg(tmp_path):
                      token_cache=tmp_path / "token.json")
 
 
+def test_config_of_another_account_reads_only_its_own_variables():
+    """다계좌: each account has its own prefix, and its own token cache file (a token belongs to one app key)."""
+    second = {"MINISTP_KIS_2_APP_KEY": "key2", "MINISTP_KIS_2_APP_SECRET": "sec2",
+              "MINISTP_KIS_2_ACCOUNT": "60001234-01", "MINISTP_KIS_2_HTS_ID": "hts2"}
+    c = KisConfig.from_env({**ENV, **second}, "MINISTP_KIS_2")
+    assert (c.app_key, c.app_secret, c.account_no, c.hts_id) == ("key2", "sec2", "60001234", "hts2")
+    assert c.token_cache.name == "kis_token_kis_2.json"
+    assert KisConfig.from_env({**ENV, **second}).token_cache.name == "kis_token.json"
+    with pytest.raises(KisError, match="MINISTP_KIS_2_APP_KEY, MINISTP_KIS_2_APP_SECRET, MINISTP_KIS_2_ACCOUNT"):
+        KisConfig.from_env(ENV, "MINISTP_KIS_2")          # never falls back to the default account's key
+
+
 def test_config_from_env_defaults_to_paper():
     c = KisConfig.from_env(ENV)
     assert (c.env, c.account_no, c.product_code) == ("paper", "50001234", "01")

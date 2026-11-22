@@ -68,22 +68,31 @@ class Books:
     ledger: Ledger
     instruments: dict[str, Instrument]
     account_id: str = DEFAULT_ACCOUNT   # the one account these books are (ERD v2.0)
+    status: str = "OPEN"                # its current status (account_status_v) when the books were loaded
+
+
+def require_current_schema(conn: psycopg.Connection) -> None:
+    """The code is ahead of the database: never read or write a ledger of another shape."""
+    todo = migrate.pending(conn, migrate.discover())
+    if todo:
+        raise OpsError(f"DB 스키마가 이 버전의 코드보다 오래됐어요. 남은 마이그레이션 {len(todo)}개를 "
+                       "db-migrate로 적용해 주세요 (먼저 --dry-run으로 리허설).")
 
 
 def load_books(conn: psycopg.Connection, calendar: BusinessCalendar, fees: FeeSchedule,
                account_id: str = DEFAULT_ACCOUNT) -> Books:
     """The books of one account, replayed from its events and checked against the stored rows."""
-    todo = migrate.pending(conn, migrate.discover())
-    if todo:   # the code is ahead of the database: never read or write a ledger of another shape
-        raise OpsError(f"DB 스키마가 이 버전의 코드보다 오래됐어요. 남은 마이그레이션 {len(todo)}개를 "
-                       "db-migrate로 적용해 주세요 (먼저 --dry-run으로 리허설).")
+    require_current_schema(conn)
+    row = conn.execute("select status from account_status_v where account_id = %s", (account_id,)).fetchone()
+    if row is None:
+        raise OpsError(f"등록되지 않은 계좌예요: {account_id}. account list로 확인해 주세요.")
     store = PostgresLedgerStore(conn, account_id)
     instruments = load_instruments(conn)
     ledger = store.load(calendar, fees, instruments)
     problems = store.verify(ledger)
     if problems:
         raise OpsError(f"DB 원장 검증 실패: {problems}")
-    return Books(conn, store, ledger, instruments, account_id)
+    return Books(conn, store, ledger, instruments, account_id, row[0])
 
 
 def _snapshot(conn, day: dt.date, kind: str, payload, account_id: str = DEFAULT_ACCOUNT) -> int:
@@ -98,6 +107,8 @@ def open_books(books: Books, broker: BrokerGateway, day: dt.date) -> None:
     """R-05: start the ledger from the broker's settled cash and holdings."""
     if books.ledger.events:
         raise OpsError("원장이 이미 시작됐어요. 시작값은 한 번만 기록해요.")
+    if books.status != "OPEN":
+        raise OpsError(f"계좌 {books.account_id}가 정상 상태가 아니에요 ({books.status}).")
     bal = broker.get_balance()
     if bal.cash_d0 != bal.cash_projected:
         raise OpsError(f"미결제 거래가 있어요 (D+0 {bal.cash_d0:,} / D+2 {bal.cash_projected:,}). "
@@ -123,7 +134,8 @@ def _stored_orders(conn, day: dt.date, account_id: str = DEFAULT_ACCOUNT):
 
 def session_for(books: Books, broker: BrokerGateway, day: dt.date) -> TradingSession:
     """A session that knows every order MiniSTP placed today and persists new ones."""
-    session = TradingSession(books.ledger, broker)
+    session = TradingSession(books.ledger, broker, account_open=books.status == "OPEN",
+                             id_prefix="S" if books.account_id == DEFAULT_ACCOUNT else f"{books.account_id}-S")
     rows = _stored_orders(books.conn, day, books.account_id)
     for cid, sym, side, qty, limit, outcome, order_no, org_no in rows:
         if outcome == "ACCEPTED":
@@ -240,13 +252,14 @@ def daily_close(books: Books, broker: BrokerGateway, day: dt.date) -> DailyRepor
     return DailyReport(day, settled, booked, nav, results, session.anomalies, run_id, notes)
 
 
-def clean_streak(conn: psycopg.Connection, calendar: BusinessCalendar, up_to: dt.date) -> int:
-    """R-74 gate: consecutive business days, ending at `up_to`, whose latest run had no break
-    (or whose breaks were all resolved by a later row)."""
+def clean_streak(conn: psycopg.Connection, calendar: BusinessCalendar, up_to: dt.date,
+                 account_id: str = DEFAULT_ACCOUNT) -> int:
+    """R-74 gate, per account: consecutive business days, ending at `up_to`, whose latest run
+    had no break (or whose breaks were all resolved by a later row)."""
     rows = conn.execute(
         "select r.date, r.run_id, r.status, r.id, r.supersedes_id from recon_results r"
         " join broker_snapshots b on b.snapshot_id = r.run_id"
-        " where r.date <= %s and b.kind = 'DAILY_RECON'", (up_to,)).fetchall()
+        " where r.date <= %s and b.kind = 'DAILY_RECON' and r.account_id = %s", (up_to, account_id)).fetchall()
     latest_run: dict[dt.date, int] = {}
     for date, run_id, *_ in rows:
         latest_run[date] = max(run_id, latest_run.get(date, 0))

@@ -49,6 +49,10 @@ class LiveTradingLocked(RuntimeError):
     """Live server requested without both MINISTP_KIS_ENV=live and MINISTP_ALLOW_LIVE=1."""
 
 
+DEFAULT_PREFIX = "MINISTP_KIS"   # environment variables of the default account
+DEFAULT_TOKEN_CACHE = Path.home() / ".ministp" / "kis_token.json"
+
+
 @dataclass(frozen=True)
 class KisConfig:
     app_key: str = field(repr=False)
@@ -57,25 +61,29 @@ class KisConfig:
     product_code: str = "01"              # 계좌상품코드 (ACNT_PRDT_CD)
     hts_id: str = field(default="", repr=False)
     env: str = "paper"                    # paper | live
-    token_cache: Path = Path.home() / ".ministp" / "kis_token.json"
+    token_cache: Path = DEFAULT_TOKEN_CACHE
 
     @classmethod
-    def from_env(cls, environ=os.environ) -> "KisConfig":
-        missing = [k for k in ("MINISTP_KIS_APP_KEY", "MINISTP_KIS_APP_SECRET", "MINISTP_KIS_ACCOUNT")
-                   if not environ.get(k)]
+    def from_env(cls, environ=os.environ, prefix: str = DEFAULT_PREFIX) -> "KisConfig":
+        """`prefix` names one account's variables (다계좌): `MINISTP_KIS` reads `MINISTP_KIS_APP_KEY`,
+        `MINISTP_KIS_2` reads `MINISTP_KIS_2_APP_KEY`, and so on. The server (`MINISTP_KIS_ENV`) and
+        the live lock are shared by every account."""
+        missing = [f"{prefix}_{k}" for k in ("APP_KEY", "APP_SECRET", "ACCOUNT") if not environ.get(f"{prefix}_{k}")]
         if missing:
             raise KisError(f"missing environment variables: {', '.join(missing)}")
-        account = environ["MINISTP_KIS_ACCOUNT"].replace("-", "")
+        account = environ[f"{prefix}_ACCOUNT"].replace("-", "")
         if len(account) not in (8, 10) or not account.isdigit():
-            raise KisError("MINISTP_KIS_ACCOUNT must be 8 digits, or 10 digits / 8-2 with product code")
+            raise KisError(f"{prefix}_ACCOUNT must be 8 digits, or 10 digits / 8-2 with product code")
         env = environ.get("MINISTP_KIS_ENV", "paper")
         if env not in ("paper", "live"):
             raise KisError("MINISTP_KIS_ENV must be 'paper' or 'live'")
         if env == "live" and environ.get("MINISTP_ALLOW_LIVE") != "1":
             raise LiveTradingLocked("live server needs MINISTP_ALLOW_LIVE=1 as well (Phase 4 only)")
-        return cls(app_key=environ["MINISTP_KIS_APP_KEY"], app_secret=environ["MINISTP_KIS_APP_SECRET"],
+        extra = {} if prefix == DEFAULT_PREFIX else {   # a token belongs to one app key: one cache file each
+            "token_cache": DEFAULT_TOKEN_CACHE.with_name(f"kis_token_{prefix.removeprefix('MINISTP_').lower()}.json")}
+        return cls(app_key=environ[f"{prefix}_APP_KEY"], app_secret=environ[f"{prefix}_APP_SECRET"],
                    account_no=account[:8], product_code=account[8:] or "01",
-                   hts_id=environ.get("MINISTP_KIS_HTS_ID", ""), env=env)
+                   hts_id=environ.get(f"{prefix}_HTS_ID", ""), env=env, **extra)
 
     @property
     def base_url(self) -> str:
