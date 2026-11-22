@@ -134,3 +134,74 @@ def test_split_layout_is_one_list_on_the_left_and_a_few_details_on_the_right():
         left, right, below = split_sides(shipped[sid])
         assert ([g.id for g in left], [g.id for g in right], [g.id for g in below]) == (on_left, on_right, under)
     assert shipped["STP-1100"].layout == "stack"
+
+
+def test_a_button_names_a_real_action_and_feeds_every_required_input():
+    """처리 버튼: a definition cannot point a button at something the action does not take."""
+    from ministp.ui.definitions import Button, Field
+    cols = [Column("id", label="행 번호", format="number"), Column("status", label="상태")]
+
+    def problems(sid="STP-2100", tx="STP2100R01", fields=None, **kw):
+        fields = fields or [Field("result_id", label="행", column="id", readonly=True),
+                            Field("cause", "select", label="원인", options=["TIMING"]), Field("note", label="메모")]
+        b = Button(**{"id": "resolve", "label": "원인 판단", "tx": "STP2100U01", "needs_row": True, "fields": fields, **kw})
+        return validate(screen(cols, tx=tx, sid=sid, actions=[b]), CATALOG)
+
+    assert problems() == []
+    for kw, problem in [
+        ({"when": {"gone": ["BREAK"]}}, "고른 행의 열 gone"),
+        ({"shows": ["status"], "needs_row": False, "fields": [Field("result_id", "number", label="행"),
+                                                              Field("cause", label="원인"), Field("note", label="메모")]},
+         "행을 고르는 버튼"),
+        ({"fields": [Field("result_id", label="행", column="id")]}, "필수 입력 cause"),
+        ({"fields": [Field("result_id", label="행", column="id"), Field("cause", label="원인"), Field("note", label="메모"),
+                     Field("extra", label="덤")]}, "없는 입력 항목"),
+        ({"fields": [Field("result_id", "date", label="행"), Field("cause", label="원인"), Field("note", label="메모")]},
+         "int 값을 받는데"),
+        ({"fields": [Field("result_id", label="행", column="nope"), Field("cause", label="원인"),
+                     Field("note", label="메모")]}, "채울 값 nope"),
+        ({"needs_row": False}, "needs_row가 필요"),
+        ({"fields": [Field("result_id", label="행", column="id"), Field("cause", "select", label="원인"),
+                     Field("note", label="메모")]}, "options가 필요"),
+        ({"fields": [Field("result_id", label="행", column="id"), Field("cause", label="원인", lookup="nope"),
+                     Field("note", label="메모")]}, "없는 찾기 팝업 nope"),
+        ({"fields": [Field("result_id", column="id"), Field("cause", label="원인"), Field("note", label="메모")]},
+         "source나 label"),
+    ]:
+        errs = problems(**kw)
+        assert any(problem in e for e in errs), (problem, errs)
+    b = Button("resolve", "원인 판단", "STP2100U99")
+    assert any("없는 처리 트랜잭션" in e for e in validate(screen(cols, tx="STP2100R01", sid="STP-2100", actions=[b]), CATALOG))
+    b = Button("resolve", "원인 판단", "STP2100U01", [Field("result_id", "number", label="행"),
+                                                     Field("cause", label="원인"), Field("note", label="메모")])
+    assert any("다른 화면 것" in e for e in validate(screen(cols, actions=[b]), CATALOG))
+
+
+def test_a_lookup_popup_is_checked_like_a_grid():
+    from ministp.ui.definitions import Lookup, load_lookups, lookup_problems
+    good = Lookup("symbol", "종목 찾기", "STP4100R01", "symbol", [Column("symbol", "instruments.symbol", format="code"),
+                                                                Column("name", "instruments.name")], shows="name")
+    assert lookup_problems({"symbol": good}, CATALOG) == []
+    bad = Lookup("x", "찾기", "STP0000R01", "code", [Column("name", "instruments.gone"), Column("free")], shows="label")
+    errs = lookup_problems({"x": bad}, CATALOG)
+    for problem in ("없는 트랜잭션", "고르는 값 code", "함께 보여 줄 열 label", "DB에 없는 컬럼", "source(DB 컬럼)나 label"):
+        assert any(problem in e for e in errs), (problem, errs)
+    cond = Condition("day", "date", label="기준일", lookup="symbol", lookup_params={"group": "X"})
+    errs = validate(screen([], [cond]), CATALOG, {"symbol": good})
+    assert any("STP4100R01에 없는 조건 group" in e for e in errs)
+    assert "symbol" in load_lookups() and load_screens()["STP-1300"].conditions[0].lookup == "symbol"
+
+
+def test_actions_refuse_unknown_ids_and_incomplete_input():
+    from ministp.ui.actions import ACTIONS, ActionError, run_action
+    with pytest.raises(ActionError, match="없는 처리 트랜잭션"):
+        run_action("STP2100U99", None, {})
+    with pytest.raises(ActionError, match="없는 입력 항목"):
+        run_action("STP2100U01", None, {"drop": "table"})
+    with pytest.raises(ActionError, match="note 값을 넣어"):
+        run_action("STP2100U01", None, {"result_id": 1, "cause": "TIMING", "note": "  "})
+    with pytest.raises(ActionError, match="올바르지 않아요"):
+        run_action("STP2100U01", None, {"result_id": "abc", "cause": "TIMING", "note": "x"})
+    with pytest.raises(ActionError, match="없는 원인 코드"):
+        run_action("STP2100U01", None, {"result_id": 1, "cause": "NOPE", "note": "x"})
+    assert all(tx[7] == "U" for tx in ACTIONS)        # R = 조회, U = 처리: an id says which kind it is

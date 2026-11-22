@@ -5,7 +5,8 @@ column, the DB column and the Korean name taken from the schema COMMENT. The
 index adds 영향도 (which screens show a DB column), so a schema change shows
 at once which screens it touches.
 """
-from .definitions import Screen, column_comment, resolve, short, split_sides, usages
+from .actions import ACTIONS
+from .definitions import Screen, column_comment, load_lookups, resolve, short, split_sides, usages
 from .transactions import TRANSACTIONS
 
 LOAD_TEXT = {"search": "조회 버튼", "open": "화면 열 때 + 조회 버튼", "master": "목록(마스터)에서 행 선택",
@@ -23,8 +24,16 @@ def _names(grids) -> str:
     return ", ".join(f"`{g.id}` {g.title}" for g in grids)
 
 
-def screen_markdown(screen: Screen, catalog: dict) -> str:
-    r = resolve(screen, catalog)
+def _lookup_text(x) -> str:
+    if not x.lookup:
+        return ""
+    fixed = ", ".join(f"{k}={v}" for k, v in x.lookup_params.items())
+    return f"`{x.lookup}`" + (f" ({fixed})" if fixed else "")
+
+
+def screen_markdown(screen: Screen, catalog: dict, lookups=None) -> str:
+    lookups = load_lookups() if lookups is None else lookups
+    r = resolve(screen, catalog, lookups)
     out = [f"# {screen.id} {screen.title}", "", f"> 이 문서는 `src/ministp/ui/screens/{screen.file}`에서 생성돼요."
            " 직접 고치지 말고 화면 정의를 고친 뒤 `python scripts/gen_screen_docs.py`를 실행하세요.", "",
            "## 목적", "", screen.purpose, ""]
@@ -36,11 +45,12 @@ def screen_markdown(screen: Screen, catalog: dict) -> str:
             out.append(f"- 아래 (고른 행과 무관): {_names(below)}")
         out.append("")
     if screen.conditions:
-        out += ["## 조회조건", "", "| 조건 | 한글명 | 형식 | DB 컬럼 | 필수 | 기본값 | 선택값 |",
-                "|---|---|---|---|---|---|---|"]
+        out += ["## 조회조건", "", "| 조건 | 한글명 | 형식 | DB 컬럼 | 필수 | 기본값 | 선택값 | 찾기 팝업 |",
+                "|---|---|---|---|---|---|---|---|"]
         for c, cd in zip(screen.conditions, r["conditions"]):
             out.append(f"| `{c.name}` | {_cell(cd['label'])} | {c.type} | {_cell(c.source or '-')} "
-                       f"| {'예' if c.required else ''} | {_cell(c.default)} | {_cell(', '.join(c.options))} |")
+                       f"| {'예' if c.required else ''} | {_cell(c.default)} | {_cell(', '.join(c.options))} "
+                       f"| {_lookup_text(c)} |")
         out.append("")
     out += ["## 트랜잭션", "", "| 트랜잭션 | 이름 | 조회조건 | 쓰는 그리드 |", "|---|---|---|---|"]
     seen: dict[str, list[str]] = {}
@@ -51,6 +61,16 @@ def screen_markdown(screen: Screen, catalog: dict) -> str:
         params = ", ".join(f"`{k}` ({v})" for k, v in tx.params.items()) or "없음"
         out.append(f"| `{tx_id}` | {tx.title} | {params} | {', '.join(gids)} |")
     out.append("")
+    buttons = [(g, b) for g in screen.grids for b in g.actions]
+    if buttons:
+        out += ["## 처리 트랜잭션", "",
+                "처리 버튼이 부르는 트랜잭션이에요. CLI 명령과 같은 함수를 부르고, 화면 서버를 처리 가능으로 열었을 때만 동작해요.",
+                "", "| 트랜잭션 | 이름 | 입력 | 부르는 버튼 |", "|---|---|---|---|"]
+        for g, b in buttons:
+            a = ACTIONS[b.tx]
+            params = ", ".join(f"`{k}` ({v}{'' if a.required(k) else ', 선택'})" for k, v in a.params.items())
+            out.append(f"| `{b.tx}` | {a.title} | {params} | {g.id} · {b.label} |")
+        out.append("")
     for g, gd in zip(screen.grids, r["grids"]):
         out += [f"## 그리드 `{g.id}` {g.title}", ""]
         facts = [f"- 트랜잭션: `{g.tx}` → 데이터셋 `{g.dataset}`", f"- 불러오는 때: {LOAD_TEXT[g.load]}"]
@@ -79,6 +99,34 @@ def screen_markdown(screen: Screen, catalog: dict) -> str:
                        f"| {FORMAT_TEXT[c.format]} | {'오른쪽' if c.align == 'right' else '왼쪽'} "
                        f"| {COLOR_TEXT[c.color]} |")
         out.append("")
+        for b, bd in zip(g.actions, gd["actions"]):
+            target = "고른 행" if b.needs_row else "행을 고르지 않아도 됨"
+            if b.when:
+                target += " (" + ", ".join(f"`{k}`가 {'·'.join(map(str, v))}일 때만" for k, v in b.when.items()) + ")"
+            out += [f"### 처리 버튼 `{b.id}` {b.label}", "", f"- 위치: 그리드 오른쪽 위",
+                    f"- 처리 트랜잭션: `{b.tx}` {bd['title']}", f"- 대상: {target}"]
+            if b.shows:
+                out.append(f"- 입력 창 위에 보여 주는 행의 값: {', '.join(f'`{c}`' for c in b.shows)}")
+            if b.note:
+                out.append(f"- 안내: {b.note}")
+            out += ["", "| 입력 항목 | 한글명 | 형식 | DB 컬럼 | 필수 | 처음 값 | 선택값 | 찾기 팝업 |",
+                    "|---|---|---|---|---|---|---|---|"]
+            for f, fd in zip(b.fields, bd["fields"]):
+                start = f"행의 `{f.column}`" if f.column else _cell(f.default)
+                if f.readonly:
+                    start += " (고칠 수 없음)"
+                out.append(f"| `{f.name}` | {_cell(fd['label'])} | {f.type} | {_cell(f.source or '-')} "
+                           f"| {'예' if fd['required'] else ''} | {start} | {_cell(', '.join(f.options))} "
+                           f"| {_lookup_text(f)} |")
+            out.append("")
+    if r["lookups"]:
+        out += ["## 찾기 팝업", "", "입력 칸 옆 찾기 버튼(또는 F2)으로 여는 목록이에요. 여러 화면이 같은 정의(`lookups.yaml`)를 같이 써요.",
+                "", "| 이름 | 제목 | 조회 트랜잭션 | 고르면 들어가는 열 | 함께 보여 주는 열 | 목록의 열 |", "|---|---|---|---|---|---|"]
+        for name, lk in r["lookups"].items():
+            cols = ", ".join(f"{c['label']}(`{c['name']}`)" for c in lk["columns"])
+            out.append(f"| `{name}` | {lk['title']} | `{lk['tx']}` | `{lk['value']}` | "
+                       f"{'`' + lk['shows'] + '`' if lk['shows'] else ''} | {cols} |")
+        out.append("")
     return "\n".join(out)
 
 
@@ -87,7 +135,8 @@ def index_markdown(screens: dict[str, Screen], catalog: dict) -> str:
            "> `python scripts/gen_screen_docs.py`로 생성돼요. 화면 정의(YAML)와 DB 주석에서 만들어지니 직접 고치지 마세요.",
            "", "## 화면", "", "| 화면번호 | 화면명 | 그리드 | 트랜잭션 |", "|---|---|---|---|"]
     for s in screens.values():
-        txs = ", ".join(dict.fromkeys(f"`{g.tx}`" for g in s.grids))
+        txs = ", ".join(dict.fromkeys([*(f"`{g.tx}`" for g in s.grids),
+                                       *(f"`{b.tx}`" for g in s.grids for b in g.actions)]))
         out.append(f"| [{s.id}]({s.id}.md) | {s.title} | {len(s.grids)} | {txs} |")
     out += ["", "## 영향도: DB 컬럼 → 화면", "",
             "스키마를 바꾸기 전에 이 표에서 그 컬럼을 쓰는 화면을 확인해요.", "",
