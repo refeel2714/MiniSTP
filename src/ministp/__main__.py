@@ -301,7 +301,8 @@ def _ui(url: str, environ, calendar, fees, sample: bool, port: int, serve=None) 
     print(f"STP-UI: http://127.0.0.1:{port}  (조회 전용, 이 PC에서만 열려요. 끝낼 때 Ctrl+C)")
     if serve is None:
         import uvicorn
-        serve = lambda a: uvicorn.run(a, host="127.0.0.1", port=port, log_level="warning")  # noqa: E731
+        serve = lambda a: uvicorn.run(a, host="127.0.0.1", port=port, log_level="warning",  # noqa: E731
+                                     timeout_graceful_shutdown=1)  # live screens keep a stream open
     serve(app)
     return 0
 

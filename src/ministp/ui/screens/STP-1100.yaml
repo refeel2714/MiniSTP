@@ -4,6 +4,7 @@ purpose: 장중 보유·예수금·주문가능금액(IBOR)을 한 화면에서 
 grids:
   - id: cash
     title: 예수금과 주문가능금액
+    live: true
     tx: STP1100R02
     load: open
     view: cards
@@ -15,6 +16,7 @@ grids:
       - {name: unpriced_buy_orders, label: 가격 미정 시장가 매수, format: number}
   - id: holdings
     title: 종목별 보유
+    live: true
     tx: STP1100R01
     load: open
     totals: [book_cost]

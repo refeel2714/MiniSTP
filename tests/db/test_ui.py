@@ -161,3 +161,18 @@ def test_order_capacity_needs_a_known_symbol(client):
     assert r.status_code == 400 and "등록되지 않은 종목" in r.json()["error"]
     r = client.post("/api/tx/STP1300R02", json={"params": {"qty": 1}})
     assert r.status_code == 400 and "종목코드" in r.json()["error"]
+
+
+def test_db_head_moves_when_the_writer_records(sample, conn):
+    with ui_app.connect_read_only(URL) as ro:
+        before = ui_app.read_head(ro)
+        conn.execute("insert into instruments (symbol, name, market, asset_type) values ('LIVE01', '테스트', 'KOSPI', 'ETF')")
+        assert ui_app.read_head(ro) == before            # instruments are not on the head
+        conn.execute("insert into oms_orders (client_id, trade_date, symbol, side, qty)"
+                     " values ('LIVE-1', %s, 'LIVE01', 'BUY', 1)", (sample.last_day,))
+        assert ui_app.read_head(ro)["orders"] == before["orders"] + 1
+
+
+def test_live_endpoint_is_an_event_stream(client):
+    route = next(r for r in client.app.routes if getattr(r, "path", "") == "/api/live")
+    assert "GET" in route.methods

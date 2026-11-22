@@ -9,6 +9,8 @@ conditions:
 grids:
   - id: results
     title: 대사 결과
+    live: true
+    key: id
     tx: STP2100R01
     columns:
       - {name: date, source: recon_results.date, format: date}

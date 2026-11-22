@@ -7,6 +7,7 @@ conditions:
 grids:
   - id: nav
     title: 기준가 추이
+    live: true
     tx: STP2200R01
     load: open
     meta: {clean_streak: 무오류 연속 영업일, gate_days: 게이트 목표}

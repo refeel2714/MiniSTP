@@ -9,6 +9,7 @@ conditions:
 grids:
   - id: check
     title: 주문가능 판단
+    live: true
     tx: STP1300R02
     load: input
     view: cards
@@ -26,6 +27,7 @@ grids:
       - {name: pending_sell_qty, label: 미체결 매도 수량, format: number}
   - id: symbols
     title: 종목별 주문가능 (최근 종가 기준)
+    live: true
     tx: STP1300R01
     load: open
     drill: {screen: STP-1300, params: {symbol: symbol}}

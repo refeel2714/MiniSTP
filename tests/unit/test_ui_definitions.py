@@ -80,3 +80,27 @@ def test_input_screens_and_required_conditions_are_accepted():
     s = load_screens()["STP-1300"]
     assert {c.name for c in s.conditions if c.required} == {"symbol", "side", "qty"}
     assert s.grids[0].load == "input"
+
+
+def test_live_needs_a_real_key_and_a_top_level_grid():
+    cols = [Column("qty", "positions_v.qty")]
+    assert any("행 식별 열" in e for e in validate(screen(cols, live=True, key="nope"), CATALOG))
+    s = {"STP-1100": Screen("STP-1100", "잔고", "", [], [
+        Grid("m", "보유", "STP1100R01", cols),
+        Grid("d", "상세", "STP1100R01", cols, load="master", master="m", live=True)])}
+    assert any("실시간 갱신 대상이 아니에요" in e for e in validate(s, CATALOG))
+
+
+def test_live_stream_sends_a_change_only_when_the_head_moves():
+    import asyncio
+
+    from ministp.ui.app import live_events
+    heads = iter([{"seq": 1}, {"seq": 1}, {"seq": 1}, {"seq": 2}, {"seq": 2}])
+
+    async def no_sleep(_):
+        pass
+
+    async def collect():
+        return [c async for c in live_events(lambda: next(heads), interval=1, keepalive=2, sleep=no_sleep, limit=2)]
+    out = asyncio.run(collect())
+    assert out == ['event: change\ndata: {"seq": 1}\n\n', ": keep-alive\n\n", 'event: change\ndata: {"seq": 2}\n\n']
