@@ -3,8 +3,12 @@
  * The runtime knows nothing about any one screen. Everything it draws comes from
  * the definition (conditions, grids, columns with labels from DB comments) and
  * everything it shows comes from read transactions (POST /api/tx/{id}).
+ * A grid's 처리 buttons (top right of the grid) open an input window and call a
+ * 처리 transaction (POST /api/action/{id}); an input that takes a code opens a
+ * 찾기 팝업 to pick it from a list.
  * Keys: Enter in a condition = 조회, ↑/↓ moves the row, Enter or double-click on
- * a row = move to the linked screen, Ctrl+Enter anywhere = 조회.
+ * a row = move to the linked screen, Ctrl+Enter anywhere = 조회, F2 in an input
+ * with a 찾기 button = open the list.
  */
 (function () {
   "use strict";
@@ -101,6 +105,28 @@
     requestAnimationFrame(step);
   }
 
+  // ---------- server ----------
+  async function post(url, payload, headers) {
+    const r = await fetch(url, {
+      method: "POST", headers: Object.assign({ "Content-Type": "application/json" }, headers || {}),
+      body: JSON.stringify(payload),
+    });
+    const body = await r.json().catch(() => ({ error: "응답을 읽지 못했어요 (HTTP " + r.status + ")" }));
+    if (!r.ok || body.error) throw new Error(body.error || "HTTP " + r.status);
+    return body;
+  }
+  const call = (tx, params) => post("/api/tx/" + tx, { params });   // 조회
+  // 처리: only a page this server sent knows the token, so no other site can press a button.
+  const act = (tx, params) => post("/api/action/" + tx, { params }, { "X-STPUI-Token": DATA.token });
+
+  function toast(text) {
+    let box = document.getElementById("toast");
+    if (!box) { box = h("div", { id: "toast", role: "status", "aria-live": "polite" }); document.body.append(box); }
+    const t = h("div", { class: "toast", text });
+    box.append(t);
+    setTimeout(() => t.remove(), 5000);
+  }
+
   // ---------- formatting ----------
   function fmt(v, format) {
     if (v === null || v === undefined || v === "") return "";
@@ -122,6 +148,155 @@
     return "";
   }
 
+  // ---------- 찾기 팝업 ----------
+  // An input that takes a code gets a 찾기 button (F2): a list to pick from, narrowed as you type.
+  // Typing the code directly still works; the list is help, not a gate.
+  function withLookup(input, lk, fixed) {
+    const name = h("span", { class: "lkname" });
+    const open = () => openLookup(lk, fixed || {}, input.value.trim(), row => {
+      input.value = row[lk.value] ?? "";
+      name.textContent = lk.shows ? (row[lk.shows] ?? "") : "";
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+      input.focus();
+    });
+    input.addEventListener("keydown", e => {
+      if (e.key === "F2" || (e.altKey && e.key === "ArrowDown")) { e.preventDefault(); open(); }
+    });
+    input.addEventListener("input", e => { if (e.isTrusted) name.textContent = ""; });   // typed over: that name is gone
+    return h("span", { class: "lk" }, input,
+      h("button", { type: "button", class: "find", title: lk.title + " (F2)", onclick: open }, "찾기"), name);
+  }
+
+  function openLookup(lk, fixed, typed, onPick) {
+    let rows = [], view = [], sel = 0;
+    const filter = h("input", { type: "search", class: "lkfilter", placeholder: "코드나 이름 일부를 넣으면 걸러져요",
+      autocomplete: "off", spellcheck: "false", "aria-label": "걸러 보기" });
+    const count = h("span", { class: "count" });
+    const box = h("div", { class: "lkbody" }, h("div", { class: "empty", text: "불러오는 중이에요" }));
+    const dlg = h("dialog", { class: "dlg lookup", "aria-label": lk.title },
+      h("div", { class: "dhead" }, h("h2", { text: lk.title }), count,
+        h("span", { class: "txid", title: "조회 트랜잭션", text: lk.tx })),
+      filter, box,
+      h("div", { class: "dfoot" }, h("span", { class: "hint", text: "↑↓ 이동 · Enter 선택 · Esc 닫기" }),
+        h("button", { type: "button", class: "ghost", onclick: () => dlg.close() }, "닫기"),
+        h("button", { type: "button", class: "primary", onclick: () => pick(sel) }, "선택")));
+    function pick(i) {
+      const r = view[i];
+      if (!r) return;
+      dlg.close();
+      onPick(r);
+    }
+    function mark() {
+      box.querySelectorAll("tbody tr").forEach((tr, i) => {
+        tr.classList.toggle("sel", i === sel); tr.setAttribute("aria-selected", i === sel ? "true" : "false");
+      });
+      const tr = box.querySelectorAll("tbody tr")[sel];
+      if (tr) tr.scrollIntoView({ block: "nearest" });
+    }
+    function render() {
+      const q = filter.value.trim().toLowerCase();
+      view = q ? rows.filter(r => lk.columns.some(c => String(r[c.name] ?? "").toLowerCase().includes(q))) : rows.slice();
+      sel = Math.max(0, Math.min(sel, view.length - 1));
+      count.textContent = `${nf.format(view.length)}건`;
+      if (!view.length) return box.replaceChildren(h("div", { class: "empty", text: rows.length ? "맞는 항목이 없어요" : "항목이 없어요" }));
+      box.replaceChildren(h("table", { class: "grid", role: "listbox", "aria-label": lk.title },
+        h("thead", {}, h("tr", {}, lk.columns.map(c => h("th", { scope: "col", class: c.align === "right" ? "r" : null, text: c.label })))),
+        h("tbody", {}, view.map((r, i) => h("tr", { role: "option", onclick: () => { sel = i; mark(); }, ondblclick: () => pick(i) },
+          lk.columns.map(c => h("td", { class: c.align === "right" ? "r" : null, text: fmt(r[c.name], c.format) })))))));
+      mark();
+    }
+    filter.addEventListener("input", () => { sel = 0; render(); });
+    filter.addEventListener("keydown", e => {
+      if (e.key === "ArrowDown") { e.preventDefault(); sel = Math.min(sel + 1, view.length - 1); mark(); }
+      else if (e.key === "ArrowUp") { e.preventDefault(); sel = Math.max(sel - 1, 0); mark(); }
+      else if (e.key === "Enter") { e.preventDefault(); pick(sel); }
+    });
+    dlg.addEventListener("close", () => dlg.remove());
+    document.body.append(dlg);
+    dlg.showModal();
+    filter.focus();
+    call(lk.tx, fixed).then(res => {
+      const ds = res.datasets.main;
+      rows = ds.rows.map(r => Object.fromEntries(ds.columns.map((c, i) => [c, r[i]])));
+      // What was already typed narrows the list, unless nothing matches it.
+      const q = typed.toLowerCase();
+      if (q && rows.some(r => lk.columns.some(c => String(r[c.name] ?? "").toLowerCase().includes(q)))) filter.value = typed;
+      const exact = rows.findIndex(r => String(r[lk.value]) === typed);
+      render();
+      if (exact >= 0) { sel = Math.max(0, view.indexOf(rows[exact])); mark(); }
+    }).catch(e => box.replaceChildren(h("div", { class: "err", role: "alert", text: e.message })));
+  }
+
+  // ---------- 처리 입력 창 ----------
+  // A 처리 button opens this: the row it works on at the top, the inputs, and one button that
+  // calls the 처리 transaction. A refusal from the server is shown here and the window stays open.
+  function openForm(def, g, b, ctx, onDone) {
+    const inputs = {};
+    const err = h("div", { class: "ferr", role: "alert" });
+    const fields = b.fields.map(f => {
+      const id = "f-" + f.name;
+      const start = f.column ? ctx[f.column] : f.default === "today" ? DATA.today : f.default;
+      let el;
+      if (f.type === "select") {
+        el = h("select", { id, disabled: f.readonly }, h("option", { value: "", text: f.required ? "고르세요" : "선택 안 함" }),
+          f.options.map(o => h("option", { value: o, text: o, selected: String(start ?? "") === o })));
+      } else if (f.type === "bool") {
+        el = h("input", { id, type: "checkbox", checked: start === true || start === "true", disabled: f.readonly });
+      } else {
+        el = h("input", { id, type: f.type === "date" ? "date" : f.type === "number" ? "number" : "text",
+          value: start ?? "", readonly: f.readonly, autocomplete: "off", spellcheck: "false" });
+      }
+      inputs[f.name] = el;
+      const lk = f.lookup && !f.readonly ? def.lookups[f.lookup] : null;
+      return h("div", { class: "frow" },
+        h("label", { class: "fl", for: id }, f.label, f.required ? h("b", { class: "req", title: "필수", text: " *" }) : null),
+        lk ? withLookup(el, lk, f.lookup_params) : el);
+    });
+    function values() {
+      const out = {};
+      for (const f of b.fields) {
+        const el = inputs[f.name];
+        if (f.type === "bool") out[f.name] = el.checked;
+        else if (el.value.trim() !== "") out[f.name] = el.value.trim();
+      }
+      return out;
+    }
+    const ok = h("button", { type: "submit", class: "primary" }, b.label);
+    async function submit(e) {
+      e.preventDefault();
+      const missing = b.fields.filter(f => f.required && f.type !== "bool" && inputs[f.name].value.trim() === "");
+      if (missing.length) {
+        err.textContent = "넣어 주세요: " + missing.map(f => f.label).join(", ");
+        inputs[missing[0].name].focus();
+        return;
+      }
+      ok.disabled = true; err.textContent = "";
+      try {
+        const res = await act(b.tx, values());
+        dlg.close();
+        onDone(res);
+      } catch (ex) {
+        err.textContent = ex.message; ok.disabled = false;
+      }
+    }
+    const shows = b.shows.length ? h("dl", { class: "fctx" }, b.shows.flatMap(name => {
+      const c = g.columns.find(c => c.name === name);
+      return [h("dt", { text: c.label }), h("dd", { class: tone(ctx[name], c.color, ctx) || null, text: fmt(ctx[name], c.format) || "-" })];
+    })) : null;
+    const dlg = h("dialog", { class: "dlg", "aria-labelledby": "dlg-title" },
+      h("form", { onsubmit: submit, novalidate: true, oninput: () => { err.textContent = ""; } },
+        h("div", { class: "dhead" }, h("h2", { id: "dlg-title", text: b.label }),
+          h("span", { class: "txid", title: "처리 트랜잭션: " + b.title, text: b.tx })),
+        shows, b.note ? h("p", { class: "fnote", text: b.note }) : null,
+        h("div", { class: "fields" }, fields), err,
+        h("div", { class: "dfoot" }, h("button", { type: "button", class: "ghost", onclick: () => dlg.close() }, "취소"), ok)));
+    dlg.addEventListener("close", () => dlg.remove());
+    document.body.append(dlg);
+    dlg.showModal();
+    const first = b.fields.find(f => !f.readonly);
+    (first ? inputs[first.name] : ok).focus();
+  }
+
   // ---------- shell ----------
   function topbar(screen) {
     const nav = h("nav", { class: "menu", "aria-label": "화면 목록" },
@@ -132,8 +307,11 @@
     return h("header", { class: "top" },
       h("a", { class: "brand", href: "/" }, "MiniSTP ", h("b", { text: "STP-UI" })),
       nav,
-      h("span", { class: "env", title: `DB ${DATA.db} · 읽기 전용 연결` },
-        h("span", { class: "dot", id: "live-dot" }), `${DATA.label || DATA.db} · 기준일 ${DATA.today} · 조회 전용`));
+      h("span", { class: "env", title: DATA.writable
+        ? `DB ${DATA.db} · 조회는 읽기 전용 연결, 처리 버튼을 누를 때만 쓰기 연결`
+        : `DB ${DATA.db} · 읽기 전용 연결 (처리 버튼은 ui --write 로 열었을 때만)` },
+        h("span", { class: "dot", id: "live-dot" }),
+        `${DATA.label || DATA.db} · 기준일 ${DATA.today} · ${DATA.writable ? "처리 가능" : "조회 전용"}`));
   }
   // Keep the current screen's tab in view when the menu is wider than the bar.
   function revealTab() {
@@ -187,18 +365,10 @@
       el.addEventListener(c.type === "bool" || c.type === "select" || c.type === "date" ? "change" : "input", recalc);
       el.addEventListener("keydown", e => { if (e.key === "Enter") { e.preventDefault(); search(); } });
       condEls[c.name] = el;
+      const lk = c.lookup ? def.lookups[c.lookup] : null;
       return h("label", { class: "cond" + (c.type === "bool" ? " bool" : ""), for: id },
-        h("span", {}, c.label, c.required ? h("b", { class: "req", title: "필수", text: " *" }) : null), el);
-    }
-
-    async function call(tx, params) {
-      const r = await fetch("/api/tx/" + tx, {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ params }),
-      });
-      const body = await r.json().catch(() => ({ error: "응답을 읽지 못했어요 (HTTP " + r.status + ")" }));
-      if (!r.ok || body.error) throw new Error(body.error || "HTTP " + r.status);
-      return body;
+        h("span", {}, c.label, c.required ? h("b", { class: "req", title: "필수", text: " *" }) : null),
+        lk ? withLookup(el, lk, c.lookup_params) : el);
     }
 
     // Grids that share a transaction and parameters share one call.
@@ -281,12 +451,30 @@
       location.href = "/screen/" + g.drill.screen + "?" + q.toString();
     }
 
+    // 처리 버튼: the input window starts from the selected row (and what the grid was opened with);
+    // when it is done the grids are read again in place, so the changed cells light up.
+    function onAction(g, b, row) {
+      const ctx = Object.assign({}, grids[g.id].params || {}, row || {});
+      openForm(def, g, b, ctx, async res => {
+        toast(res.message);
+        await refresh();
+        status.textContent = `${b.tx} ${res.elapsed_ms}ms · ${res.message}`;
+      });
+    }
+    async function refresh() {
+      const shown = g => grids[g.id].params !== undefined;
+      const again = g => grids[g.id].params;
+      await load(def.grids.filter(g => g.load !== "master" && shown(g)), again, { live: true });
+      await load(def.grids.filter(g => g.load === "master" && shown(g)), again, { live: true });
+    }
+
     const conds = def.conditions.length ? h("form", { class: "conds", onsubmit: e => { e.preventDefault(); search(); } },
       def.conditions.map(condField),
       h("button", { type: "submit", class: "primary", title: "Ctrl+Enter" }, "조회")) : null;
 
     const panels = def.grids.map(g => {
       const grid = Grid(g, { onSelect: row => onSelect(g, row), onDrill: row => drill(g, row),
+        onAction: (b, row) => onAction(g, b, row),
         leads: def.grids.some(d => d.load === "master" && d.master === g.id) });
       grids[g.id] = grid;
       return grid.el;
@@ -354,7 +542,7 @@
   }
 
   // ---------- grid ----------
-  function Grid(g, { onSelect, onDrill, leads }) {
+  function Grid(g, { onSelect, onDrill, leads, onAction }) {
     let rows = [], view = [], sel = -1, sortCol = null, sortDir = 1;
     let changed = new Map();   // row key -> Set of changed columns ("*" = new row), shown once
     let previous = new Map();  // row key -> the row before this fill (numbers roll from here)
@@ -366,12 +554,32 @@
     const aboutBox = h("span", { class: "about", title: "목록에서 고른 행" });
     const body = h("div", { class: "gbody" });
     const chartBox = g.chart ? h("div", { class: "chart" }) : null;
+    // 처리 버튼 live at the top right of their grid.
+    const acts = (g.actions || []).map(b => ({ b, btn: h("button", { type: "button", class: "act",
+      onclick: () => onAction(b, b.needs_row ? view[sel] : null) }, b.label) }));
     const el = h("section", { class: "panel" + (g.view === "cards" ? " cards-panel" : ""), "aria-label": g.title },
       h("div", { class: "phead" }, h("h2", { text: g.title }), aboutBox,
         g.live ? h("span", { class: "livechip", title: "DB가 바뀌면 자동으로 다시 조회해요" }, "실시간") : null,
         metaBox, count,
-        h("span", { class: "txid", title: "조회 트랜잭션", text: g.tx })),
+        h("span", { class: "txid", title: "조회 트랜잭션", text: g.tx }),
+        acts.length ? h("div", { class: "acts" }, acts.map(a => a.btn)) : null),
       chartBox, body);
+
+    // A button is off, and says why, until it has what it works on.
+    function syncActions() {
+      const row = view[sel];
+      for (const { b, btn } of acts) {
+        const unmet = Object.entries(b.when || {}).filter(([c, vals]) => !row || !vals.includes(row[c]));
+        let why = "";
+        if (!DATA.writable) why = "조회 전용으로 열려 있어요. 처리하려면 ui --write 로 다시 열어 주세요.";
+        else if (g.load === "master" && !loaded) why = "목록에서 행을 먼저 고르세요";
+        else if (b.needs_row && !row) why = "행을 먼저 고르세요";
+        else if (unmet.length) why = unmet.map(([c, vals]) => `${g.columns.find(x => x.name === c).label}: ${vals.join("·")}인 행만 처리해요`).join(", ");
+        btn.disabled = !!why;
+        btn.title = why || `${b.title} (${b.tx})`;
+      }
+    }
+    syncActions();
 
     // A detail grid names the master row it belongs to, next to its title.
     function about(text) { aboutBox.textContent = text || ""; }
@@ -379,6 +587,7 @@
       rows = []; view = []; sel = -1; loaded = false; count.textContent = ""; metaBox.replaceChildren(); about("");
       if (chartBox) chartBox.replaceChildren();
       morph(body, () => body.replaceChildren(h("div", { class: "empty", text: msg })));
+      syncActions();
     }
     function skeleton() {
       const n = g.view === "cards" ? 1 : 4;
@@ -390,6 +599,7 @@
     function fail(msg) {
       busy(false); rows = []; view = []; sel = -1; loaded = false;
       morph(body, () => body.replaceChildren(h("div", { class: "err", role: "alert", text: msg })));
+      syncActions();
     }
 
     function fill(ds, meta, live) {
@@ -430,6 +640,7 @@
       changed = new Map();   // highlight once; a later sort does not flash again
       previous = new Map();
       if (chartBox) renderChart();
+      syncActions();
     }
 
     function renderMeta(meta) {
@@ -527,6 +738,7 @@
       const tr = body.querySelectorAll("tbody tr")[sel];
       if (tr && scroll) tr.scrollIntoView({ block: "nearest" });
       placeBar(false);
+      syncActions();
     }
     // One highlight that slides to the selected row instead of jumping.
     function placeBar(instant) {

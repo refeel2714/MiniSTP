@@ -1,0 +1,16 @@
+# 찾기 팝업: 입력 칸에서 불러 코드를 고르는 목록. 화면마다 따로 만들지 않고 여기 한 벌을 같이 써요.
+#   tx      목록을 주는 조회 트랜잭션 (어느 화면 것이든)
+#   value   고르면 입력 칸에 들어가는 열
+#   shows   고른 뒤 입력 칸 옆에 함께 보여 줄 열 (코드의 이름)
+# 화면 정의에서는 조회조건이나 입력 항목에 `lookup: <이름>`으로 붙여요.
+symbol:
+  title: 종목 찾기
+  tx: STP4100R01
+  value: symbol
+  shows: instrument_name
+  columns:
+    - {name: symbol, source: instruments.symbol, format: code}
+    - {name: instrument_name, source: instruments.name}
+    - {name: market, source: instruments.market, format: code}
+    - {name: asset_type, source: instruments.asset_type, format: code}
+    - {name: last_close, label: 최근 종가, format: money}
