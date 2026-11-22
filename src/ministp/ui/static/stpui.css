@@ -78,6 +78,8 @@ button.primary:hover { filter: brightness(1.08); }
 .phead { display: flex; align-items: center; gap: 10px; padding: 7px 12px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
 .phead h2 { font-size: 13px; margin: 0; font-weight: 650; }
 .count { color: var(--muted); font-size: 12px; }
+.about { font: 600 12px ui-monospace, Consolas, monospace; color: var(--accent); }
+.about:empty { display: none; }
 .txid { margin-left: auto; font: 11px ui-monospace, Consolas, monospace; color: var(--muted); }
 .meta { display: flex; gap: 6px; }
 .badge { font-size: 11px; padding: 1px 7px; border-radius: 10px; background: var(--head); color: var(--muted); }

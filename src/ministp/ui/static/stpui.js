@@ -295,7 +295,9 @@
     function onSelect(master, row) {
       const details = def.grids.filter(g => g.load === "master" && g.master === master.id);
       if (!details.length || !row) return;
-      load(details, g => Object.fromEntries(Object.entries(g.link).map(([p, col]) => [p, row[col]])));
+      const linked = g => Object.fromEntries(Object.entries(g.link).map(([p, col]) => [p, row[col]]));
+      details.forEach(g => grids[g.id].about(Object.values(linked(g)).join(" · ")));   // whose detail this is
+      load(details, linked);
     }
 
     function drill(g, row) {
@@ -318,7 +320,8 @@
       h("button", { type: "submit", class: "primary", title: "Ctrl+Enter" }, "조회")) : null;
 
     const panels = def.grids.map(g => {
-      const grid = Grid(g, { onSelect: row => onSelect(g, row), onDrill: row => drill(g, row) });
+      const grid = Grid(g, { onSelect: row => onSelect(g, row), onDrill: row => drill(g, row),
+        leads: def.grids.some(d => d.load === "master" && d.master === g.id) });
       grids[g.id] = grid;
       return grid.el;
     });
@@ -362,7 +365,7 @@
   }
 
   // ---------- grid ----------
-  function Grid(g, { onSelect, onDrill }) {
+  function Grid(g, { onSelect, onDrill, leads }) {
     let rows = [], view = [], sel = -1, sortCol = null, sortDir = 1;
     let changed = new Map();   // row key -> Set of changed columns ("*" = new row), shown once
     let previous = new Map();  // row key -> the row before this fill (numbers roll from here)
@@ -371,17 +374,20 @@
     const rowKey = g.view === "cards" ? () => "card" : r => String(r[keyCol]);   // cards show one row
     const count = h("span", { class: "count" });
     const metaBox = h("span", { class: "meta" });
+    const aboutBox = h("span", { class: "about", title: "위 목록에서 고른 행" });
     const body = h("div", { class: "gbody" });
     const chartBox = g.chart ? h("div", { class: "chart" }) : null;
     const el = h("section", { class: "panel" + (g.view === "cards" ? " cards-panel" : ""), "aria-label": g.title },
-      h("div", { class: "phead" }, h("h2", { text: g.title }),
+      h("div", { class: "phead" }, h("h2", { text: g.title }), aboutBox,
         g.live ? h("span", { class: "livechip", title: "DB가 바뀌면 자동으로 다시 조회해요" }, "실시간") : null,
         metaBox, count,
         h("span", { class: "txid", title: "조회 트랜잭션", text: g.tx })),
       chartBox, body);
 
+    // A detail grid names the master row it belongs to, next to its title.
+    function about(text) { aboutBox.textContent = text || ""; }
     function clear(msg) {
-      rows = []; view = []; sel = -1; loaded = false; count.textContent = ""; metaBox.replaceChildren();
+      rows = []; view = []; sel = -1; loaded = false; count.textContent = ""; metaBox.replaceChildren(); about("");
       if (chartBox) chartBox.replaceChildren();
       morph(body, () => body.replaceChildren(h("div", { class: "empty", text: msg })));
     }
@@ -423,6 +429,14 @@
       loaded = true;
       sel = keep ? view.findIndex(r => rowKey(r) === keep) : -1;
       if (keep) mark(false);
+      // 기초 정보 → 상세: a grid with details under it opens with a row already picked
+      // (the one the transaction names in meta.selected, else the first), so the details are never empty.
+      if (!live && leads && view.length) {
+        const named = meta && meta.selected != null ? view.findIndex(r => rowKey(r) === String(meta.selected)) : -1;
+        sel = named >= 0 ? named : 0;
+        mark(false);
+        onSelect(view[sel]);
+      }
       if (hadFocus) { const t = body.querySelector(".grid"); if (t) t.focus({ preventScroll: true }); }
       changed = new Map();   // highlight once; a later sort does not flash again
       previous = new Map();
@@ -580,7 +594,7 @@
       chartBox.replaceChildren(s);
     }
 
-    return { el, fill, clear, busy, fail, skeleton };
+    return { el, fill, clear, busy, fail, skeleton, about };
   }
 
   if (DATA.screen) Screen(DATA.screen); else home();

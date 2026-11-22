@@ -119,6 +119,33 @@ def test_account_list_status_history_and_customer_totals(client, conn, sample):
         assert t["qty"] == parts
 
 
+def test_picking_an_account_row_turns_the_grids_below_into_its_detail(client, conn):
+    """기초 정보 → 상세: every grid under the account list is linked to the picked row."""
+    screen = load_screens()["STP-4400"]
+    master, *details = screen.grids
+    assert master.id == "accounts" and master.load == "open"
+    assert [(g.id, g.load, g.master, g.link) for g in details] == [
+        ("positions", "master", "accounts", {"account_id": "account_id"}),
+        ("customer_positions", "master", "accounts", {"customer_id": "customer_id"}),
+        ("status_history", "master", "accounts", {"account_id": "account_id"})]
+
+    accounts, body = rows(client, "STP4400R01", "A0002")
+    assert body["meta"]["selected"] == "A0002"                    # the row the screen opens on
+    for a in accounts:                                            # asked from A0001, answered for the row
+        held, _ = rows(client, "STP4400R04", params={"account_id": a["account_id"]})
+        want = conn.execute("select symbol, qty, book_cost from positions_v where account_id = %s",
+                            (a["account_id"],)).fetchall()
+        assert sorted((h["symbol"], h["qty"], h["book_cost"]) for h in held) == sorted(want)
+        assert len(held) == a["holdings"] and sum(h["book_cost"] for h in held) == a["book_cost"]
+        totals, _ = rows(client, "STP4400R03", params={"customer_id": a["customer_id"]})
+        assert totals and {t["customer_id"] for t in totals} == {a["customer_id"]}
+    everyone, _ = rows(client, "STP4400R03")
+    assert {t["customer_id"] for t in everyone} == {"C0001", "C0002"}
+    assert client.post("/api/tx/STP4400R04", json={"params": {}}).status_code == 400
+    nobody, _ = rows(client, "STP4400R04", params={"account_id": "A0009"})
+    assert nobody == []
+
+
 def test_a_drill_that_names_an_account_column_must_have_it(conn):
     screens = load_screens()
     catalog = erd.read_catalog(conn, "public")

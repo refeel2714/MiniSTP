@@ -15,7 +15,7 @@
 | [STP-4100](STP-4100.md) | 종목정보 | 2 | `STP4100R01`, `STP4100R02` |
 | [STP-4200](STP-4200.md) | 계좌정보 | 3 | `STP4200R01`, `STP4200R02`, `STP4200R03` |
 | [STP-4300](STP-4300.md) | 기준정보 | 5 | `STP4300R01`, `STP4300R02`, `STP4300R03`, `STP4300R04`, `STP4300R05` |
-| [STP-4400](STP-4400.md) | 고객·계좌 | 3 | `STP4400R01`, `STP4400R02`, `STP4400R03` |
+| [STP-4400](STP-4400.md) | 고객·계좌 | 4 | `STP4400R01`, `STP4400R04`, `STP4400R03`, `STP4400R02` |
 
 ## 영향도: DB 컬럼 → 화면
 
@@ -47,7 +47,7 @@
 | `customers.customer_id` | 고객 ID | STP-4400 accounts |
 | `instruments.asset_type` | 자산 유형 | STP-1100 holdings, STP-4100 instruments, STP-4300 fees, STP-4300 ticks |
 | `instruments.market` | 시장 | STP-4100 instruments, STP-4300 fees |
-| `instruments.name` | 종목명 | STP-1100 holdings, STP-1200 orders, STP-1300 symbols, STP-4100 instruments, STP-4200 settlements, STP-4400 customer_positions |
+| `instruments.name` | 종목명 | STP-1100 holdings, STP-1200 orders, STP-1300 symbols, STP-4100 instruments, STP-4200 settlements, STP-4400 positions, STP-4400 customer_positions |
 | `instruments.symbol` | 종목코드 | STP-1100 holdings, STP-1300 symbols, STP-1300 조회조건, STP-3100 events, STP-3100 조회조건, STP-4100 instruments, STP-4200 settlements |
 | `journal_entries.date` | 회계일 | STP-3100 journal |
 | `journal_entries.entry_id` | 전표 번호 | STP-3100 journal |
@@ -77,8 +77,9 @@
 | `position_ledger.realized_pnl` | 실현손익 | STP-3100 positions |
 | `position_ledger.symbol` | 종목코드 | STP-3100 positions |
 | `position_ledger.trade_date` | 매매일 | STP-3100 positions |
-| `positions_v.book_cost` | 장부금액 | STP-1100 holdings, STP-4100 instruments |
-| `positions_v.qty` | 보유수량 | STP-1100 holdings, STP-1300 symbols, STP-4100 instruments |
+| `positions_v.book_cost` | 장부금액 | STP-1100 holdings, STP-4100 instruments, STP-4400 positions |
+| `positions_v.qty` | 보유수량 | STP-1100 holdings, STP-1300 symbols, STP-4100 instruments, STP-4400 positions |
+| `positions_v.symbol` | 종목코드 | STP-4400 positions |
 | `recon_results.broker_value` | 증권사 값 | STP-2100 results |
 | `recon_results.cause_code` | 원인 코드 | STP-2100 results |
 | `recon_results.date` | 기준일 | STP-2100 results |

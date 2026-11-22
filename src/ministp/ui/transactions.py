@@ -172,8 +172,15 @@ def _account_status(c: TxContext, p) -> TxResult:
     return TxResult({"main": q.account_status_history(c.conn, p["account_id"])})
 
 
+def _account_positions(c: TxContext, p) -> TxResult:
+    if not p.get("account_id"):
+        raise TxError("계좌 ID가 필요해요")
+    return TxResult({"main": q.account_positions(c.conn, p["account_id"])})
+
+
 def _customer_positions(c: TxContext, p) -> TxResult:
-    return TxResult({"main": q.customer_positions(c.conn)})
+    """All customers, or the one customer of the account row that was picked."""
+    return TxResult({"main": q.customer_positions(c.conn, p.get("customer_id") or None)})
 
 
 TRANSACTIONS: dict[str, Tx] = {t.tx_id: t for t in [
@@ -202,7 +209,8 @@ TRANSACTIONS: dict[str, Tx] = {t.tx_id: t for t in [
     Tx("STP4300R05", "주문 검증 기준", {}, _risk),
     Tx("STP4400R01", "고객·계좌 목록", {}, _accounts),
     Tx("STP4400R02", "계좌 상태 이력", {"account_id": "text"}, _account_status),
-    Tx("STP4400R03", "고객별 보유 합산", {}, _customer_positions),
+    Tx("STP4400R03", "고객별 보유 합산", {"customer_id": "text"}, _customer_positions),
+    Tx("STP4400R04", "계좌 보유", {"account_id": "text"}, _account_positions),
 ]}
 
 

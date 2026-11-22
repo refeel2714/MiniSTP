@@ -289,8 +289,19 @@ def account_status_history(conn: psycopg.Connection, account_id: str) -> Dataset
                     " where account_id = %s order by effective_from desc, id desc", (account_id,))
 
 
-def customer_positions(conn: psycopg.Connection) -> Dataset:
-    """고객별 보유 합산: one customer's accounts added up per symbol (`customer_positions_v`)."""
+def account_positions(conn: psycopg.Connection, account_id: str) -> Dataset:
+    """One account's holdings (`positions_v`), whichever account the screens are looking at."""
+    return _q(conn, """
+        select p.symbol, i.name as instrument_name, p.qty, p.book_cost
+          from positions_v p join instruments i using (symbol)
+         where p.account_id = %s
+         order by p.book_cost desc""", (account_id,))
+
+
+def customer_positions(conn: psycopg.Connection, customer_id: str | None = None) -> Dataset:
+    """고객별 보유 합산: one customer's accounts added up per symbol (`customer_positions_v`).
+
+    With `customer_id` only that customer's rows (the detail under an account row)."""
     return _q(conn, """
         select v.customer_id, c.alias as customer_alias, v.symbol, i.name as instrument_name, v.qty, v.book_cost,
                (select count(distinct p.account_id) from positions_v p join trading_accounts t using (account_id)
@@ -298,7 +309,8 @@ def customer_positions(conn: psycopg.Connection) -> Dataset:
           from customer_positions_v v
           join customers c using (customer_id)
           join instruments i using (symbol)
-         order by v.customer_id, v.book_cost desc""")
+         where (%(c)s::text is null or v.customer_id = %(c)s)
+         order by v.customer_id, v.book_cost desc""", {"c": customer_id})
 
 
 # ---------- STP-4100·4200·4300 기준정보 (조회 전용) ----------
