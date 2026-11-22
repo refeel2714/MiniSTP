@@ -74,6 +74,28 @@ def test_server_refuses_to_start_when_a_screen_drifts_from_the_schema(sample, mo
         ui_app.create_app(URL, calendar=CAL, fees=FEES)
 
 
+def test_every_page_carries_what_the_jump_box_can_open(client, conn):
+    """바로 가기 창(Ctrl+K): 모든 화면과, 화면을 열 수 있는 코드(종목)의 목록이 어느 페이지에나 실려요."""
+    import json
+    import re
+    for path in ("/", "/screen/STP-2100"):
+        data = json.loads(re.search(r'<script id="stpui-data" type="application/json">(.*?)</script>',
+                                    client.get(path).text, re.S).group(1))
+        assert [m["id"] for m in data["menu"]] == list(load_screens())
+        (jump,) = data["jump"]
+        assert jump["name"] == "symbol" and {t["id"]: t["param"] for t in jump["into"]} == {
+            "STP-1300": "symbol", "STP-3100": "symbol"}
+    listed = client.post(f"/api/tx/{jump['tx']}", json={"params": {}}).json()["datasets"]["main"]
+    assert {jump["value"], jump["shows"]} <= set(listed["columns"])     # what the box matches on and shows
+    at = listed["columns"].index(jump["value"])
+    assert sorted(r[at] for r in listed["rows"]) == [r[0] for r in conn.execute("select symbol from instruments order by 1")]
+    for t in jump["into"]:                                                # each target opens for that code
+        screen = load_screens()[t["id"]]
+        assert any(c.name == t["param"] and c.lookup == "symbol" for c in screen.conditions)
+        assert client.get(f"/screen/{t['id']}?{t['param']}={listed['rows'][0][at]}").status_code == 200
+    assert "openJump" in client.get("/static/stpui.js").text
+
+
 def test_screen_page_carries_the_resolved_definition(client):
     r = client.get("/screen/STP-3100")
     assert r.status_code == 200 and 'id="stpui-data"' in r.text

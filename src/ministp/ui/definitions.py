@@ -491,6 +491,26 @@ def resolve(screen: Screen, catalog: dict, lookups: dict[str, Lookup] | None = N
     return out
 
 
+def jump_targets(screens: dict[str, Screen], catalog: dict, lookups: dict[str, Lookup] | None = None) -> list[dict]:
+    """바로 가기 창이 화면 말고도 찾아 주는 것: 조회조건에 찾기 팝업이 붙은 코드(종목 등)와, 그 코드로 열 수 있는 화면.
+
+    Nothing is declared for it. A screen whose condition takes a code through a 찾기 팝업 can be
+    opened for that code, so the list follows the screen definitions by itself."""
+    lookups = load_lookups() if lookups is None else lookups
+    into: dict[str, list[dict]] = {}
+    for s in screens.values():
+        for c in s.conditions:
+            if c.lookup in lookups and not c.lookup_params:      # a list that needs a fixed parameter is not one list
+                into.setdefault(c.lookup, []).append({"id": s.id, "title": s.title, "param": c.name})
+    out = []
+    for name, targets in into.items():
+        lk = lookups[name]
+        out.append({**asdict(lk), "into": targets,
+                    "columns": [{**asdict(c), "label": c.label or short(column_comment(catalog, c.source)),
+                                 "align": c.align} for c in lk.columns]})
+    return out
+
+
 def usages(screens: dict[str, Screen]) -> dict[str, list[str]]:
     """DB column -> screens and grids that show it (영향도 분석: what a schema change touches)."""
     out: dict[str, list[str]] = {}

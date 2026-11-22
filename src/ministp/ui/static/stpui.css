@@ -342,6 +342,30 @@ dialog.dlg[open] { animation: stpui-in var(--t) var(--ease); }
 .lkbody .grid tbody tr.sel td, .lkbody .grid tbody tr.sel:hover td { background: var(--sel); }
 .lkbody .grid tbody tr.sel td:first-child { box-shadow: inset 3px 0 0 var(--sel-line); }
 
+/* 바로 가기 창 (Ctrl+K) */
+.jumpbtn { display: flex; align-items: center; gap: 8px; height: 26px; padding: 0 6px 0 10px; border: 1px solid rgba(255, 255, 255, .16);
+  border-radius: 5px; background: rgba(255, 255, 255, .06); color: var(--top-muted); font: inherit; font-size: 12px;
+  cursor: pointer; white-space: nowrap; }
+.jumpbtn:hover { color: var(--top-ink); background: rgba(255, 255, 255, .12); }
+.jumpbtn:focus-visible { outline: 2px solid var(--sel-line); outline-offset: 1px; }
+.jumpbtn kbd { font: 600 10px/1 ui-monospace, "Cascadia Mono", Consolas, monospace; padding: 3px 5px; border-radius: 3px;
+  border: 1px solid rgba(255, 255, 255, .2); }
+dialog.dlg.jump { width: min(560px, calc(100vw - 32px)); margin-top: 12vh; }
+.jump .lkfilter { height: 36px; font-size: 15px; }
+.jcrumb { display: flex; align-items: center; gap: 12px; padding: 10px 14px 0; color: var(--muted); font-size: 12px; }
+.jcrumb:empty { display: none; }
+.jbody { max-height: min(56vh, 420px); overflow: auto; border-top: 1px solid var(--line); padding: 4px 0 6px; }
+.jgroup { display: flex; gap: 8px; padding: 8px 14px 4px; font-size: 11px; font-weight: 600; color: var(--muted); }
+.jgroup span { font-weight: 400; }
+.jitem { display: flex; align-items: center; gap: 10px; min-height: 34px; padding: 5px 14px; cursor: pointer; }
+.jitem:hover { background: var(--hover); }
+.jitem.sel, .jitem.sel:hover { background: var(--sel); box-shadow: inset 3px 0 0 var(--sel-line); }
+.jitem .sid { color: var(--muted); min-width: 62px; }
+.jitem .jt { font-weight: 600; }
+.jitem .jnote { margin-left: auto; color: var(--muted); font-size: 12px; white-space: nowrap; }
+.jempty, .jtip { padding: 10px 14px; color: var(--muted); font-size: 12px; }
+.jempty { padding: 18px 14px; font-size: 13px; }
+
 /* what a 처리 did, said once */
 #toast { position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%); display: flex; flex-direction: column; gap: 8px;
   align-items: center; z-index: 20; pointer-events: none; }

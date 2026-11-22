@@ -320,3 +320,26 @@ def test_an_instrument_looks_the_same_on_every_screen():
     assert len(shown) >= 5
     for sid, gid, c in shown:
         assert (c.display, c.code, c.shape) == ("badge", "symbol", "asset_type"), f"{sid} {gid}"
+
+
+def test_the_jump_box_offers_a_code_for_every_screen_that_takes_it():
+    """바로 가기 창: 조회조건이 찾기 팝업으로 받는 코드는 그 화면을 여는 열쇠가 돼요. 따로 적어 두는 목록이 없어요."""
+    from ministp.ui.definitions import Lookup, jump_targets, load_lookups
+    lk = Lookup("symbol", "종목 찾기", "STP4100R01", "symbol", [Column("symbol", "instruments.symbol", format="code"),
+                                                              Column("name", "instruments.name")], shows="name")
+    screens = {
+        **screen([], [Condition("symbol", source="instruments.symbol", lookup="symbol")], sid="STP-1300"),
+        **screen([], [Condition("day", "date", label="기준일")], sid="STP-2100"),                       # takes no code
+        **screen([], [Condition("code", label="코드", lookup="symbol", lookup_params={"group_id": "X"})],
+                 sid="STP-4600"),                                                                     # a list that needs a fixed parameter
+        **screen([], [Condition("item", source="instruments.symbol", lookup="symbol")], sid="STP-3100"),
+    }
+    (jump,) = jump_targets(screens, CATALOG, {"symbol": lk})
+    assert (jump["name"], jump["tx"], jump["value"], jump["shows"]) == ("symbol", "STP4100R01", "symbol", "name")
+    assert [c["label"] for c in jump["columns"]] == ["종목코드", "종목명"]
+    assert jump["into"] == [{"id": "STP-1300", "title": "잔고", "param": "symbol"},
+                            {"id": "STP-3100", "title": "잔고", "param": "item"}]
+    assert jump_targets(screen([], [Condition("day", "date", label="기준일")]), CATALOG, {"symbol": lk}) == []
+
+    real = {j["name"]: [t["id"] for t in j["into"]] for j in jump_targets(load_screens(), CATALOG, load_lookups())}
+    assert real == {"symbol": ["STP-1300", "STP-3100"]}                # a 종목 opens 주문가능 조회 and 원장·분개 조회
