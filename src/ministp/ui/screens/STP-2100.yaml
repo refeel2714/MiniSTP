@@ -1,19 +1,37 @@
 id: STP-2100
 title: 일일 대사 결과
-purpose: 대사 항목별 내부 값과 증권사 값, 불일치와 그에 대한 판단 이력을 함께 봐요. 불일치 행을 고르고 오른쪽 위 원인 판단 버튼을 누르면 판단을 기록해요 (CLI의 resolve 명령과 같은 처리). 불일치 행은 고치지 않고 판단을 새 행으로 덧붙여요.
+purpose: 왼쪽 달력에서 날마다의 대사 결과와 게이트까지 남은 날을 한눈에 보고, 날짜를 누르면 오른쪽에 그날의 항목별 내부 값과 증권사 값, 불일치와 판단 이력이 나와요. 불일치 행을 고르고 오른쪽 위 원인 판단 버튼을 누르면 판단을 기록해요 (CLI의 resolve 명령과 같은 처리). 불일치 행은 고치지 않고 판단을 새 행으로 덧붙여요.
+layout: split
+left: 32
 conditions:
   - {name: date_from, type: date, label: 시작일}
   - {name: date_to, type: date, label: 종료일}
   - {name: kind, type: select, source: broker_snapshots.kind, options: [DAILY_RECON, INTRADAY_RECON], default: DAILY_RECON}
-  - {name: only_breaks, type: bool, label: 불일치만}
 grids:
-  - id: results
-    title: 대사 결과
+  - id: days
+    title: 대사 달력
     live: true
-    key: id
-    tx: STP2100R01
+    key: date
+    tx: STP2100R02
+    load: open
+    view: calendar
+    calendar: {date: date, state: state}
+    meta: {clean_streak: 무오류 연속 영업일, gate_left: 게이트까지 남은 날}
     columns:
       - {name: date, source: recon_results.date, format: date}
+      - {name: state, label: 그날의 대사 결과, color: status}
+      - {name: kind, source: broker_snapshots.kind, format: code}
+      - {name: items, label: 대사 항목 수, format: number}
+      - {name: breaks, label: 불일치 수, format: number}
+      - {name: open_breaks, label: 판단 전 불일치 수, format: number}
+  - id: results
+    title: 그날의 대사 결과
+    key: id
+    tx: STP2100R01
+    load: master
+    master: days
+    link: {date_from: date, date_to: date, kind: kind}
+    columns:
       - {name: item, source: recon_results.item, format: code}
       - {name: key, source: recon_results.key, format: code}
       - {name: internal_value, source: recon_results.internal_value, format: money}
@@ -32,7 +50,7 @@ grids:
         tx: STP2100U01
         needs_row: true
         when: {status: [BREAK]}
-        shows: [date, item, key, diff]
+        shows: [item, key, diff]
         note: 불일치 행은 고치지 않아요. 판단이 새 행으로 덧붙고, 다시 판단하면 가장 나중 것이 보여요 (R-73).
         fields:
           - {name: result_id, source: recon_results.id, column: id, readonly: true}
