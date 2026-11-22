@@ -36,6 +36,5 @@ grids:
         note: 불일치 행은 고치지 않아요. 판단이 새 행으로 덧붙고, 다시 판단하면 가장 나중 것이 보여요 (R-73).
         fields:
           - {name: result_id, source: recon_results.id, column: id, readonly: true}
-          - {name: cause, source: recon_results.cause_code, type: select,
-             options: [MISSING_EXEC, FEE_DIFF, TAX_DIFF, ROUNDING, CORP_ACTION, TIMING, UNKNOWN]}
+          - {name: cause, source: recon_results.cause_code, lookup: code, lookup_params: {group_id: RECON_CAUSE}}
           - {name: note, source: recon_results.note}

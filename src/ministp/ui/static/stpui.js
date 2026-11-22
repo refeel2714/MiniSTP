@@ -151,6 +151,7 @@
   // 처리: only a page this server sent knows the token, so no other site can press a button.
   const act = (tx, params) => post("/api/action/" + tx, { params, account: ACCOUNT }, { "X-STPUI-Token": DATA.token });
 
+  const TOAST_KEY = "stpui.toast";   // what a 처리 said, carried over a page reload
   function toast(text) {
     let box = document.getElementById("toast");
     if (!box) { box = h("div", { id: "toast", role: "status", "aria-live": "polite" }); document.body.append(box); }
@@ -490,6 +491,10 @@
     function onAction(g, b, row) {
       const ctx = Object.assign({}, grids[g.id].params || {}, row || {});
       openForm(def, g, b, ctx, async res => {
+        if (b.reload) {   // the top bar shows it too (계좌 선택): open the page again and say it there
+          try { sessionStorage.setItem(TOAST_KEY, res.message); } catch (e) { /* private mode */ }
+          return location.reload();
+        }
         toast(res.message);
         await refresh();
         status.textContent = `${b.tx} ${res.elapsed_ms}ms · ${res.message}`;
@@ -833,5 +838,9 @@
   }
 
   if (DATA.screen) Screen(DATA.screen); else home();
+  try {
+    const said = sessionStorage.getItem(TOAST_KEY);
+    if (said) { sessionStorage.removeItem(TOAST_KEY); toast(said); }
+  } catch (e) { /* private mode */ }
   revealTab();
 })();

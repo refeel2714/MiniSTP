@@ -70,6 +70,7 @@ class Button:
     when: dict[str, list] = field(default_factory=dict)   # only for rows whose column holds one of these values
     shows: list[str] = field(default_factory=list)        # columns of that row shown at the top of the window
     note: str | None = None     # one line in the window: what pressing 확인 does
+    reload: bool = False        # open the page again afterwards: it changed what the top bar shows (계좌 선택)
 
 
 @dataclass

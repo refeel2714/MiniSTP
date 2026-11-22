@@ -14,9 +14,11 @@ from dataclasses import dataclass
 
 import psycopg
 
+from .. import accounts, codes
 from ..calendar import BusinessCalendar
 from ..fees import FeeSchedule
-from ..ops import resolve_break
+from ..ops import OpsError, resolve_break
+from ..queries import CHART_GROUP
 from ..recon import Cause
 from ..store import DEFAULT_ACCOUNT
 from .transactions import COERCE
@@ -56,8 +58,72 @@ def _resolve(c: ActionContext, p) -> str:
     return f"불일치 {p['result_id']}번에 판단을 기록했어요 (새 행 {rid}). 원래 행은 그대로예요."
 
 
+# ---------- 계좌 관리 (STP-4400), 고객 (STP-4500): the `customer` and `account` commands ----------
+
+def _account_add(c: ActionContext, p) -> str:
+    a = accounts.add_account(c.conn, p["account_id"], p["customer_id"], p["alias"],
+                             credential_ref=p["credential_ref"], opened_on=c.today)
+    return (f"계좌를 등록했어요: {a.account_id} {a.alias} (고객 {a.customer_id}, 모의투자, 개설일 {a.opened_on}). "
+            f"키는 이 PC의 환경변수 {a.env_prefix}_*에서 읽어요.")
+
+
+def _account_status(c: ActionContext, p) -> str:
+    a = accounts.set_status(c.conn, p["account_id"], p["status"], p.get("effective_from") or c.today, p["reason"])
+    return f"계좌 상태를 바꿨어요: {a.account_id} → {a.status} ({a.status_from}부터). 이전 상태는 이력에 남아 있어요."
+
+
+def _customer_add(c: ActionContext, p) -> str:
+    accounts.add_customer(c.conn, p["customer_id"], p["alias"])
+    return f"고객을 등록했어요: {p['customer_id']} {p['alias']}"
+
+
+# ---------- 코드 관리 (STP-4600): the `code` command ----------
+
+def _common(group_id: str) -> str:
+    if group_id == CHART_GROUP:
+        raise OpsError("계정과목은 원장 분개가 직접 참조하는 전용 테이블이라 화면에서 바꾸지 않아요.")
+    return group_id
+
+
+def _group_add(c: ActionContext, p) -> str:
+    codes.add_group(c.conn, p["group_id"], p["name"], p.get("description", ""))
+    return f"코드 그룹을 만들었어요: {p['group_id']} {p['name']}. 이제 이 그룹에 코드를 추가할 수 있어요."
+
+
+def _code_add(c: ActionContext, p) -> str:
+    codes.add_code(c.conn, _common(p["group_id"]), p["code"], p["name"], p.get("description", ""))
+    return f"코드를 추가했어요: {p['group_id']} {p['code']} {p['name']}"
+
+
+def _code_rename(c: ActionContext, p) -> str:
+    old = codes.rename(c.conn, _common(p["group_id"]), p["code"], p["name"], p.get("description"))
+    return f"코드명을 바꿨어요: {p['group_id']} {p['code']} '{old}' → '{p['name']}'. 코드와 저장된 값은 그대로예요."
+
+
+IN_USE = {"사용": True, "사용 안 함": False}
+
+
+def _code_use(c: ActionContext, p) -> str:
+    if p["in_use"] not in IN_USE:
+        raise ActionError(f"사용 여부는 {', '.join(IN_USE)} 중 하나예요.")
+    codes.set_in_use(c.conn, _common(p["group_id"]), p["code"], IN_USE[p["in_use"]])
+    return f"사용 여부를 바꿨어요: {p['group_id']} {p['code']} → {p['in_use']}. 코드는 지우지 않아요."
+
+
 ACTIONS: dict[str, Action] = {a.tx_id: a for a in [
     Action("STP2100U01", "불일치 원인 판단", {"result_id": "int", "cause": "text", "note": "text"}, _resolve),
+    Action("STP4400U01", "계좌 등록", {"account_id": "text", "customer_id": "text", "alias": "text",
+                                    "credential_ref": "text"}, _account_add),
+    Action("STP4400U02", "계좌 상태 변경", {"account_id": "text", "status": "text", "effective_from": "date",
+                                       "reason": "text"}, _account_status, optional=("effective_from",)),
+    Action("STP4500U01", "고객 등록", {"customer_id": "text", "alias": "text"}, _customer_add),
+    Action("STP4600U01", "코드 그룹 추가", {"group_id": "text", "name": "text", "description": "text"}, _group_add,
+           optional=("description",)),
+    Action("STP4600U02", "코드 추가", {"group_id": "text", "code": "text", "name": "text", "description": "text"},
+           _code_add, optional=("description",)),
+    Action("STP4600U03", "코드명 변경", {"group_id": "text", "code": "text", "name": "text", "description": "text"},
+           _code_rename, optional=("description",)),
+    Action("STP4600U04", "코드 사용 여부 변경", {"group_id": "text", "code": "text", "in_use": "text"}, _code_use),
 ]}
 
 

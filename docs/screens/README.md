@@ -15,9 +15,9 @@
 | [STP-4100](STP-4100.md) | 종목정보 | 2 | `STP4100R01`, `STP4100R02` |
 | [STP-4200](STP-4200.md) | 계좌정보 | 3 | `STP4200R01`, `STP4200R02`, `STP4200R03` |
 | [STP-4300](STP-4300.md) | 기준정보 | 5 | `STP4300R01`, `STP4300R02`, `STP4300R03`, `STP4300R04`, `STP4300R05` |
-| [STP-4400](STP-4400.md) | 계좌 목록 | 3 | `STP4400R01`, `STP4400R03`, `STP4400R02` |
-| [STP-4500](STP-4500.md) | 고객별 보유 | 3 | `STP4500R01`, `STP4500R02`, `STP4500R03` |
-| [STP-4600](STP-4600.md) | 코드 조회 | 2 | `STP4600R01`, `STP4600R02` |
+| [STP-4400](STP-4400.md) | 계좌 관리 | 3 | `STP4400R01`, `STP4400R03`, `STP4400R02`, `STP4400U01`, `STP4400U02` |
+| [STP-4500](STP-4500.md) | 고객별 보유 | 3 | `STP4500R01`, `STP4500R02`, `STP4500R03`, `STP4500U01` |
+| [STP-4600](STP-4600.md) | 코드 관리 | 2 | `STP4600R01`, `STP4600R02`, `STP4600U01`, `STP4600U02`, `STP4600U03`, `STP4600U04` |
 
 ## 영향도: DB 컬럼 → 화면
 
@@ -26,9 +26,9 @@
 | DB 컬럼 | 한글명 | 쓰는 화면·그리드 |
 |---|---|---|
 | `account_balances_v.balance` | 잔액 | STP-3100 trial |
-| `account_status_history.effective_from` | 적용 시작일 | STP-4400 status_history |
-| `account_status_history.reason` | 사유 | STP-4400 status_history |
-| `account_status_history.status` | 상태 | STP-4400 status_history |
+| `account_status_history.effective_from` | 적용 시작일 | STP-4400 accounts 버튼 status, STP-4400 status_history |
+| `account_status_history.reason` | 사유 | STP-4400 accounts 버튼 status, STP-4400 status_history |
+| `account_status_history.status` | 상태 | STP-4400 accounts 버튼 status, STP-4400 status_history |
 | `account_status_v.status` | 현재 상태 | STP-4200 account, STP-4400 accounts, STP-4500 accounts |
 | `accounts_chart.code` | 계정코드 | STP-3100 trial |
 | `accounts_chart.name` | 계정명 | STP-3100 journal, STP-3100 trial |
@@ -39,18 +39,20 @@
 | `cash_ledger.date` | 일자 | STP-3100 cash |
 | `cash_ledger.reason` | 사유 | STP-3100 cash |
 | `cash_ledger.ref_id` | 참조 ID | STP-3100 cash |
-| `code_groups.group_id` | 코드 그룹 ID | STP-4600 groups |
-| `code_groups.name` | 코드 그룹명 | STP-4600 groups |
+| `code_groups.description` | 코드 그룹 설명 | STP-4600 groups 버튼 group_add |
+| `code_groups.group_id` | 코드 그룹 ID | STP-4600 groups, STP-4600 groups 버튼 group_add |
+| `code_groups.name` | 코드 그룹명 | STP-4600 groups, STP-4600 groups 버튼 group_add |
 | `code_groups.used_by` | 쓰는 곳 | STP-4600 groups |
-| `common_codes.code` | 코드 | STP-4600 codes |
-| `common_codes.description` | 코드 설명 | STP-4600 codes |
-| `common_codes.in_use` | 사용 여부 | STP-4600 codes |
-| `common_codes.name` | 코드명 | STP-4600 codes |
+| `common_codes.code` | 코드 | STP-4600 codes, STP-4600 codes 버튼 add, STP-4600 codes 버튼 rename, STP-4600 codes 버튼 use |
+| `common_codes.description` | 코드 설명 | STP-4600 codes, STP-4600 codes 버튼 add, STP-4600 codes 버튼 rename |
+| `common_codes.group_id` | 코드 그룹 ID | STP-4600 codes 버튼 add, STP-4600 codes 버튼 rename, STP-4600 codes 버튼 use |
+| `common_codes.in_use` | 사용 여부 | STP-4600 codes, STP-4600 codes 버튼 use |
+| `common_codes.name` | 코드명 | STP-4600 codes, STP-4600 codes 버튼 add, STP-4600 codes 버튼 rename |
 | `customer_positions_v.book_cost` | 장부금액 | STP-4500 positions |
 | `customer_positions_v.qty` | 보유수량 | STP-4500 positions |
 | `customer_positions_v.symbol` | 종목코드 | STP-4500 positions |
-| `customers.alias` | 고객 별칭 | STP-4400 accounts, STP-4500 customers |
-| `customers.customer_id` | 고객 ID | STP-4500 customers |
+| `customers.alias` | 고객 별칭 | STP-4400 accounts, STP-4500 customers, STP-4500 customers 버튼 add |
+| `customers.customer_id` | 고객 ID | STP-4500 customers, STP-4500 customers 버튼 add |
 | `instruments.asset_type` | 자산 유형 | STP-1100 holdings, STP-4100 instruments, STP-4300 fees, STP-4300 ticks |
 | `instruments.market` | 시장 | STP-4100 instruments, STP-4300 fees |
 | `instruments.name` | 종목명 | STP-1100 holdings, STP-1200 orders, STP-1300 symbols, STP-4100 instruments, STP-4200 settlements, STP-4400 positions, STP-4500 positions |
@@ -96,5 +98,7 @@
 | `recon_results.key` | 항목 키 | STP-2100 results |
 | `recon_results.note` | 판단 메모 | STP-2100 results 버튼 resolve |
 | `recon_results.status` | 상태 | STP-2100 results |
-| `trading_accounts.account_id` | 계좌 ID | STP-4200 account, STP-4400 accounts, STP-4500 accounts |
-| `trading_accounts.alias` | 계좌 별칭 | STP-4200 account, STP-4400 accounts, STP-4500 accounts |
+| `trading_accounts.account_id` | 계좌 ID | STP-4200 account, STP-4400 accounts, STP-4400 accounts 버튼 add, STP-4400 accounts 버튼 status, STP-4500 accounts |
+| `trading_accounts.alias` | 계좌 별칭 | STP-4200 account, STP-4400 accounts, STP-4400 accounts 버튼 add, STP-4500 accounts |
+| `trading_accounts.credential_ref` | 인증정보 참조 | STP-4400 accounts 버튼 add |
+| `trading_accounts.customer_id` | 고객 ID | STP-4400 accounts 버튼 add |
