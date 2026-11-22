@@ -27,7 +27,7 @@ from .instruments import AssetType, Instrument, Market
 from .ledger import ExecutionEvent, Ledger, NavEvent, Side
 from .oms import OrderStatus
 from .recon import Cause, ReconResult, Status
-from .session import Anomaly, TradingSession
+from .session import Anomaly, TradingSession, failure_text
 from .store import PostgresLedgerStore
 
 
@@ -403,7 +403,7 @@ class IntradayRunner:
                     return True
                 cid = self.session.submit(self.day, symbol, Side(cmd.upper()), qty, limit)
                 if cid is None:
-                    self.out(f"주문 실패: {self.session.anomalies[-1].detail}")
+                    self.out(f"주문 실패: {failure_text(self.session.anomalies[-1].detail)}")
                 else:
                     self.out(f"주문 {cid} 접수. 체결되면 바로 원장에 반영해요.")
                 return True

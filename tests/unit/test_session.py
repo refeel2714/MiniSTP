@@ -6,7 +6,7 @@ from ministp.broker import BrokerBalance, BrokerOrder, BrokerPosition, OrderAck
 from ministp.ledger import Side
 from ministp.oms import OrderStatus, OverfillError
 from ministp.recon import Status
-from ministp.session import TradingSession
+from ministp.session import TradingSession, failure_text
 
 DAY = d("11-02")
 
@@ -103,6 +103,28 @@ def test_risk_rejects_before_reaching_broker(session):
     assert session.anomalies[-1].detail == "risk: SHORT_SELL"
     assert session.submit(DAY, "A", Side.BUY, 1_000) is None  # 50,000,000 > cash
     assert session.anomalies[-1].detail == "risk: INSUFFICIENT_CASH"
+
+
+def test_off_tick_limit_price_never_reaches_the_broker(session):
+    assert session.submit(DAY, "A", Side.BUY, 1, limit_price=50_050) is None   # 50,000원부터 100원 단위
+    assert session.broker.placed == []
+    assert session.anomalies[-1].detail == "risk: BAD_TICK"
+    assert session.submit(DAY, "E", Side.BUY, 1, limit_price=50_005)          # ETF는 5원 단위
+    assert session.broker.placed == [("E", "BUY", 1, 50_005)]
+
+
+def test_no_order_goes_out_on_a_closed_day(session):
+    saturday = d("11-07")
+    assert session.submit(saturday, "A", Side.BUY, 1, limit_price=50_000) is None
+    assert session.broker.placed == []
+    assert session.anomalies[-1].detail == "risk: NOT_BUSINESS_DAY"
+    assert "영업일이 아니에요" in failure_text(session.anomalies[-1].detail)
+
+
+def test_failure_text_explains_checks_and_leaves_broker_messages_alone():
+    assert failure_text("risk: BAD_TICK") == "주문 검증: 호가단위에 맞지 않는 가격이에요 (R-38) [BAD_TICK]"
+    assert failure_text("broker: APBK0919 주문가능금액 초과") == "broker: APBK0919 주문가능금액 초과"
+    assert failure_text("kill switch engaged") == "kill switch engaged"
 
 
 def test_open_buy_orders_count_against_buying_power(session):
