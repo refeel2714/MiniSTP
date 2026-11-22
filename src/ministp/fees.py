@@ -17,6 +17,14 @@ class TradeCosts:
         return self.tx_tax + self.rural_tax
 
 
+DIVIDEND_INCOME_TAX, DIVIDEND_LOCAL_TAX = Decimal("0.14"), Decimal("0.014")
+
+
+def dividend_withholding(gross: int) -> int:
+    """R-23: 배당소득세 14% + 지방소득세 1.4%, each truncated to the won on its own."""
+    return truncate_won(gross * DIVIDEND_INCOME_TAX) + truncate_won(gross * DIVIDEND_LOCAL_TAX)
+
+
 @dataclass(frozen=True)
 class FeeSchedule:
     commission_rate: Decimal

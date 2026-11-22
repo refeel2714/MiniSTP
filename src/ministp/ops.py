@@ -301,6 +301,14 @@ def daily_close(books: Books, broker: BrokerGateway, day: dt.date) -> DailyRepor
         if isinstance(e, LateExecutionEvent):   # R-78: the day was closed, so the fill is a correction
             notes.append(f"마감 후 체결 {e.exec_id}: {e.trade_date}은 마감한 날이라 {e.booked_on} 장부에 정정으로 기록했어요.")
 
+    # 2b. dividends from the register: recognised, paid, taken back (R-57~59). A closed day takes none.
+    if not ledger.is_closed(day):
+        from .rights import apply_due   # rights builds on this module
+        dividends = apply_due(books, day)
+        notes += dividends
+    else:
+        dividends = []
+
     # 3. valuation and NAV at the close (R-55, R-60). Until the day is closed it can be struck again (R-75).
     nav = None
     has_nav = any(isinstance(e, NavEvent) and e.date == day for e in ledger.events)
@@ -342,6 +350,7 @@ def daily_close(books: Books, broker: BrokerGateway, day: dt.date) -> DailyRepor
     breaks = sum(r.status is not Status.MATCH for r in results)
     audit.record(books.conn, "DAILY", account_id=books.account_id, target=day.isoformat(),
                  detail={"run_id": run_id, "settled": len(settled), "booked": len(booked), "breaks": breaks,
+                         "dividends": len(dividends) or None,
                          "closed": closed, "nav_per_1000": nav.nav_per_1000 if nav else None})
     return DailyReport(day, settled, booked, nav, results, session.anomalies, run_id, notes, closed)
 

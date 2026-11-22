@@ -1,5 +1,5 @@
 -- MiniSTP ledger schema (spec 03).
--- ERD version: 2.3  (bump on every schema change, then run scripts/gen_erd.py) Append-only tables are enforced in the DB,
+-- ERD version: 2.4  (bump on every schema change, then run scripts/gen_erd.py) Append-only tables are enforced in the DB,
 -- not just in application code.
 
 create table if not exists accounts_chart (
@@ -139,6 +139,26 @@ create table if not exists instruments (
     asset_type text not null check (asset_type in ('STOCK', 'ETF'))
 );
 
+-- 권리 원장 (ERD v2.4, R-57~59). 종목에 생긴 현금배당을 한 번 등록하면 모든 계좌의 daily가 읽는다.
+-- 행은 고치지 않는다. 잘못 넣었거나 취소된 권리는 취소 행(action_type = 'CANCEL')을 더해 무효로 한다.
+create table if not exists corporate_actions (
+    action_id        bigserial primary key,
+    symbol           text not null references instruments (symbol),
+    action_type      text not null check (action_type in ('CASH_DIVIDEND', 'CANCEL')),
+    record_date      date,
+    pay_date         date,
+    amount_per_share numeric(18,2) check (amount_per_share > 0),
+    cancels_id       bigint references corporate_actions (action_id),
+    note             text,
+    registered_at    timestamptz not null default now(),
+    constraint corporate_actions_cancel_key unique (cancels_id),
+    constraint corporate_actions_dividend_check check ((action_type = 'CASH_DIVIDEND')
+        = (record_date is not null and pay_date is not null and amount_per_share is not null and cancels_id is null)),
+    constraint corporate_actions_cancel_check check ((action_type = 'CANCEL') = (cancels_id is not null)),
+    constraint corporate_actions_dates_check check (pay_date >= record_date)
+);
+create index if not exists corporate_actions_symbol_idx on corporate_actions (symbol, record_date);
+
 -- R-40: the order intent is stored before it is sent, the broker's answer after.
 create table if not exists oms_orders (
     client_id   text primary key,
@@ -246,7 +266,7 @@ begin
                              'position_ledger', 'cash_ledger', 'instruments', 'oms_orders',
                              'oms_order_acks', 'broker_snapshots', 'recon_results',
                              'customers', 'trading_accounts', 'account_status_history', 'day_closes',
-                             'audit_log'] loop
+                             'audit_log', 'corporate_actions'] loop
         if not exists (select 1 from pg_trigger where tgname = t || '_append_only') then
             execute format('create trigger %I before update or delete on %I
                             for each row execute function ministp_forbid_change()',
@@ -392,6 +412,29 @@ create or replace view unclosed_events_v as
 select e.account_id, e.seq, e.event_type, e.recorded_at
   from ledger_events e left join last_close_v c on c.account_id = e.account_id
  where c.event_seq is null or e.seq > c.event_seq;
+
+-- 권리 목록과 계좌별 배당 현황 (ERD v2.4). 배당 현황은 원장 이벤트에서 바로 읽는다.
+create or replace view corporate_actions_v as
+select a.action_id, a.symbol, a.action_type, a.record_date, a.pay_date, a.amount_per_share, a.note,
+       a.registered_at, c.registered_at as canceled_at, c.note as cancel_reason
+  from corporate_actions a left join corporate_actions c on c.cancels_id = a.action_id
+ where a.action_type <> 'CANCEL';
+
+create or replace view dividends_v as
+select e.account_id, (e.payload ->> 'action_id')::bigint as action_id, max(e.payload ->> 'symbol') as symbol,
+       max((e.payload ->> 'qty')::bigint) filter (where e.event_type = 'DividendAccrualEvent') as qty,
+       coalesce(max((e.payload ->> 'gross')::bigint) filter (where e.event_type = 'DividendAccrualEvent'), 0)
+           as accrued_gross,
+       max((e.payload ->> 'date')::date) filter (where e.event_type = 'DividendAccrualEvent') as accrued_on,
+       max((e.payload ->> 'gross')::bigint) filter (where e.event_type = 'DividendPaymentEvent') as paid_gross,
+       max((e.payload ->> 'tax')::bigint) filter (where e.event_type = 'DividendPaymentEvent') as tax,
+       max((e.payload ->> 'date')::date) filter (where e.event_type = 'DividendPaymentEvent') as paid_on,
+       max((e.payload ->> 'date')::date) filter (where e.event_type = 'DividendCancelEvent') as canceled_on,
+       case when bool_or(e.event_type = 'DividendCancelEvent') then 'CANCELED'
+            when bool_or(e.event_type = 'DividendPaymentEvent') then 'PAID' else 'ACCRUED' end as status
+  from ledger_events e
+ where e.event_type in ('DividendAccrualEvent', 'DividendPaymentEvent', 'DividendCancelEvent')
+ group by e.account_id, (e.payload ->> 'action_id')::bigint;
 
 -- Korean names (한글 명칭). Shown in pgAdmin and in docs/erd. Every table, view and
 -- column must have one; tests/db/test_erd.py fails otherwise.
@@ -593,6 +636,42 @@ comment on column unclosed_events_v.account_id is '계좌 ID';
 comment on column unclosed_events_v.seq is '이벤트 순번';
 comment on column unclosed_events_v.event_type is '이벤트 유형';
 comment on column unclosed_events_v.recorded_at is '기록 시각';
+
+comment on table corporate_actions is '권리 원장 (종목에 생긴 현금배당과 그 취소, 수정·삭제 불가)';
+comment on column corporate_actions.action_id is '권리 번호';
+comment on column corporate_actions.symbol is '종목코드';
+comment on column corporate_actions.action_type is '권리 유형 (CASH_DIVIDEND 현금배당 / CANCEL 취소)';
+comment on column corporate_actions.record_date is '배당기준일';
+comment on column corporate_actions.pay_date is '지급일';
+comment on column corporate_actions.amount_per_share is '주당 배당금 (세전, 원)';
+comment on column corporate_actions.cancels_id is '취소 대상 권리 번호 (취소 행일 때)';
+comment on column corporate_actions.note is '메모 (취소 행은 취소 사유)';
+comment on column corporate_actions.registered_at is '등록 시각';
+
+comment on view corporate_actions_v is '권리 목록 (취소 여부 포함)';
+comment on column corporate_actions_v.action_id is '권리 번호';
+comment on column corporate_actions_v.symbol is '종목코드';
+comment on column corporate_actions_v.action_type is '권리 유형';
+comment on column corporate_actions_v.record_date is '배당기준일';
+comment on column corporate_actions_v.pay_date is '지급일';
+comment on column corporate_actions_v.amount_per_share is '주당 배당금 (세전, 원)';
+comment on column corporate_actions_v.note is '메모';
+comment on column corporate_actions_v.registered_at is '등록 시각';
+comment on column corporate_actions_v.canceled_at is '취소 시각 (취소되지 않았으면 비움)';
+comment on column corporate_actions_v.cancel_reason is '취소 사유';
+
+comment on view dividends_v is '계좌별 배당 현황 (인식, 입금, 취소)';
+comment on column dividends_v.account_id is '계좌 ID';
+comment on column dividends_v.action_id is '권리 번호';
+comment on column dividends_v.symbol is '종목코드';
+comment on column dividends_v.qty is '권리 수량 (기준일까지 결제된 보유)';
+comment on column dividends_v.accrued_gross is '인식한 배당금 (세전)';
+comment on column dividends_v.accrued_on is '인식일';
+comment on column dividends_v.paid_gross is '입금된 배당금 (세전)';
+comment on column dividends_v.tax is '원천징수세액';
+comment on column dividends_v.paid_on is '입금일';
+comment on column dividends_v.canceled_on is '인식 취소일';
+comment on column dividends_v.status is '상태 (ACCRUED 인식 / PAID 입금 / CANCELED 취소)';
 
 comment on table audit_log is '감사 로그 (누가 언제 무엇을 했고 어떻게 끝났는지, 수정·삭제 불가)';
 comment on column audit_log.id is '행 번호 (1부터 빈 번호 없이)';

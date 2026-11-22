@@ -40,7 +40,8 @@ class CodeGroup:
 
 
 # The codes a new database gets (`init_schema`). An existing one gets the same rows from the migrations:
-# 0002 inserted the codes of ERD v2.1, 0003 the three of the day close (v2.2), 0004 the three audit groups (v2.3).
+# 0002 inserted the codes of ERD v2.1, 0003 the three of the day close (v2.2), 0004 the three audit groups (v2.3),
+# 0005 the dividend codes and two groups (v2.4).
 SEED: tuple[CodeGroup, ...] = (
     CodeGroup("ACCOUNT_STATUS", "계좌 상태", "위탁계좌의 상태. 정상 계좌만 주문을 받아요 (R-39).",
               "account_status_history.status", (
@@ -118,7 +119,10 @@ SEED: tuple[CodeGroup, ...] = (
                   ("RevaluationEvent", "평가", "종가로 다시 평가"),
                   ("NavEvent", "기준가", "하루의 기준가 산출"),
                   ("LateExecutionEvent", "마감 후 체결", "마감한 날의 체결을 열린 날에 정정으로 기록"),
-                  ("DayClosedEvent", "일 마감", "이 날짜까지 장부를 마감"))),
+                  ("DayClosedEvent", "일 마감", "이 날짜까지 장부를 마감"),
+                  ("DividendAccrualEvent", "배당 인식", "받을 배당을 미수배당금으로 인식"),
+                  ("DividendPaymentEvent", "배당 입금", "배당금이 세금을 떼고 예수금으로 들어옴"),
+                  ("DividendCancelEvent", "배당 인식 취소", "취소된 권리의 인식을 되돌림"))),
     CodeGroup("JOURNAL_KIND", "전표 유형", "분개 전표가 만들어진 이유.", "journal_entries.kind", (
         ("DEPOSIT", "입금", ""),
         ("OPENING", "시작 보유", ""),
@@ -126,14 +130,25 @@ SEED: tuple[CodeGroup, ...] = (
         ("SETTLEMENT", "결제", "결제일에 예수금으로 정리"),
         ("VALUATION", "평가", "종가 평가손익"),
         ("VALUATION_REVERSAL", "평가 환입", "전일 평가분을 되돌림"),
-        ("LATE_EXECUTION", "마감 후 체결", "마감한 날의 체결을 열린 날 전표로 인식 (정정)"))),
+        ("LATE_EXECUTION", "마감 후 체결", "마감한 날의 체결을 열린 날 전표로 인식 (정정)"),
+        ("DIVIDEND_ACCRUAL", "배당 인식", "미수배당금과 배당수익으로 인식"),
+        ("DIVIDEND", "배당 입금", "지급일에 예수금과 원천징수세액으로 정리"),
+        ("DIVIDEND_CANCEL", "배당 인식 취소", "취소된 권리의 인식을 되돌림"))),
     CodeGroup("CASH_REASON", "예수금 변동 사유", "예수금이 움직인 이유. 예수금은 결제일에만 변해요 (R-13).",
               "cash_ledger.reason", (
                   ("DEPOSIT", "입금", ""),
-                  ("SETTLEMENT", "결제", "매수 대금 지급 또는 매도 대금 수령"))),
+                  ("SETTLEMENT", "결제", "매수 대금 지급 또는 매도 대금 수령"),
+                  ("DIVIDEND", "배당 입금", "세금을 뗀 배당금 수령"))),
     CodeGroup("NORMAL_SIDE", "정상잔액 방향", "계정과목의 잔액이 늘어나는 쪽.", "accounts_chart.normal_side", (
         ("D", "차변", "자산, 비용"),
         ("C", "대변", "부채, 자본, 수익"))),
+    CodeGroup("CORPORATE_ACTION_TYPE", "권리 유형", "종목에 생긴 권리의 종류.", "corporate_actions.action_type", (
+        ("CASH_DIVIDEND", "현금배당", "주식 배당금과 ETF 분배금"),
+        ("CANCEL", "취소", "앞서 등록한 권리를 무효로 하는 행"))),
+    CodeGroup("DIVIDEND_STATUS", "배당 상태", "계좌에서 배당이 어디까지 진행됐는지.", "dividends_v.status", (
+        ("ACCRUED", "인식", "미수배당금으로 잡혀 있고 아직 입금 전"),
+        ("PAID", "입금", "배당금이 예수금으로 들어옴"),
+        ("CANCELED", "취소", "권리가 취소돼 인식을 되돌림"))),
     CodeGroup("AUDIT_CHANNEL", "감사 로그 경로", "어디로 들어온 요청인지.", "audit_log.channel", (
         ("CLI", "명령", "PC의 명령 창에서 실행"),
         ("UI", "화면", "업무화면의 처리 버튼"),
@@ -156,7 +171,10 @@ SEED: tuple[CodeGroup, ...] = (
         ("CODE_ADD", "코드 추가", ""),
         ("CODE_RENAME", "코드명 변경", ""),
         ("CODE_USE", "코드 사용 여부 변경", ""),
-        ("DB_MIGRATE", "스키마 마이그레이션", "ERD 버전을 올림"))),
+        ("DB_MIGRATE", "스키마 마이그레이션", "ERD 버전을 올림"),
+        ("CORPORATE_ACTION_ADD", "권리 등록", "현금배당 일정과 주당 배당금 등록"),
+        ("CORPORATE_ACTION_CANCEL", "권리 취소", "잘못 등록했거나 취소된 권리를 무효로"),
+        ("DIVIDEND_PAY", "배당 입금 기록", "증권사가 실제로 준 금액으로 직접 기록"))),
 )
 
 
@@ -200,7 +218,8 @@ def program_codes() -> dict[str, set[str]]:
     """The codes the program itself defines, by group. `check()` holds the table to them."""
     from .accounts import STATUSES
     from .instruments import AssetType, Market
-    from .ledger import Side
+    from .ledger import DIVIDEND_STATUSES, Side
+    from .rights import ACTION_TYPES
     from .oms import OrderStatus
     from .recon import Cause, Status
     from .risk import REASON_TEXT
@@ -218,6 +237,8 @@ def program_codes() -> dict[str, set[str]]:
         "AUDIT_CHANNEL": set(audit.CHANNELS),
         "AUDIT_OUTCOME": set(audit.OUTCOMES),
         "AUDIT_ACTION": set(audit.ACTIONS),
+        "CORPORATE_ACTION_TYPE": set(ACTION_TYPES),
+        "DIVIDEND_STATUS": set(DIVIDEND_STATUSES),
     }
 
 

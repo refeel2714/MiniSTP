@@ -7,7 +7,7 @@ conditions:
   - {name: date_from, type: date, label: 시작일}
   - {name: date_to, type: date, label: 종료일}
   - {name: event_type, type: select, source: ledger_events.event_type,
-     options: [DepositEvent, OpeningPositionEvent, ExecutionEvent, SettlementEvent, RevaluationEvent, NavEvent, LateExecutionEvent, DayClosedEvent]}
+     options: [DepositEvent, OpeningPositionEvent, ExecutionEvent, SettlementEvent, RevaluationEvent, NavEvent, LateExecutionEvent, DayClosedEvent, DividendAccrualEvent, DividendPaymentEvent, DividendCancelEvent]}
   - {name: symbol, type: text, source: instruments.symbol, lookup: symbol}
 grids:
   - id: events

@@ -11,7 +11,7 @@ from enum import StrEnum
 
 from .accounting import Account, Cr, Dr, JournalEntry, entry
 from .calendar import BusinessCalendar, SettlementCycle
-from .fees import FeeSchedule
+from .fees import FeeSchedule, dividend_withholding
 from .instruments import Instrument
 from .money import round2, truncate_won
 
@@ -45,6 +45,10 @@ CLOSE_BLOCKERS = ("ALREADY_CLOSED",   # this date or a later one is closed alrea
                   "LATER_ENTRIES",    # a later day already has entries: the next close covers this one
                   "NAV_NOT_LAST",     # the day has no NAV, or something was booked after it
                   "UNSETTLED")        # a settlement due by this date has not been booked
+
+
+class DividendError(ValueError):
+    """R-57: a dividend step that does not follow from the ones before it (accrued twice, paid twice, ...)."""
 
 
 class LedgerHaltedError(RuntimeError):
@@ -117,8 +121,47 @@ class DayClosedEvent:
     date: dt.date
 
 
+@dataclass(frozen=True)
+class DividendAccrualEvent:
+    """R-57: a cash dividend the account is entitled to, recognised before the cash arrives.
+
+    `action_id` is the row of `corporate_actions` it comes from. The event carries its own
+    numbers, so a replay needs nothing but the events: `qty` is the holding that had settled
+    by the record date, `gross` is that quantity times the amount per share."""
+    date: dt.date
+    action_id: int
+    symbol: str
+    qty: int
+    gross: int
+
+
+@dataclass(frozen=True)
+class DividendPaymentEvent:
+    """R-57, R-23: the dividend arrives. `gross` is what was paid before tax and `tax` what was
+    withheld, so the cash is gross - tax. A gross that differs from the accrual (or a payment
+    that was never accrued) moves 배당수익 by the difference."""
+    date: dt.date
+    action_id: int
+    symbol: str
+    gross: int
+    tax: int
+
+
+@dataclass(frozen=True)
+class DividendCancelEvent:
+    """An accrual taken back because its corporate action was cancelled before payment."""
+    date: dt.date
+    action_id: int
+    symbol: str
+
+
 Event = (DepositEvent | OpeningPositionEvent | ExecutionEvent | SettlementEvent | RevaluationEvent | NavEvent
-         | LateExecutionEvent | DayClosedEvent)
+         | LateExecutionEvent | DayClosedEvent | DividendAccrualEvent | DividendPaymentEvent | DividendCancelEvent)
+
+
+def dividend_ref(action_id: int) -> str:
+    """The `source_id` of a dividend's journal entries: the corporate action they come from."""
+    return f"CA-{action_id}"
 
 
 def book_date(ev) -> dt.date:
@@ -183,6 +226,32 @@ class NavRow:
     nav_per_1000: Decimal
 
 
+DIVIDEND_STATUSES = ("ACCRUED", "PAID", "CANCELED")
+
+
+@dataclass(frozen=True)
+class Dividend:
+    """One corporate action as this account's books know it."""
+    action_id: int
+    symbol: str
+    qty: int = 0                       # shares entitled (0: paid without an accrual)
+    accrued: int = 0                   # gross recognised as 미수배당금
+    accrued_on: dt.date | None = None
+    paid_gross: int | None = None
+    tax: int | None = None
+    paid_on: dt.date | None = None
+    canceled_on: dt.date | None = None
+
+    @property
+    def status(self) -> str:
+        return "CANCELED" if self.canceled_on else "PAID" if self.paid_on else "ACCRUED"
+
+    @property
+    def receivable(self) -> int:
+        """What is still in 미수배당금 for this action."""
+        return 0 if self.paid_on or self.canceled_on else self.accrued
+
+
 @dataclass
 class _State:
     positions: dict[str, Position] = field(default_factory=dict)
@@ -196,6 +265,7 @@ class _State:
     closed_through: dt.date | None = None                           # R-77: the last closed date
     closed_days: dict[dt.date, NavRow] = field(default_factory=dict)  # closed date -> the NAV it was closed at
     closed_at: int = 0                                              # events up to and including the last close
+    dividends: dict[int, Dividend] = field(default_factory=dict)    # corporate action id -> its state here (R-57)
 
 
 class Ledger:
@@ -273,6 +343,45 @@ class Ledger:
         self._record(NavEvent(date, tuple(sorted(closes.items()))))
         return self._nav_row(date, closes)
 
+    def accrue_dividend(self, date: dt.date, action_id: int, symbol: str, qty: int, gross: int) -> None:
+        """R-57: recognise a dividend this account is entitled to (차 미수배당금 / 대 배당수익)."""
+        if action_id in self._s.dividends:
+            raise DividendError(f"corporate action {action_id} is already booked ({self._s.dividends[action_id].status})")
+        if symbol not in self.instruments:
+            raise ValueError(f"unknown instrument {symbol}")
+        if qty <= 0 or gross <= 0:
+            raise ValueError("qty and gross must be positive")
+        self._record(DividendAccrualEvent(date, action_id, symbol, qty, gross))
+
+    def pay_dividend(self, date: dt.date, action_id: int, symbol: str | None = None, gross: int | None = None,
+                     tax: int | None = None) -> Dividend:
+        """R-57: the dividend is paid (차 예수금, 법인세등 / 대 미수배당금). Without numbers it is the
+        accrued gross and the R-23 withholding; the actual numbers can be given when they differ.
+        A payment that was never accrued (a holding from before the ledger) needs its symbol and gross."""
+        d = self._s.dividends.get(action_id)
+        if d is not None and d.status != "ACCRUED":
+            raise DividendError(f"corporate action {action_id} is already {d.status}")
+        if d is None and (symbol is None or gross is None):
+            raise DividendError(f"corporate action {action_id} was not accrued: give the symbol and the gross paid")
+        if d is not None and symbol not in (None, d.symbol):
+            raise DividendError(f"corporate action {action_id} is of {d.symbol}, not {symbol}")
+        symbol = d.symbol if d else symbol
+        if symbol not in self.instruments:
+            raise ValueError(f"unknown instrument {symbol}")
+        gross = d.accrued if gross is None else gross
+        tax = dividend_withholding(gross) if tax is None else tax
+        if gross <= 0 or not 0 <= tax < gross:
+            raise ValueError("gross must be positive and the tax smaller than it")
+        self._record(DividendPaymentEvent(date, action_id, symbol, gross, tax))
+        return self._s.dividends[action_id]
+
+    def cancel_dividend(self, date: dt.date, action_id: int) -> None:
+        """Take an accrual back (차 배당수익 / 대 미수배당금): its corporate action was cancelled."""
+        d = self._s.dividends.get(action_id)
+        if d is None or d.status != "ACCRUED":
+            raise DividendError(f"corporate action {action_id} has no open accrual to cancel")
+        self._record(DividendCancelEvent(date, action_id, d.symbol))
+
     def close_blocker(self, date: dt.date) -> str | None:
         """Why `date` cannot be closed now (one of CLOSE_BLOCKERS), or None when it can."""
         if self.is_closed(date):
@@ -347,6 +456,22 @@ class Ledger:
 
     def positions(self) -> dict[str, Position]:
         return {k: v for k, v in self._s.positions.items() if v.qty}
+
+    def settled_qty(self, symbol: str, as_of: dt.date) -> int:
+        """Shares of `symbol` that had settled by `as_of`: the holding a record date counts (R-58).
+        A buy counts from its settlement date, a sell stops counting on its own."""
+        qty = 0
+        for ev in self._events:
+            if isinstance(ev, OpeningPositionEvent) and ev.symbol == symbol and ev.date <= as_of:
+                qty += ev.qty
+            elif isinstance(ev, ExecutionEvent) and ev.symbol == symbol \
+                    and self._s.results[ev.exec_id].settle_date <= as_of:
+                qty += ev.qty if ev.side is Side.BUY else -ev.qty
+        return qty
+
+    def dividends(self) -> dict[int, Dividend]:
+        """Every corporate action booked in this account, by id, in booking order."""
+        return dict(self._s.dividends)
 
     def account_balance(self, account: Account) -> int:
         dr = cr = 0
@@ -431,10 +556,35 @@ class Ledger:
             case NavEvent():
                 self._s.last_nav_row = self._nav_row(ev.date, dict(ev.closes))
                 self._s.last_nav = self._s.last_nav_row.nav_per_1000
+            case DividendAccrualEvent():
+                self._s.dividends[ev.action_id] = Dividend(ev.action_id, ev.symbol, ev.qty, ev.gross, ev.date)
+                self._s.journal.append(entry(ev.date, "DIVIDEND_ACCRUAL", dividend_ref(ev.action_id),
+                                             Dr(Account.DIVIDEND_RECEIVABLE, ev.gross),
+                                             Cr(Account.DIVIDEND_INCOME, ev.gross)))   # R-57
+            case DividendPaymentEvent():
+                self._apply_dividend_payment(ev)
+            case DividendCancelEvent():
+                d = self._s.dividends[ev.action_id]
+                self._s.dividends[ev.action_id] = replace(d, canceled_on=ev.date)
+                self._s.journal.append(entry(ev.date, "DIVIDEND_CANCEL", dividend_ref(ev.action_id),
+                                             Dr(Account.DIVIDEND_INCOME, d.accrued),
+                                             Cr(Account.DIVIDEND_RECEIVABLE, d.accrued)))
             case DayClosedEvent():
                 self._s.closed_through = ev.date
                 self._s.closed_days[ev.date] = self._s.last_nav_row
                 self._s.closed_at = len(self._events) + 1   # this event is appended right after it is applied
+
+    def _apply_dividend_payment(self, ev: DividendPaymentEvent) -> None:
+        d = self._s.dividends.get(ev.action_id) or Dividend(ev.action_id, ev.symbol)
+        if d.status != "ACCRUED" and ev.action_id in self._s.dividends:
+            raise DividendError(f"corporate action {ev.action_id} is already {d.status}")
+        more = ev.gross - d.accrued   # paid more (or less) than recognised: the income follows the payment
+        self._s.dividends[ev.action_id] = replace(d, paid_gross=ev.gross, tax=ev.tax, paid_on=ev.date)
+        self._s.journal.append(entry(ev.date, "DIVIDEND", dividend_ref(ev.action_id),
+                                     Dr(Account.CASH, ev.gross - ev.tax), Dr(Account.WITHHOLDING_TAX, ev.tax),
+                                     Cr(Account.DIVIDEND_RECEIVABLE, d.accrued),
+                                     Cr(Account.DIVIDEND_INCOME, max(more, 0)),
+                                     Dr(Account.DIVIDEND_INCOME, max(-more, 0))))   # R-57, R-23
 
     def _apply_deposit(self, ev: DepositEvent) -> None:
         nav = self._s.last_nav or INITIAL_NAV

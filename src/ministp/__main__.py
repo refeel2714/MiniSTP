@@ -12,6 +12,7 @@
     python -m ministp sample-db                   # 데모용 샘플 DB(ministp_sample) 만들기, 운영 DB와 별개
     python -m ministp account list                # 계좌 목록. open/run/order/daily/status는 --account 계좌ID
     python -m ministp code list                   # 공통코드 그룹. code list 그룹ID는 그 그룹의 코드와 코드명
+    python -m ministp dividend list               # 현금배당 권리와 계좌별 인식·입금 현황 (등록은 dividend add)
     python -m ministp audit                       # 감사 로그: 누가 언제 무엇을 했고 어떻게 끝났는지 (거부·실패 포함)
 
 Paper (모의투자) only until Phase 4. Keys are asked for and never saved.
@@ -40,6 +41,7 @@ from .accounts import STATUSES, add_account, add_customer, list_accounts, set_st
 from .ops import (GATE_DAYS, IntradayRunner, OpsError, acquire_writer, add_instrument, clean_streak, close_books, daily_close, load_books, open_books,
                   place_order, require_current_schema, resolve_break)
 from .recon import Cause, Status
+from . import rights
 from .session import failure_text
 from .store import DEFAULT_ACCOUNT, PostgresLedgerStore, SchemaError
 from .store import migrate as mg
@@ -111,6 +113,14 @@ def audited(args, today: dt.date):
     if cmd == "account" and what == "status":
         return "ACCOUNT_STATUS", args.account_id, args.account_id, {"to": args.status, "reason": args.reason,
                                                                    "effective_from": args.effective_from}
+    if cmd == "dividend" and what == "add":
+        return "CORPORATE_ACTION_ADD", None, None, {"symbol": args.symbol, "record_date": args.record,
+                                                    "pay_date": args.pay, "amount_per_share": args.per_share}
+    if cmd == "dividend" and what == "cancel":
+        return "CORPORATE_ACTION_CANCEL", None, f"CA-{args.action_id}", {"reason": args.reason}
+    if cmd == "dividend" and what == "pay":
+        return "DIVIDEND_PAY", args.account, f"CA-{args.action_id}", {"gross": args.gross, "tax": args.tax,
+                                                                      "date": args.date or today}
     if cmd == "code" and what in CODE_ACTIONS:
         target = args.group_id + (f".{args.code}" if what != "group-add" else "")
         return CODE_ACTIONS[what], None, target, {"name": getattr(args, "name", None),
@@ -189,6 +199,22 @@ def _run(argv, *, environ=os.environ, client_factory=KisClient, connect=psycopg.
     q.add_argument("group_id", metavar="그룹ID"), q.add_argument("code", metavar="코드")
     q.add_argument("state", choices=["on", "off"])
     what.add_parser("check", help="공통코드가 스키마 제약, 프로그램, 저장된 값과 어긋나지 않는지 점검")
+    p = sub.add_parser("dividend", help="현금배당(주식 배당금, ETF 분배금): 권리 등록·취소, 계좌별 인식과 입금 현황")
+    what = p.add_subparsers(dest="what", required=True)
+    what.add_parser("list")
+    q = what.add_parser("add", help="권리 등록. 인식과 입금은 그 뒤 각 계좌의 daily가 날짜에 맞춰 반영해요")
+    q.add_argument("symbol", metavar="종목코드")
+    q.add_argument("--record", required=True, type=dt.date.fromisoformat, metavar="배당기준일")
+    q.add_argument("--pay", required=True, type=dt.date.fromisoformat, metavar="지급일")
+    q.add_argument("--per-share", required=True, metavar="주당배당금", help="세전, 원")
+    q.add_argument("--note", default="", metavar="메모")
+    q = what.add_parser("cancel", help="잘못 등록했거나 취소된 권리를 무효로 (지우지 않고 취소 행을 더해요)")
+    q.add_argument("action_id", type=int, metavar="권리번호"), q.add_argument("reason", metavar="사유")
+    q = what.add_parser("pay", parents=[by_account],
+                        help="증권사가 실제로 준 금액으로 입금 기록 (예상과 다르거나, 원장 시작 전 보유분의 배당일 때)")
+    q.add_argument("action_id", type=int, metavar="권리번호")
+    q.add_argument("--gross", type=int, metavar="세전금액"), q.add_argument("--tax", type=int, metavar="세금")
+    q.add_argument("--date", type=dt.date.fromisoformat, help="기록할 날짜 (기본: 오늘)")
     p = sub.add_parser("resolve")
     p.add_argument("result_id", type=int), p.add_argument("cause", choices=[c.value for c in Cause])
     p.add_argument("note")
@@ -262,6 +288,7 @@ def _run(argv, *, environ=os.environ, client_factory=KisClient, connect=psycopg.
                 return 0
 
             if args.cmd in ("open", "order", "daily", "close", "run", "resolve", "customer") or (
+                    args.cmd == "dividend" and args.what != "list") or (
                     args.cmd == "account" and args.what != "list") or (
                     args.cmd == "code" and args.what not in ("list", "check")):
                 acquire_writer(conn)
@@ -273,6 +300,10 @@ def _run(argv, *, environ=os.environ, client_factory=KisClient, connect=psycopg.
             if args.cmd in ("customer", "account"):
                 require_current_schema(conn)
                 return _accounts(conn, args, today)
+
+            if args.cmd == "dividend" and args.what != "pay":
+                require_current_schema(conn)
+                return _dividends(conn, args, calendar)
 
             if args.cmd == "resolve":
                 rid = resolve_break(conn, args.result_id, Cause(args.cause), args.note)
@@ -301,6 +332,14 @@ def _run(argv, *, environ=os.environ, client_factory=KisClient, connect=psycopg.
                           f"그 뒤 이벤트 {len(led.unclosed_events())}건")
                 else:
                     print("장부 마감: 아직 마감한 날이 없어요")
+                return 0
+
+            if args.cmd == "dividend":   # pay: one account's books
+                day = args.date or today
+                paid = rights.record_payment(books, args.action_id, day, args.gross, args.tax)
+                print(f"[{day}] 배당 입금 CA-{paid.action_id} {paid.symbol}: 세전 {paid.paid_gross:,}원, 세금 {paid.tax:,}원, "
+                      f"예수금 +{paid.paid_gross - paid.tax:,}원" + (
+                          f" (인식했던 {paid.accrued:,}원과의 차이는 배당수익에 반영)" if paid.accrued != paid.paid_gross else ""))
                 return 0
 
             if args.cmd == "close":
@@ -477,6 +516,42 @@ def _accounts(conn, args, today: dt.date) -> int:
             " (select balance from cash_balance_v where account_id = %(a)s)", {"a": a.account_id}).fetchone()
         print(f"{a.account_id} {a.alias}: 고객 {a.customer_id}, {a.broker} {a.env}, {a.status} ({a.status_from}부터), "
               f"이벤트 {n:,}건, 예수금 {int(cash):,}원, 환경변수 {a.env_prefix}_*")
+    return 0
+
+
+def _dividends(conn, args, calendar) -> int:
+    """`dividend list | add | cancel`."""
+    if args.what == "add":
+        try:
+            a = rights.add_dividend(conn, args.symbol, args.record, args.pay, args.per_share, args.note)
+        except ArithmeticError:
+            raise OpsError(f"주당 배당금은 숫자예요. 받은 값: {args.per_share}") from None
+        print(f"권리 등록 {a.ref}: {a.symbol} 현금배당 주당 {rights._won(a.amount_per_share)}원, "
+              f"기준일 {a.record_date}, 지급일 {a.pay_date}")
+        print(f"각 계좌의 daily가 {a.accrual_date(calendar)}부터 기준일 보유분을 미수배당금으로 인식하고, "
+              "지급일에 세금을 떼고 입금으로 기록해요.")
+        return 0
+    if args.what == "cancel":
+        a = rights.cancel_action(conn, args.action_id, args.reason)
+        print(f"권리 취소 {a.ref}: {a.symbol} 기준일 {a.record_date}. 등록 행은 그대로 두고 취소 행을 더했어요.")
+        print("이미 인식한 계좌는 다음 daily가 인식을 되돌려요.")
+        return 0
+    actions, booked = rights.list_actions(conn), rights.account_dividends(conn)
+    names = dict(conn.execute("select symbol, name from instruments").fetchall())
+    for a in actions:
+        print(f"{a.ref}  {a.symbol} {names.get(a.symbol, '')}: 주당 {rights._won(a.amount_per_share)}원, "
+              f"기준일 {a.record_date}, 지급일 {a.pay_date}" + (f"  [취소: {a.cancel_reason}]" if a.canceled else "")
+              + (f"  ({a.note})" if a.note else ""))
+        for acct, _, _, qty, accrued, accrued_on, paid_gross, tax, paid_on, canceled_on, status in (
+                r for r in booked if r[1] == a.action_id):
+            line = f"    {acct}: " + (f"{qty:,}주, 인식 {accrued:,}원 ({accrued_on})" if accrued_on else "인식 없음")
+            if status == "PAID":
+                line += f", 입금 {paid_gross - tax:,}원 (세전 {paid_gross:,}, 세금 {tax:,}, {paid_on})"
+            elif status == "CANCELED":
+                line += f", 인식 취소 ({canceled_on})"
+            print(line)
+    if not actions:
+        print("등록된 권리가 없어요. dividend add 종목코드 --record 기준일 --pay 지급일 --per-share 주당배당금")
     return 0
 
 

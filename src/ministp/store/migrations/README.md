@@ -18,3 +18,4 @@
 | 0002_common_codes | v2.1 | 공통코드. 코드 그룹 `code_groups`와 코드 `common_codes`를 만들고 18개 그룹의 코드명을 넣습니다. 기존 테이블과 기존 행은 건드리지 않습니다. |
 | 0003_day_close | v2.2 | 일 마감. 마감 기록 `day_closes`, 마감일 잠금 트리거(전표·예수금·마감 행), 뷰 세 개(`last_close_v`, `abor_positions_v`, `unclosed_events_v`)를 만들고 공통코드에 코드 세 개를 더합니다(`changes-data: common_codes`, 기존 행은 그대로). 마감한 날이 아직 없으므로 적용 직후에는 아무것도 잠기지 않습니다. |
 | 0004_audit_log | v2.3 | 감사 로그. `audit_log`와 해시 사슬 트리거(`ministp_audit_chain`, `ministp_audit_hash`)를 만들고 공통코드 그룹 세 개(경로, 결과, 행위)와 그 코드를 넣습니다(`changes-data: code_groups, common_codes`, 기존 행은 그대로). 적용이 끝나면 그 적용이 감사 로그의 첫 줄로 남습니다. |
+| 0005_corporate_actions | v2.4 | 권리처리(현금배당). 권리 원장 `corporate_actions`와 뷰 두 개(`corporate_actions_v`, `dividends_v`)를 만들고 공통코드 그룹 두 개와 코드를 더합니다(`changes-data: code_groups, common_codes`, 기존 행은 그대로). 배당 인식·입금은 원장 이벤트로 남아서 기존 테이블에 행이 늘 뿐, 새 프로젝션 테이블은 없습니다. |

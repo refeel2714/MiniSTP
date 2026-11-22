@@ -45,6 +45,9 @@ ACTIONS = {
     "CODE_RENAME": "코드명 변경",
     "CODE_USE": "코드 사용 여부 변경",
     "DB_MIGRATE": "스키마 마이그레이션",
+    "CORPORATE_ACTION_ADD": "권리 등록",
+    "CORPORATE_ACTION_CANCEL": "권리 취소",
+    "DIVIDEND_PAY": "배당 입금 기록",
 }
 MESSAGE_MAX = 500
 
