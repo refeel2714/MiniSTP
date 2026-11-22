@@ -11,6 +11,7 @@ from importlib.resources import files
 
 import yaml
 
+from .actions import ACTIONS
 from .transactions import TRANSACTIONS
 
 FORMATS = {"text", "code", "number", "money", "rate", "date", "datetime", "json"}
@@ -20,6 +21,8 @@ LOADS = {"search", "open", "master", "input"}
 LAYOUTS = {"stack", "split"}   # stack: grids one under another · split: 목록 왼쪽, 상세 오른쪽
 MAX_DETAILS = 3                # a split screen shows at most this many detail grids next to its list
 CONDITION_TYPES = {"date", "text", "select", "bool", "number"}
+FIELD_TYPES = CONDITION_TYPES  # an input window takes the same kinds of value as a search condition
+FIELD_KINDS = {"date": {"date"}, "text": {"text", "select"}, "int": {"number", "text", "select"}, "bool": {"bool"}}
 SCREEN_ID = re.compile(r"^STP-\d{4}$")
 
 
@@ -42,6 +45,45 @@ class Column:
 
 
 @dataclass
+class Field:
+    """One input of a 처리 button's window."""
+    name: str                   # the 처리 transaction parameter it fills
+    type: str = "text"
+    source: str | None = None   # table.column whose COMMENT gives the label
+    label: str | None = None
+    column: str | None = None   # starts with this column of the selected row (or the value the grid was opened with)
+    readonly: bool = False      # shown, not typed: the key of the row being changed
+    options: list[str] = field(default_factory=list)
+    default: str | None = None  # "today" or a literal
+    lookup: str | None = None   # 찾기 팝업: a name in lookups.yaml
+    lookup_params: dict[str, str] = field(default_factory=dict)   # fixed parameters of that list
+
+
+@dataclass
+class Button:
+    """처리 버튼: shown at the top right of its grid, opens an input window, calls one 처리 transaction."""
+    id: str
+    label: str
+    tx: str
+    fields: list[Field] = field(default_factory=list)
+    needs_row: bool = False     # works on the selected row; off until a row is picked
+    when: dict[str, list] = field(default_factory=dict)   # only for rows whose column holds one of these values
+    shows: list[str] = field(default_factory=list)        # columns of that row shown at the top of the window
+    note: str | None = None     # one line in the window: what pressing 확인 does
+
+
+@dataclass
+class Lookup:
+    """찾기 팝업: a list a field opens to pick a code from, shared by every screen (lookups.yaml)."""
+    name: str
+    title: str
+    tx: str                     # a read transaction (of any screen)
+    value: str                  # the column that goes into the field
+    columns: list[Column]
+    shows: str | None = None    # the column shown next to the field once a row is picked (the code's name)
+
+
+@dataclass
 class Grid:
     id: str
     title: str
@@ -61,6 +103,7 @@ class Grid:
     live: bool = False          # reload when the DB changes (SSE), changed rows highlighted
     key: str | None = None      # column that identifies a row across reloads (default: first column)
     weight: int = 1             # split layout: this grid's share of its side's height
+    actions: list[Button] = field(default_factory=list)   # 처리 버튼, top right of the grid
 
 
 @dataclass
@@ -72,6 +115,8 @@ class Condition:
     options: list[str] = field(default_factory=list)
     default: str | None = None  # "today" or a literal
     required: bool = False      # grids are not loaded until it has a value
+    lookup: str | None = None   # 찾기 팝업: a name in lookups.yaml
+    lookup_params: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -88,7 +133,9 @@ class Screen:
 
 def _build(raw: dict, file: str) -> Screen:
     try:
-        grids = [Grid(**{**g, "columns": [Column(**c) for c in g["columns"]]}) for g in raw["grids"]]
+        grids = [Grid(**{**g, "columns": [Column(**c) for c in g["columns"]],
+                         "actions": [Button(**{**a, "fields": [Field(**f) for f in a.get("fields", [])]})
+                                     for a in g.get("actions", [])]}) for g in raw["grids"]]
         conds = [Condition(**c) for c in raw.get("conditions", [])]
         return Screen(raw["id"], raw["title"], raw.get("purpose", ""), conds, grids, file,
                       raw.get("layout", "stack"), raw.get("left", 45))
@@ -106,6 +153,15 @@ def load_screens(directory=None) -> dict[str, Screen]:
                 raise DefinitionError(f"화면번호 중복: {s.id}")
             out[s.id] = s
     return out
+
+
+def load_lookups(path=None) -> dict[str, Lookup]:
+    f = path or files("ministp.ui").joinpath("lookups.yaml")
+    raw = yaml.safe_load(f.read_text(encoding="utf-8")) or {}
+    try:
+        return {name: Lookup(name, **{**d, "columns": [Column(**c) for c in d["columns"]]}) for name, d in raw.items()}
+    except (KeyError, TypeError) as e:
+        raise DefinitionError(f"lookups.yaml: 형식 오류 {e}") from e
 
 
 def short(comment: str | None) -> str:
@@ -145,9 +201,108 @@ def _layout_problems(s: Screen, where: str) -> list[str]:
     return errs
 
 
-def validate(screens: dict[str, Screen], catalog: dict) -> list[str]:
-    """Static checks against the schema catalog (erd.read_catalog). Returns problems, empty if fine."""
+def _column_problems(c: Column, where: str, catalog: dict) -> list[str]:
     errs = []
+    if c.format not in FORMATS:
+        errs.append(f"{where}.{c.name}: 없는 형식 {c.format}")
+    if c.color not in COLORS:
+        errs.append(f"{where}.{c.name}: 없는 색 규칙 {c.color}")
+    if c.source:
+        if column_comment(catalog, c.source) is None:
+            errs.append(f"{where}.{c.name}: DB에 없는 컬럼 {c.source}")
+        if c.label:
+            errs.append(f"{where}.{c.name}: DB 컬럼이 있으면 한글명은 DB 주석을 써요 (label 제거)")
+    elif not c.label:
+        errs.append(f"{where}.{c.name}: source(DB 컬럼)나 label 중 하나가 필요해요")
+    return errs
+
+
+def lookup_problems(lookups: dict[str, Lookup], catalog: dict) -> list[str]:
+    """찾기 팝업 definitions against the schema catalog and the read transactions."""
+    errs = []
+    for lk in lookups.values():
+        where = f"찾기 {lk.name}"
+        if lk.tx not in TRANSACTIONS:
+            errs.append(f"{where}: 없는 트랜잭션 {lk.tx}")
+        names = {c.name for c in lk.columns}
+        if lk.value not in names:
+            errs.append(f"{where}: 고르는 값 {lk.value}가 열에 없어요")
+        if lk.shows and lk.shows not in names:
+            errs.append(f"{where}: 함께 보여 줄 열 {lk.shows}가 열에 없어요")
+        for c in lk.columns:
+            errs += _column_problems(c, where, catalog)
+    return errs
+
+
+def _lookup_use_problems(name: str | None, params: dict, where: str, lookups: dict[str, Lookup]) -> list[str]:
+    if name is None:
+        return [f"{where}: 찾기 없이 lookup_params만 있어요"] if params else []
+    lk = lookups.get(name)
+    if lk is None:
+        return [f"{where}: 없는 찾기 팝업 {name}"]
+    tx = TRANSACTIONS.get(lk.tx)
+    return [f"{where}: 찾기 {name}의 {lk.tx}에 없는 조건 {p}" for p in params if tx and p not in tx.params]
+
+
+def _button_problems(g: Grid, s: Screen, gw: str, catalog: dict, lookups: dict[str, Lookup]) -> list[str]:
+    errs, seen = [], set()
+    cols = {c.name for c in g.columns}
+    reach = cols | set(g.link)   # what a field can start from: the selected row, or what the grid was opened with
+    for b in g.actions:
+        bw = f"{gw} 버튼 {b.id}"
+        if b.id in seen:
+            errs.append(f"{bw}: 버튼 ID 중복")
+        seen.add(b.id)
+        action = ACTIONS.get(b.tx)
+        if action is None:
+            errs.append(f"{bw}: 없는 처리 트랜잭션 {b.tx}")
+            continue
+        if not b.tx.startswith(s.id.replace("-", "")):
+            errs.append(f"{bw}: 처리 트랜잭션 {b.tx}는 다른 화면 것")
+        for col in [*b.shows, *b.when]:
+            if col not in cols:
+                errs.append(f"{bw}: 고른 행의 열 {col}이 그리드에 없어요")
+        if (b.shows or b.when) and not b.needs_row:
+            errs.append(f"{bw}: shows·when은 행을 고르는 버튼(needs_row)에만 써요")
+        names = [f.name for f in b.fields]
+        for missing in [p for p in action.params if action.required(p) and p not in names]:
+            errs.append(f"{bw}: {b.tx}의 필수 입력 {missing}에 해당하는 항목이 없어요")
+        for f in b.fields:
+            fw = f"{bw}.{f.name}"
+            if f.name not in action.params:
+                errs.append(f"{fw}: {b.tx}에 없는 입력 항목")
+            elif f.type not in FIELD_KINDS[action.params[f.name]]:
+                errs.append(f"{fw}: {b.tx}는 {action.params[f.name]} 값을 받는데 입력 형식이 {f.type}")
+            if names.count(f.name) > 1:
+                errs.append(f"{fw}: 입력 항목 중복")
+            if f.type not in FIELD_TYPES:
+                errs.append(f"{fw}: 없는 입력 형식 {f.type}")
+            if f.type == "select" and not f.options:
+                errs.append(f"{fw}: select는 options가 필요해요")
+            if f.source and column_comment(catalog, f.source) is None:
+                errs.append(f"{fw}: DB에 없는 컬럼 {f.source}")
+            if not (f.source or f.label):
+                errs.append(f"{fw}: source나 label이 필요해요")
+            if f.column:
+                if f.column not in reach:
+                    errs.append(f"{fw}: 채울 값 {f.column}이 그리드 열에도 연결 값에도 없어요")
+                elif f.column in cols - set(g.link) and not b.needs_row:
+                    errs.append(f"{fw}: 행의 값({f.column})을 쓰려면 needs_row가 필요해요")
+            elif f.readonly and f.default is None:
+                errs.append(f"{fw}: 읽기 전용 항목은 채울 값(column이나 default)이 필요해요")
+            errs += _lookup_use_problems(f.lookup, f.lookup_params, fw, lookups)
+    return errs
+
+
+def validate(screens: dict[str, Screen], catalog: dict, lookups: dict[str, Lookup] | None = None) -> list[str]:
+    """Static checks against the schema catalog (erd.read_catalog). Returns problems, empty if fine.
+
+    `lookups` are the shared 찾기 팝업 (default: the shipped lookups.yaml); their own
+    definitions are checked by `lookup_problems`.
+    """
+    errs = []
+    if lookups is None:
+        lookups = load_lookups()
     for s in screens.values():
         where = f"{s.id} ({s.file})"
         if not SCREEN_ID.match(s.id):
@@ -175,17 +330,8 @@ def validate(screens: dict[str, Screen], catalog: dict) -> list[str]:
                 search_params |= set(tx.params)
             ids.add(g.id)
             for c in g.columns:
-                if c.format not in FORMATS:
-                    errs.append(f"{gw}.{c.name}: 없는 형식 {c.format}")
-                if c.color not in COLORS:
-                    errs.append(f"{gw}.{c.name}: 없는 색 규칙 {c.color}")
-                if c.source:
-                    if column_comment(catalog, c.source) is None:
-                        errs.append(f"{gw}.{c.name}: DB에 없는 컬럼 {c.source}")
-                    if c.label:
-                        errs.append(f"{gw}.{c.name}: DB 컬럼이 있으면 한글명은 DB 주석을 써요 (label 제거)")
-                elif not c.label:
-                    errs.append(f"{gw}.{c.name}: source(DB 컬럼)나 label 중 하나가 필요해요")
+                errs += _column_problems(c, gw, catalog)
+            errs += _button_problems(g, s, gw, catalog, lookups)
             if not isinstance(g.weight, int) or not 1 <= g.weight <= 5:
                 errs.append(f"{gw}: weight(높이 비중)는 1~5 사이 정수")
             if g.key and g.key not in {c.name for c in g.columns}:
@@ -219,19 +365,41 @@ def validate(screens: dict[str, Screen], catalog: dict) -> list[str]:
                 errs.append(f"{where} 조회조건 {c.name}: DB에 없는 컬럼 {c.source}")
             if not (c.source or c.label):
                 errs.append(f"{where} 조회조건 {c.name}: source나 label이 필요해요")
+            errs += _lookup_use_problems(c.lookup, c.lookup_params, f"{where} 조회조건 {c.name}", lookups)
     return errs
 
 
-def resolve(screen: Screen, catalog: dict) -> dict:
+def _used_lookups(screen: Screen) -> set[str]:
+    fields = [f for g in screen.grids for b in g.actions for f in b.fields]
+    return {x.lookup for x in [*screen.conditions, *fields] if x.lookup}
+
+
+def resolve(screen: Screen, catalog: dict, lookups: dict[str, Lookup] | None = None) -> dict:
     """The definition as the runtime gets it: labels filled from the DB comments."""
+    def label(x) -> str:
+        return x.label or short(column_comment(catalog, x.source))
+
     out = asdict(screen)
     for g, gd in zip(screen.grids, out["grids"]):
         gd["tx_params"] = list(TRANSACTIONS[g.tx].params)
         for c, cd in zip(g.columns, gd["columns"]):
-            cd["label"] = c.label or short(column_comment(catalog, c.source))
+            cd["label"] = label(c)
             cd["align"] = c.align
+        for b, bd in zip(g.actions, gd["actions"]):
+            bd["title"] = ACTIONS[b.tx].title
+            for f, fd in zip(b.fields, bd["fields"]):
+                fd["label"] = label(f)
+                fd["required"] = ACTIONS[b.tx].required(f.name)
     for c, cd in zip(screen.conditions, out["conditions"]):
-        cd["label"] = c.label or short(column_comment(catalog, c.source))
+        cd["label"] = label(c)
+    used = _used_lookups(screen)
+    if used and lookups is None:
+        lookups = load_lookups()
+    out["lookups"] = {}
+    for name in sorted(used):
+        lk = lookups[name]
+        out["lookups"][name] = {**asdict(lk), "columns": [{**asdict(c), "label": label(c), "align": c.align}
+                                                          for c in lk.columns]}
     return out
 
 
@@ -243,6 +411,10 @@ def usages(screens: dict[str, Screen]) -> dict[str, list[str]]:
             for c in g.columns:
                 if c.source:
                     out.setdefault(c.source, []).append(f"{s.id} {g.id}")
+            for b in g.actions:
+                for f in b.fields:
+                    if f.source:
+                        out.setdefault(f.source, []).append(f"{s.id} {g.id} 버튼 {b.id}")
         for c in s.conditions:
             if c.source:
                 out.setdefault(c.source, []).append(f"{s.id} 조회조건")

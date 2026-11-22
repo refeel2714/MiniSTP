@@ -1,9 +1,13 @@
 """STP-UI server: screens, the transaction API and generated screen specs.
 
-Read only, end to end: every DB session is opened with
-`default_transaction_read_only=on`, the transactions only read, and writes stay
-with the CLI (single writer). The server answers only on 127.0.0.1/localhost
-(Host header check against DNS rebinding) and never shows keys or account numbers.
+Every screen reads on a session opened with `default_transaction_read_only=on`.
+Nothing is written unless the server was started for it (`write_dsn`), and then
+only by a 처리 button: one named 처리 transaction (ui/actions.py) that calls the
+same command function as the CLI, on its own short connection that takes the
+single-writer lock. Such a request must come from a page this server sent (a
+token made at start, same origin, JSON), so no other web page can press a button.
+The server answers only on 127.0.0.1/localhost (Host header check against DNS
+rebinding) and never shows keys or account numbers.
 At start it checks every screen definition against the live schema and refuses
 to start if one does not match, so a screen can never drift from the DB.
 """
@@ -11,9 +15,11 @@ import asyncio
 import datetime as dt
 import html
 import json
+import secrets
 import time
 from decimal import Decimal
 from importlib.resources import files
+from urllib.parse import urlsplit
 
 import psycopg
 from fastapi import FastAPI, HTTPException, Request
@@ -23,10 +29,11 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from ..calendar import BusinessCalendar, CalendarNotLoadedError
 from ..fees import FeeSchedule
-from ..ops import OpsError
+from ..ops import OpsError, acquire_writer, require_current_schema
 from ..accounts import ACCOUNT_ID_RE
 from ..store import DEFAULT_ACCOUNT, erd
-from .definitions import DefinitionError, load_screens, resolve, validate
+from .actions import ActionContext, ActionError, run_action
+from .definitions import DefinitionError, load_lookups, load_screens, lookup_problems, resolve, validate
 from .spec import screen_markdown
 from .transactions import TxContext, TxError, run_tx
 
@@ -93,17 +100,29 @@ def _page(title: str, body: str, head: str = "") -> HTMLResponse:
 <body>{body}</body></html>""")
 
 
+def same_origin(request: Request) -> bool:
+    """A browser names the page a POST came from; it has to be this server's own page."""
+    origin = request.headers.get("origin")
+    if origin is not None and urlsplit(origin).netloc != request.headers.get("host"):
+        return False
+    return request.headers.get("sec-fetch-site", "same-origin") == "same-origin"
+
+
 def create_app(dsn: str, *, calendar: BusinessCalendar, fees: FeeSchedule, today=None,
-               connect=psycopg.connect, allowed_hosts=LOCAL_HOSTS, label: str = "") -> FastAPI:
-    """`today`: a date, or a callable giving one (the sample DB passes its last business day)."""
+               connect=psycopg.connect, allowed_hosts=LOCAL_HOSTS, label: str = "",
+               write_dsn: str | None = None) -> FastAPI:
+    """`today`: a date, or a callable giving one (the sample DB passes its last business day).
+    `write_dsn`: where 처리 buttons write. Without it the server is read only and the buttons are off."""
     screens = load_screens()
+    lookups = load_lookups()
+    token = secrets.token_urlsafe(24)   # only pages this process served know it
     with connect_read_only(dsn, connect) as conn:
         catalog = erd.read_catalog(conn, "public")
         db_name = conn.info.dbname
-    problems = validate(screens, catalog)
+    problems = validate(screens, catalog, lookups) + lookup_problems(lookups, catalog)
     if problems:
         raise DefinitionError("화면 정의가 DB 스키마와 맞지 않아요:\n  " + "\n  ".join(problems))
-    resolved = {sid: resolve(s, catalog) for sid, s in screens.items()}
+    resolved = {sid: resolve(s, catalog, lookups) for sid, s in screens.items()}
     menu = [{"id": s.id, "title": s.title} for s in screens.values()]
     business_day = today if callable(today) else (lambda: today or dt.date.today())
 
@@ -130,6 +149,7 @@ def create_app(dsn: str, *, calendar: BusinessCalendar, fees: FeeSchedule, today
     def shell_data(screen_id: str | None) -> str:
         data = {"menu": menu, "today": business_day().isoformat(), "db": db_name, "label": label,
                 "accounts": accounts(), "default_account": DEFAULT_ACCOUNT,
+                "writable": write_dsn is not None, "token": token if write_dsn else "",
                 "screen": resolved.get(screen_id) if screen_id else None}
         # Embedded as JSON in a non-executed script tag; '<' escaped so no value can close the tag.
         return json.dumps(data, ensure_ascii=False, default=str).replace("<", "\\u003c")
@@ -187,6 +207,42 @@ def create_app(dsn: str, *, calendar: BusinessCalendar, fees: FeeSchedule, today
                 "datasets": {name: {"columns": list(ds.columns),
                                     "rows": [[to_json(v) for v in r] for r in ds.rows]}
                              for name, ds in result.datasets.items()}}
+
+    @app.post("/api/action/{tx_id}")
+    async def action(tx_id: str, request: Request):
+        """A 처리 button. Refused unless the server was started to write and the request is this page's own."""
+        if write_dsn is None:
+            return JSONResponse({"error": "조회 전용으로 열려 있어요. 처리하려면 ui --write 로 다시 열어 주세요."},
+                                status_code=403)
+        sent = request.headers.get("x-stpui-token", "")
+        if not same_origin(request) or not secrets.compare_digest(sent.encode(), token.encode()):
+            return JSONResponse({"error": "이 화면에서 보낸 요청이 아니에요. 화면을 새로 고친 뒤 다시 해 주세요."},
+                                status_code=403)
+        if request.headers.get("content-type", "").split(";")[0].strip().lower() != "application/json":
+            return JSONResponse({"error": "JSON 요청만 받아요"}, status_code=415)
+        try:
+            body = await request.json()
+        except ValueError:
+            body = None
+        if not isinstance(body, dict) or not isinstance(body.get("params", {}), dict):
+            return JSONResponse({"error": "요청 형식이 올바르지 않아요"}, status_code=400)
+        account = body.get("account") or DEFAULT_ACCOUNT
+        if not isinstance(account, str) or not ACCOUNT_ID_RE.match(account):
+            return JSONResponse({"error": "계좌 ID 형식이 올바르지 않아요"}, status_code=400)
+        started = time.perf_counter()
+        try:
+            with connect(write_dsn, autocommit=True) as conn:
+                acquire_writer(conn)          # one writer at a time: waits its turn behind run, daily, ...
+                require_current_schema(conn)  # like every CLI command: never write a ledger of another shape
+                with conn.transaction():      # all of it or none of it
+                    message = run_action(tx_id, ActionContext(conn, calendar, fees, business_day(), account),
+                                         body.get("params", {}))
+        except (ActionError, TxError, OpsError, CalendarNotLoadedError) as e:
+            return JSONResponse({"error": str(e)}, status_code=400)
+        except psycopg.Error as e:
+            return JSONResponse({"error": f"DB 오류: {e.diag.message_primary or type(e).__name__}"},
+                                status_code=500)
+        return {"tx": tx_id, "message": message, "elapsed_ms": round((time.perf_counter() - started) * 1000, 1)}
 
     @app.get("/api/live")
     async def live(request: Request):
