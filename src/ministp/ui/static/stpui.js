@@ -255,14 +255,16 @@
 
     function search() {
       const list = def.grids.filter(g => g.load !== "master");
-      def.grids.filter(g => g.load === "master").forEach(g => grids[g.id].clear("위 목록에서 행을 고르세요"));
+      def.grids.filter(g => g.load === "master").forEach(g => grids[g.id].clear("목록에서 행을 고르세요"));
       return load(list, searchParams);
     }
 
     function onSelect(master, row) {
       const details = def.grids.filter(g => g.load === "master" && g.master === master.id);
       if (!details.length || !row) return;
-      load(details, g => Object.fromEntries(Object.entries(g.link).map(([p, col]) => [p, row[col]])));
+      const linked = g => Object.fromEntries(Object.entries(g.link).map(([p, col]) => [p, row[col]]));
+      details.forEach(g => grids[g.id].about(Object.values(linked(g)).join(" · ")));   // whose detail this is
+      load(details, linked);
     }
 
     function drill(g, row) {
@@ -284,10 +286,32 @@
       h("button", { type: "submit", class: "primary", title: "Ctrl+Enter" }, "조회")) : null;
 
     const panels = def.grids.map(g => {
-      const grid = Grid(g, { onSelect: row => onSelect(g, row), onDrill: row => drill(g, row) });
+      const grid = Grid(g, { onSelect: row => onSelect(g, row), onDrill: row => drill(g, row),
+        leads: def.grids.some(d => d.load === "master" && d.master === g.id) });
       grids[g.id] = grid;
       return grid.el;
     });
+
+    // 좌우 구성: the list that has details on the left, its details on the right, each scrolling
+    // inside its own panel. Grids that follow no row stay below, full width.
+    function splitView() {
+      const detail = g => g.load === "master";
+      const leads = g => def.grids.some(d => detail(d) && d.master === g.id);
+      const pick = test => def.grids.filter(test).map(g => grids[g.id].el);
+      def.grids.filter(g => leads(g) || detail(g)).forEach(g => { grids[g.id].el.style.flexGrow = g.weight; });   // share of the height
+      const split = h("div", { class: "split" },
+        h("div", { class: "side" }, pick(leads)), h("div", { class: "side" }, pick(detail)));
+      split.style.setProperty("--left", def.left + "fr");
+      split.style.setProperty("--right", (100 - def.left) + "fr");
+      return [split, ...pick(g => !leads(g) && !detail(g))];
+    }
+    // The two sides fill what is left of the window, so a long list scrolls in place.
+    function fitSplit() {
+      const split = app.querySelector(".split");
+      if (!split) return;
+      const room = window.innerHeight - split.getBoundingClientRect().top - window.scrollY - 40;
+      split.style.setProperty("--fit", Math.max(380, Math.round(room)) + "px");
+    }
 
     app.append(topbar(def), h("main", { class: "screen" },
       h("div", { class: "title" },
@@ -295,8 +319,10 @@
         h("a", { class: "spec", href: "/spec/" + def.id, title: "정의 파일과 DB 주석에서 생성한 화면정의서" }, "화면정의서")),
       h("p", { class: "purpose", text: def.purpose }),
       conds,
-      h("div", { class: "grids" }, panels),
+      h("div", { class: "grids" }, def.layout === "split" ? splitView() : panels),
       status));
+    fitSplit();
+    window.addEventListener("resize", fitSplit);
 
     document.addEventListener("keydown", e => {
       if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); search(); }
@@ -306,7 +332,7 @@
     opening.forEach(g => grids[g.id].skeleton());
     const hasDrill = def.conditions.some(c => urlParams.has(c.name));
     def.grids.filter(g => g.load === "search").forEach(g => grids[g.id].clear("조회조건을 정하고 조회를 누르세요"));
-    def.grids.filter(g => g.load === "master").forEach(g => grids[g.id].clear("위 목록에서 행을 고르세요"));
+    def.grids.filter(g => g.load === "master").forEach(g => grids[g.id].clear("목록에서 행을 고르세요"));
     if (hasDrill) search(); else if (opening.length) load(opening, searchParams);
 
     // 실시간: the server says when the DB head moves; live grids reload with their last conditions.
@@ -328,7 +354,7 @@
   }
 
   // ---------- grid ----------
-  function Grid(g, { onSelect, onDrill }) {
+  function Grid(g, { onSelect, onDrill, leads }) {
     let rows = [], view = [], sel = -1, sortCol = null, sortDir = 1;
     let changed = new Map();   // row key -> Set of changed columns ("*" = new row), shown once
     let previous = new Map();  // row key -> the row before this fill (numbers roll from here)
@@ -337,17 +363,20 @@
     const rowKey = g.view === "cards" ? () => "card" : r => String(r[keyCol]);   // cards show one row
     const count = h("span", { class: "count" });
     const metaBox = h("span", { class: "meta" });
+    const aboutBox = h("span", { class: "about", title: "목록에서 고른 행" });
     const body = h("div", { class: "gbody" });
     const chartBox = g.chart ? h("div", { class: "chart" }) : null;
     const el = h("section", { class: "panel" + (g.view === "cards" ? " cards-panel" : ""), "aria-label": g.title },
-      h("div", { class: "phead" }, h("h2", { text: g.title }),
+      h("div", { class: "phead" }, h("h2", { text: g.title }), aboutBox,
         g.live ? h("span", { class: "livechip", title: "DB가 바뀌면 자동으로 다시 조회해요" }, "실시간") : null,
         metaBox, count,
         h("span", { class: "txid", title: "조회 트랜잭션", text: g.tx })),
       chartBox, body);
 
+    // A detail grid names the master row it belongs to, next to its title.
+    function about(text) { aboutBox.textContent = text || ""; }
     function clear(msg) {
-      rows = []; view = []; sel = -1; loaded = false; count.textContent = ""; metaBox.replaceChildren();
+      rows = []; view = []; sel = -1; loaded = false; count.textContent = ""; metaBox.replaceChildren(); about("");
       if (chartBox) chartBox.replaceChildren();
       morph(body, () => body.replaceChildren(h("div", { class: "empty", text: msg })));
     }
@@ -389,6 +418,14 @@
       loaded = true;
       sel = keep ? view.findIndex(r => rowKey(r) === keep) : -1;
       if (keep) mark(false);
+      // 기초 정보 → 상세: a grid with details under it opens with a row already picked
+      // (the one the transaction names in meta.selected, else the first), so the details are never empty.
+      if (!live && leads && view.length) {
+        const named = meta && meta.selected != null ? view.findIndex(r => rowKey(r) === String(meta.selected)) : -1;
+        sel = named >= 0 ? named : 0;
+        mark(false);
+        onSelect(view[sel]);
+      }
       if (hadFocus) { const t = body.querySelector(".grid"); if (t) t.focus({ preventScroll: true }); }
       changed = new Map();   // highlight once; a later sort does not flash again
       previous = new Map();
@@ -546,7 +583,7 @@
       chartBox.replaceChildren(s);
     }
 
-    return { el, fill, clear, busy, fail, skeleton };
+    return { el, fill, clear, busy, fail, skeleton, about };
   }
 
   if (DATA.screen) Screen(DATA.screen); else home();
