@@ -20,7 +20,7 @@
   const STATUS = {
     MATCH: "ok", ACCEPTED: "ok", FILLED: "ok", true: "ok",
     BREAK: "bad", REJECTED: "bad", false: "bad",
-    RESOLVED: "warn", UNKNOWN: "warn", CANCELED: "warn", PENDING: "warn",
+    RESOLVED: "warn", UNKNOWN: "warn", CANCELED: "warn", PENDING: "warn", "적용 중": "ok", "예정": "warn",
   };
 
   function h(tag, attrs, ...kids) {
@@ -399,7 +399,7 @@
       metaBox.replaceChildren(...Object.entries(g.meta || {}).filter(([k]) => k in meta).map(([k, label]) => {
         const v = meta[k];
         const cls = typeof v === "boolean" ? (v ? "badge ok" : "badge bad") : "badge";
-        const text = typeof v === "boolean" ? (v ? "예" : "아니오") : fmt(v, "number");
+        const text = typeof v === "boolean" ? (v ? "예" : "아니오") : typeof v === "string" ? v : fmt(v, "number");
         return h("span", { class: cls }, label + " ", h("b", { text }));
       }));
     }

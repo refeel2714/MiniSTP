@@ -118,3 +118,22 @@ def test_opening_position_funds_capital_and_units(ledger):
     assert r.cost_of_sale == 80_540
     again = Ledger.replay(ledger.events, ledger.calendar, ledger.fees, ledger.instruments)
     assert again.journal == ledger.journal
+
+
+def test_business_days_between_counts_d_plus_n():
+    from ministp.cli import krx_calendar
+    cal = krx_calendar()
+    fri = dt.date(2026, 12, 24)
+    assert cal.business_days_between(fri, dt.date(2026, 12, 28)) == 1   # 12/25 휴장, 주말
+    assert cal.business_days_between(fri, fri) == 0
+    assert cal.add_business_days(fri, 2) == dt.date(2026, 12, 29)
+
+
+def test_tick_table_agrees_with_tick_size():
+    from ministp.instruments import AssetType
+    from ministp.ticks import tick_size, tick_table
+    for asset, lo, hi, tick in tick_table():
+        a = AssetType(asset)
+        assert tick_size(lo, a) == tick
+        if hi is not None:
+            assert tick_size(hi - 1, a) == tick

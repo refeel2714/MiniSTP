@@ -256,6 +256,143 @@ def order_check(books, day: dt.date, symbol: str, side: str, qty: int, limit_pri
                               cap.max_buy_qty, cap.held_qty, cap.pending_sell_qty, cap.sellable_qty,
                               reason == "", reason, REASON_TEXT.get(reason, reason)),))
 
+# ---------- STP-4100·4200·4300 기준정보 (조회 전용) ----------
+# Reference data as the system really uses it: instruments from the DB, fee rates,
+# settlement rules, tick sizes and the holiday calendar from the objects the
+# ledger is built with. Nothing here is a second copy that could drift.
+
+WEEKDAYS = "월화수목금토일"
+
+
+def _pct(rate) -> str:
+    """0.00015 -> '0.015%' (rates are shown exactly, not rounded to two places)."""
+    from decimal import Decimal
+    return f"{(Decimal(rate) * 100).normalize():f}%"
+
+
+def instrument_master(books) -> Dataset:
+    """종목정보: 등록 종목, 최근 종가와 그 가격의 호가단위, 매도 세율, 보유."""
+    from .ticks import tick_size
+    fees = books.ledger.fees
+    close_day, closes = last_closes(books.ledger)
+    held = books.ledger.positions()
+    rows = []
+    for sym, inst in sorted(books.instruments.items()):
+        price = closes.get(sym)
+        tx, rural = fees.sell_tax_rates[(inst.market, inst.asset_type)]
+        pos = held.get(sym)
+        rows.append((sym, inst.name, inst.market.value, inst.asset_type.value, price,
+                     close_day if price is not None else None,
+                     tick_size(price, inst.asset_type) if price is not None else None,
+                     _pct(tx + rural), pos.qty if pos else 0, pos.book_cost if pos else 0))
+    return Dataset(("symbol", "instrument_name", "market", "asset_type", "last_close", "close_date", "tick",
+                    "sell_tax", "qty", "book_cost"), tuple(rows))
+
+
+def instrument_events(conn: psycopg.Connection, symbol: str) -> Dataset:
+    """한 종목의 원장 이벤트 (개시 보유, 체결), newest first. 결제 이벤트는 체결ID로만 이어져 여기엔 없어요."""
+    return ledger_events(conn, symbol=symbol)
+
+
+def account_summary(books, calendar, today: dt.date) -> Dataset:
+    """계좌 요약 (원장 기준). 계좌번호와 키는 DB에 없고 화면에도 나오지 않아요."""
+    from .ops import clean_streak
+    led = books.ledger
+    pending = led.pending_settlements()
+    close_day, closes = last_closes(led)
+    held = led.positions()
+    market_value = sum(p.qty * closes[s] for s, p in held.items() if s in closes) if closes else None
+    first = led.events[0] if led.events else None
+    opened = getattr(first, "date", None) or getattr(first, "trade_date", None)
+    recon = books.conn.execute(
+        "select b.date, b.taken_at, count(*) filter (where r.status = 'BREAK' and not exists"
+        " (select 1 from recon_results x where x.supersedes_id = r.id))"
+        " from broker_snapshots b join recon_results r on r.run_id = b.snapshot_id"
+        " where b.kind = 'DAILY_RECON' group by b.snapshot_id order by b.snapshot_id desc limit 1").fetchone()
+    last_nav = max((r.date for r in led.nav_history()), default=None)
+    return Dataset(
+        ("opened", "cash_d0", "receivables", "payables", "projected_cash", "unsettled", "holdings",
+         "market_value", "valued_on", "last_recon_date", "last_recon_at", "open_breaks", "clean_streak"),
+        ((opened, led.cash_balance(), sum(s.signed for s in pending if s.signed > 0),
+          -sum(s.signed for s in pending if s.signed < 0), led.projected_cash(), len(pending), len(held),
+          market_value, close_day, recon[0] if recon else None, recon[1] if recon else None,
+          recon[2] if recon else None, clean_streak(books.conn, calendar, last_nav) if last_nav else 0),))
+
+
+def cash_ladder(books, calendar, today: dt.date) -> Dataset:
+    """예수금 D+n: 오늘 예수금에서 영업일마다 들어오고 나가는 결제대금을 차례로 더한 금액.
+
+    증권사 HTS의 D+1·D+2 예수금과 같은 개념이라 D+2까지는 결제가 없어도 행을 보여줘요.
+    결제일이 이미 지났는데 아직 결제되지 않은 건은 D+0에 넣어요.
+    """
+    buckets: dict[int, list[int]] = {}
+    for s in books.ledger.pending_settlements():
+        n = calendar.business_days_between(today, s.settle_date) if s.settle_date > today else 0
+        io = buckets.setdefault(n, [0, 0])
+        io[0 if s.signed > 0 else 1] += abs(s.signed)
+    cash, rows = books.ledger.cash_balance(), []
+    for n in range(max([2, *buckets]) + 1):
+        cash_in, cash_out = buckets.get(n, (0, 0))
+        cash += cash_in - cash_out
+        rows.append((f"D+{n}", calendar.add_business_days(today, n), cash_in, cash_out, cash))
+    return Dataset(("day_label", "date", "cash_in", "cash_out", "cash_after"), tuple(rows))
+
+
+def pending_settlements(books) -> Dataset:
+    """결제 예정 체결: 체결일, 결제일, 종목, 매매구분, 수량, 결제금액 (+받을 돈 / −낼 돈)."""
+    from .ledger import ExecutionEvent
+    execs = {e.exec_id: e for e in books.ledger.events if isinstance(e, ExecutionEvent)}
+    rows = []
+    for s in books.ledger.pending_settlements():
+        e = execs.get(s.exec_id)
+        sym = e.symbol if e else None
+        name = books.instruments[sym].name if sym in books.instruments else None
+        rows.append((s.exec_id, s.trade_date, s.settle_date, sym, name, s.side.value, e.qty if e else None,
+                     s.signed))
+    return Dataset(("exec_id", "trade_date", "settle_date", "symbol", "instrument_name", "side", "qty", "amount"),
+                   tuple(rows))
+
+
+def fee_rules(fees) -> Dataset:
+    """수수료·세금: 시장·자산유형별 매도 세율과 위탁수수료율, 절사 단위 (R-20~22)."""
+    rows = []
+    for (market, asset), (tx, rural) in sorted(fees.sell_tax_rates.items(), key=lambda kv: (kv[0][1], kv[0][0])):
+        rows.append((market.value, asset.value, _pct(fees.commission_rate), fees.commission_unit, _pct(tx),
+                     _pct(rural), _pct(tx + rural)))
+    return Dataset(("market", "asset_type", "commission_rate", "commission_unit", "tx_tax_rate", "rural_tax_rate",
+                    "sell_tax"), tuple(rows))
+
+
+def settlement_rules(ledger: Ledger, today: dt.date) -> Dataset:
+    """결제주기 규칙: 적용시작일별 T+n. 체결일에 적용 중인 규칙이 결제일을 정해요 (R-11)."""
+    rules = ledger.settlement_cycle.rules
+    in_force = max((d for d, _ in rules if d <= today), default=None)
+    return Dataset(("effective_from", "cycle", "status"),
+                   tuple((None if d == dt.date.min else d, f"T+{n}",
+                          "적용 중" if d == in_force else ("예정" if d > today else "지난 규칙"))
+                         for d, n in rules))
+
+
+def tick_rules() -> Dataset:
+    """호가가격단위 (KOSPI·KOSDAQ 공통, 2023-01-25부터)."""
+    from .ticks import tick_table
+    return Dataset(("asset_type", "price_from", "price_below", "tick"), tuple(tick_table()))
+
+
+def holiday_calendar(calendar, today: dt.date) -> Dataset:
+    """휴장일: 등록된 평일 휴장일 (주말은 따로 등록하지 않아요). 등록된 연도 밖의 날짜는 계산을 멈춰요 (R-10)."""
+    return Dataset(("date", "weekday", "status"),
+                   tuple((d, WEEKDAYS[d.weekday()], "지남" if d < today else "예정") for d in calendar.holidays))
+
+
+def risk_rules() -> Dataset:
+    """주문 검증 기준 (R-36·37): 주문가능 판단과 주문 검증이 같이 쓰는 값."""
+    from .risk import RiskLimits
+    r = RiskLimits()
+    return Dataset(("max_order_value", "cash_buffer_rate", "short_sell"),
+                   ((r.max_order_value, _pct(r.cash_buffer_rate), "금지 (매도가능수량까지만)"),))
+
+
 # Transaction id -> service. Ids follow the screen numbers (화면번호 + R + 일련번호).
 TRANSACTIONS = {
     "STP1100R01": holdings,
@@ -268,4 +405,14 @@ TRANSACTIONS = {
     "STP2100R01": recon_history,
     "STP1200R01": order_blotter,
     "STP2200R01": nav_series,
+    "STP4100R01": instrument_master,
+    "STP4100R02": instrument_events,
+    "STP4200R01": account_summary,
+    "STP4200R02": cash_ladder,
+    "STP4200R03": pending_settlements,
+    "STP4300R01": fee_rules,
+    "STP4300R02": settlement_rules,
+    "STP4300R03": tick_rules,
+    "STP4300R04": holiday_calendar,
+    "STP4300R05": risk_rules,
 }

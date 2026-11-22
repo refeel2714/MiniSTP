@@ -9,6 +9,15 @@ _STOCK_TICKS = [  # (price below, tick)
 ]
 
 
+def tick_table() -> list[tuple[str, int, int | None, int]]:
+    """(asset type, price from, price below, tick) for the reference screen."""
+    rows, lo = [], 0
+    for upper, tick in _STOCK_TICKS:
+        rows.append(("STOCK", lo, upper, tick))
+        lo = upper
+    return rows + [("STOCK", lo, None, 1_000), ("ETF", 0, None, 5)]
+
+
 def tick_size(price: Decimal | int, asset_type: AssetType) -> int:
     if asset_type is AssetType.ETF:
         return 5

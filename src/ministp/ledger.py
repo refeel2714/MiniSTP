@@ -5,7 +5,7 @@ never edited directly, so `replay(events)` rebuilds the same ledger (spec R-04,
 spec 03 불변 조건 5).
 """
 import datetime as dt
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from decimal import Decimal
 from enum import StrEnum
 
@@ -248,6 +248,11 @@ class Ledger:
 
     def pending_settlement_net(self) -> int:
         return sum(s.signed for s in self._s.settlements.values() if not s.settled)
+
+    def pending_settlements(self) -> list[Settlement]:
+        """Booked trades not settled yet, by settlement date (copies: changing them changes nothing)."""
+        return sorted((replace(s) for s in self._s.settlements.values() if not s.settled),
+                      key=lambda s: (s.settle_date, s.exec_id))
 
     def projected_cash(self) -> int:
         """Cash after every booked trade settles (증권사 D+2 예수금, D+1 after a T+1 cutover)."""
