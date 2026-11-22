@@ -179,6 +179,31 @@ def holdings(conn: psycopg.Connection, day: dt.date | None = None, account_id: s
          order by p.book_cost desc""", {"d": day or dt.date.today(), "a": account_id})
 
 
+def close_trends(ledger: Ledger, days: int = 20) -> dict[str, list[int]]:
+    """종목별 최근 종가, 오래된 날부터 최대 days개. 기준가·재평가 이벤트가 남긴 값만 써요 (하루에 마지막 값)."""
+    from .ledger import NavEvent, RevaluationEvent
+    by_date: dict[dt.date, dict[str, int]] = {}
+    for ev in ledger.events:
+        if isinstance(ev, (NavEvent, RevaluationEvent)):
+            by_date.setdefault(ev.date, {}).update(dict(ev.closes))
+    out: dict[str, list[int]] = {}
+    for day in sorted(by_date)[-days:]:
+        for symbol, price in by_date[day].items():
+            out.setdefault(symbol, []).append(price)
+    return out
+
+
+def holdings_view(base: Dataset, ledger: Ledger) -> Dataset:
+    """보유에 비중(장부금액 ÷ 장부금액 합계)과 최근 종가 추세를 붙여요. 화면이 막대와 추세선으로 그리는 값이에요."""
+    cost = base.columns.index("book_cost")
+    symbol = base.columns.index("symbol")
+    total = sum(r[cost] for r in base.rows)
+    trends = close_trends(ledger)
+    rows = tuple((*r, round(float(r[cost]) / float(total), 4) if total else None, trends.get(r[symbol], []))
+                 for r in base.rows)
+    return Dataset((*base.columns, "weight", "trend"), rows)
+
+
 def cash_summary(ledger: Ledger, open_orders) -> Dataset:
     """예수금 D+0, 결제 후 예수금, 미체결 매수 예약, 주문가능금액 (R-37과 같은 계산)."""
     from .capacity import pending_buy_value
