@@ -225,8 +225,9 @@ button.find { font-size: 12px; height: 28px; padding: 0 8px; background: var(--h
 
 /* an input with a 찾기 button, and the name of what was picked */
 .lk { display: flex; align-items: center; gap: 6px; min-width: 0; }
-.lk input { flex: 1 1 auto; min-width: 0; }
-.lkname { color: var(--muted); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 180px; }
+.lk input { flex: 1 1 60px; min-width: 0; }
+.lkname { flex: 0 1 auto; color: var(--muted); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 50%; }
+.fields .lk input { width: auto; }
 .lkname:empty { display: none; }
 
 dialog.dlg { padding: 0; border: 1px solid var(--line-strong); border-radius: 8px; background: var(--panel); color: var(--ink);
