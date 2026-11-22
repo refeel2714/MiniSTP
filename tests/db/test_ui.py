@@ -240,3 +240,44 @@ def test_reference_data_is_read_from_what_the_ledger_uses(client):
     assert meta["until"] == CAL.verified_until.isoformat() == "2027-01-31"   # 휴장일이 확인된 날까지만
     ticks, _ = _rows(client, "STP4300R03")
     assert ticks[-1] == {"asset_type": "ETF", "price_from": 0, "price_below": None, "tick": 5}
+
+
+# ---------- 셀 표시 유형 (실시간 잔고) ----------
+
+def test_holdings_carry_the_weight_and_the_closing_prices_the_ledger_recorded(client, conn, sample):
+    from ministp.ops import load_books
+    from ministp.queries import close_trends, last_closes
+    rows, _ = _rows(client, "STP1100R01")
+    assert rows, "the sample holds something"
+    # 비중: 장부금액 ÷ 장부금액 합계, so the column adds up to one
+    total = sum(r["book_cost"] for r in rows)
+    assert sum(r["weight"] for r in rows) == pytest.approx(1, abs=0.001)
+    assert all(r["weight"] == pytest.approx(r["book_cost"] / total, abs=0.0001) for r in rows)
+    # 추세선: 원장이 남긴 종가만, 오래된 날부터. 마지막 값은 다른 화면이 쓰는 최근 종가와 같아요
+    ledger = load_books(conn, CAL, FEES).ledger
+    trends, (_, closes) = close_trends(ledger), last_closes(ledger)
+    for r in rows:
+        assert r["trend"] == trends[r["symbol"]]
+        assert 2 <= len(r["trend"]) <= 20 and r["trend"][-1] == closes[r["symbol"]]
+
+
+def test_close_trends_keep_the_last_days_only(conn, sample):
+    from ministp.ops import load_books
+    from ministp.queries import close_trends
+    ledger = load_books(conn, CAL, FEES).ledger
+    full, short = close_trends(ledger), close_trends(ledger, days=3)
+    assert all(len(v) <= 3 for v in short.values())
+    assert all(full[sym][-len(v):] == v for sym, v in short.items())
+
+
+def test_holdings_screen_draws_the_badge_bar_meter_and_trend(client):
+    screen = client.get("/api/screen/STP-1100").json()
+    grid = next(g for g in screen["grids"] if g["id"] == "holdings")
+    cols = {c["name"]: c for c in grid["columns"]}
+    assert cols["instrument_name"]["display"] == "badge"
+    assert cols["symbol"]["inside"] == cols["asset_type"]["inside"] == "instrument_name"
+    assert [cols[n]["display"] for n in ("book_cost", "weight", "trend")] == ["bar", "meter", "spark"]
+    # 그림을 더한 만큼 열을 줄여요: 일곱 열이던 그리드가 여섯 열로 보여요
+    assert len([c for c in grid["columns"] if not c["inside"]]) == 6
+    spec = client.get("/spec/STP-1100").text
+    assert "배지 안에 표시" in spec and "추세선" in spec

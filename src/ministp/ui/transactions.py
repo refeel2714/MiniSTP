@@ -52,7 +52,8 @@ COERCE = {"date": _date, "text": str, "int": int, "bool": lambda v: v in (True, 
 
 
 def _holdings(c: TxContext, p) -> TxResult:
-    return TxResult({"main": q.holdings(c.conn, p.get("day") or c.today, c.account_id)})
+    return TxResult({"main": q.holdings_view(q.holdings(c.conn, p.get("day") or c.today, c.account_id),
+                                             c.books.ledger)})
 
 
 def _cash(c: TxContext, p) -> TxResult:
@@ -305,6 +306,11 @@ def output_problems(screens, ctx: TxContext, lookups=None) -> list[str]:
             missing = [c.name for c in g.columns if c.name not in ds.columns]
             if missing:
                 errs.append(f"{s.id} {g.id}: {g.tx}.{g.dataset}에 없는 열 {', '.join(missing)}")
+            for col in g.columns:   # a 추세선 draws a run of numbers, nothing else
+                if col.display == "spark" and col.name in ds.columns:
+                    i = ds.columns.index(col.name)
+                    if any(not isinstance(r[i], (list, tuple)) for r in ds.rows):
+                        errs.append(f"{s.id} {g.id}.{col.name}: 추세선 열의 값이 숫자열이 아니에요")
             for c in g.link.values():
                 if c not in (rows.get(g.master) or [{}])[0]:
                     errs.append(f"{s.id} {g.id}: 마스터 {g.master}에 연결 열 {c}가 없어요")

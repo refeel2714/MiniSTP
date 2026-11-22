@@ -19,7 +19,7 @@ grids:
       - {name: side, source: oms_orders.side, format: code, color: side}
       - {name: qty, source: oms_orders.qty, format: number}
       - {name: limit_price, source: oms_orders.limit_price, format: money}
-      - {name: outcome, source: oms_order_acks.outcome, format: code, color: status}
+      - {name: outcome, source: oms_order_acks.outcome, format: code, color: status, display: pill}
       - {name: order_no, source: oms_order_acks.order_no, format: code}
       - {name: filled_qty, label: 체결수량, format: number}
       - {name: filled_amount, label: 체결금액, format: money}
