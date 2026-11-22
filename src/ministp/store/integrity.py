@@ -8,20 +8,25 @@ journal entry balances.
 
 It only reads. Run it before and after a migration, or whenever someone asks
 "how do you know the ledger is right?".
+
+ERD v2.0: the event numbers, guards and balances are checked for the whole
+database; the replay comparison is made account by account, because each
+account is its own set of books inside the one event stream.
 """
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import psycopg
 
 from ..accounting import Account
 from ..ledger import Ledger
-from .postgres import cash_rows, from_payload, position_row
+from .postgres import DEFAULT_ACCOUNT, cash_rows, from_payload, position_row
 
 # Tables no one may UPDATE, DELETE or TRUNCATE (R-04). Same list as the loop in schema.sql;
 # tests/unit/test_integrity_tables.py keeps the two in step.
 APPEND_ONLY_TABLES = ("ledger_events", "journal_entries", "journal_lines", "position_ledger", "cash_ledger",
-                      "instruments", "oms_orders", "oms_order_acks", "broker_snapshots", "recon_results")
+                      "instruments", "oms_orders", "oms_order_acks", "broker_snapshots", "recon_results",
+                      "customers", "trading_accounts", "account_status_history")
 BALANCE_TRIGGERS = ("journal_entries_balanced", "journal_lines_balanced")
 SHOWN = 3   # how many differing items a detail line names
 
@@ -32,6 +37,7 @@ class Check:
     title: str
     ok: bool
     detail: str
+    account: str = ""    # empty: a check of the whole database
 
 
 def _some(items) -> str:
@@ -85,11 +91,12 @@ def check_balanced(conn: psycopg.Connection) -> Check:
 
 # ---------- stored rows against a replay of the events ----------
 
-def check_journal(conn: psycopg.Connection, ledger: Ledger) -> Check:
+def check_journal(conn: psycopg.Connection, ledger: Ledger, account_id: str = DEFAULT_ACCOUNT) -> Check:
     stored: dict[int, tuple] = {}
     for eid, date, kind, src, acct, dr, cr in conn.execute(
             "select e.entry_id, e.date, e.kind, e.source_id, l.account_code, l.debit, l.credit"
-            " from journal_entries e join journal_lines l using (entry_id) order by e.entry_id, l.line_id"):
+            " from journal_entries e join journal_lines l using (entry_id) where e.account_id = %s"
+            " order by e.entry_id, l.line_id", (account_id,)):
         stored.setdefault(eid, ((date, kind, src), []))[1].append((acct, dr, cr))
     db = [(eid, head, sorted(lines)) for eid, (head, lines) in stored.items()]
     mem = [((e.date, e.kind, e.source_id), sorted((ln.account.code, ln.debit, ln.credit) for ln in e.lines))
@@ -106,8 +113,8 @@ def check_journal(conn: psycopg.Connection, ledger: Ledger) -> Check:
     return Check("journal", "분개 재생", True, f"저장된 분개 {len(db):,}건 = 이벤트 재생 결과")
 
 
-def check_accounts(conn: psycopg.Connection, ledger: Ledger) -> Check:
-    stored = dict(conn.execute("select code, balance from account_balances_v"))
+def check_accounts(conn: psycopg.Connection, ledger: Ledger, account_id: str = DEFAULT_ACCOUNT) -> Check:
+    stored = dict(conn.execute("select code, balance from account_balances_v where account_id = %s", (account_id,)))
     diff = [f"{a.code} 저장 {int(stored.get(a.code, 0)):,} / 재생 {ledger.account_balance(a):,}"
             for a in Account if stored.get(a.code, 0) != ledger.account_balance(a)]
     if diff:
@@ -121,12 +128,13 @@ def _row_diff(stored: list[tuple], expected: list[tuple], label) -> list[str]:
     return [f"저장에만 {label(r)}" for r in extra] + [f"재생에만 {label(r)}" for r in missing]
 
 
-def check_positions(conn: psycopg.Connection, ledger: Ledger) -> Check:
+def check_positions(conn: psycopg.Connection, ledger: Ledger, account_id: str = DEFAULT_ACCOUNT) -> Check:
     stored = conn.execute("select trade_date, symbol, exec_id, qty_delta, cost_delta, realized_pnl"
-                          " from position_ledger").fetchall()
+                          " from position_ledger where account_id = %s", (account_id,)).fetchall()
     expected = [r for r in (position_row(ledger, ev) for ev in ledger.events) if r is not None]
     diff = _row_diff(stored, expected, lambda r: f"{r[2]}({r[1]} {r[3]:+,}주 {r[4]:+,}원)")
-    totals = {s: (int(q), int(c)) for s, q, c in conn.execute("select symbol, qty, book_cost from positions_v")}
+    totals = {s: (int(q), int(c)) for s, q, c in conn.execute(
+        "select symbol, qty, book_cost from positions_v where account_id = %s", (account_id,))}
     mem = {s: (p.qty, p.book_cost) for s, p in ledger.positions().items()}
     diff += [f"{s} 저장 {totals.get(s)} / 재생 {mem.get(s)}" for s in sorted(set(totals) | set(mem))
              if totals.get(s) != mem.get(s)]
@@ -135,11 +143,16 @@ def check_positions(conn: psycopg.Connection, ledger: Ledger) -> Check:
     return Check("positions", "보유", True, f"보유 원장 {len(stored):,}행, {len(mem)}종목의 수량·장부금액 일치")
 
 
-def check_cash(conn: psycopg.Connection, ledger: Ledger) -> Check:
-    stored = conn.execute("select date, reason, amount, ref_id from cash_ledger").fetchall()
+def check_cash(conn: psycopg.Connection, ledger: Ledger, account_id: str = DEFAULT_ACCOUNT) -> Check:
+    stored = conn.execute("select date, reason, amount, ref_id from cash_ledger where account_id = %s",
+                          (account_id,)).fetchall()
     expected = [r for e in ledger.journal for r in cash_rows(e)]
     diff = _row_diff(stored, expected, lambda r: f"{r[0]} {r[1]} {r[3]} {r[2]:+,}원")
-    balance = int(conn.execute("select balance from cash_balance_v").fetchone()[0])
+    balance = int(conn.execute("select coalesce(sum(amount), 0) from cash_ledger where account_id = %s",
+                               (account_id,)).fetchone()[0])
+    view = conn.execute("select balance from cash_balance_v where account_id = %s", (account_id,)).fetchone()
+    if view is None or int(view[0]) != balance:
+        diff.append(f"예수금 뷰 {view and int(view[0])} / 현금 원장 합계 {balance:,}")
     if balance != ledger.cash_balance():
         diff.append(f"예수금 저장 {balance:,} / 재생 {ledger.cash_balance():,}")
     if diff:
@@ -147,14 +160,15 @@ def check_cash(conn: psycopg.Connection, ledger: Ledger) -> Check:
     return Check("cash", "현금", True, f"현금 원장 {len(stored):,}행, 예수금 {balance:,}원 일치")
 
 
-def projection_checks(conn: psycopg.Connection, ledger: Ledger) -> list[Check]:
-    """Everything derived from events, against `ledger` (a replay of those events)."""
-    return [check_journal(conn, ledger), check_accounts(conn, ledger),
-            check_positions(conn, ledger), check_cash(conn, ledger)]
+def projection_checks(conn: psycopg.Connection, ledger: Ledger, account_id: str = DEFAULT_ACCOUNT) -> list[Check]:
+    """Everything derived from one account's events, against `ledger` (a replay of those events)."""
+    checks = [check_journal(conn, ledger, account_id), check_accounts(conn, ledger, account_id),
+              check_positions(conn, ledger, account_id), check_cash(conn, ledger, account_id)]
+    return [replace(c, account=account_id) for c in checks]
 
 
 def integrity_report(conn: psycopg.Connection, calendar, fees, instruments) -> list[Check]:
-    """All checks, in the order a person reads them. Reads only; replays the events itself."""
+    """All checks, in the order a person reads them. Reads only; replays each account's events itself."""
     top = conn.info.transaction_status == psycopg.pq.TransactionStatus.IDLE
     with conn.transaction():
         if top:   # one snapshot, so a write in another session cannot split the picture
@@ -163,10 +177,14 @@ def integrity_report(conn: psycopg.Connection, calendar, fees, instruments) -> l
         checks = [stream, check_guards(conn), check_balanced(conn)]
         if not stream.ok:
             return checks + [Check("replay", "이벤트 재생", False, "순번에 빈 곳이 있어 재생하지 않았어요")]
-        try:
-            events = [from_payload(t, p) for t, p in conn.execute(
-                "select event_type, payload from ledger_events order by seq")]
-            ledger = Ledger.replay(events, calendar, fees, instruments)
-        except Exception as e:   # a stored event the rules reject is itself the finding
-            return checks + [Check("replay", "이벤트 재생", False, f"{type(e).__name__}: {e}")]
-        return checks + projection_checks(conn, ledger)
+        for (account_id,) in conn.execute("select account_id from trading_accounts order by account_id").fetchall():
+            try:
+                events = [from_payload(t, p) for t, p in conn.execute(
+                    "select event_type, payload from ledger_events where account_id = %s order by seq",
+                    (account_id,))]
+                ledger = Ledger.replay(events, calendar, fees, instruments)
+            except Exception as e:   # a stored event the rules reject is itself the finding
+                checks.append(Check("replay", "이벤트 재생", False, f"{type(e).__name__}: {e}", account_id))
+                continue
+            checks += projection_checks(conn, ledger, account_id)
+        return checks

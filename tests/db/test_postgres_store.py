@@ -76,9 +76,9 @@ def test_db_rejects_unbalanced_entry(store):
     c = store.conn
     with pytest.raises(psycopg.errors.CheckViolation):
         with c.transaction():
-            c.execute("insert into ledger_events (seq, event_type, payload) values (1, 'X', '{}')")
-            eid = c.execute("insert into journal_entries (event_seq, date, kind, source_id)"
-                            " values (1, '2026-11-02', 'BAD', '') returning entry_id").fetchone()[0]
+            c.execute("insert into ledger_events (seq, event_type, payload, account_id) values (1, 'X', '{}', 'A0001')")
+            eid = c.execute("insert into journal_entries (event_seq, date, kind, source_id, account_id)"
+                            " values (1, '2026-11-02', 'BAD', '', 'A0001') returning entry_id").fetchone()[0]
             c.execute("insert into journal_lines (entry_id, account_code, debit) values (%s, '1010', 10)", (eid,))
             c.execute("insert into journal_lines (entry_id, account_code, credit) values (%s, '3010', 9)", (eid,))
     assert c.execute("select count(*) from ledger_events").fetchone()[0] == 0
@@ -87,8 +87,9 @@ def test_db_rejects_unbalanced_entry(store):
 def test_store_failure_halts_ledger_without_partial_rows(store, ledger):
     store.attach(ledger)
     ledger.deposit(d("11-02"), 1_000_000)
-    # Someone else wrote seq 2 behind our back: our next write must fail closed.
-    store.conn.execute("insert into ledger_events (seq, event_type, payload) values (2, 'X', '{}')")
+    # Someone else wrote an event into this account behind our back: our next write must fail closed.
+    # (Sequence numbers are shared by all accounts since v2.0, so the store counts the account's events.)
+    store.conn.execute("insert into ledger_events (seq, event_type, payload, account_id) values (2, 'X', '{}', 'A0001')")
     with pytest.raises(LedgerHaltedError):
         ledger.execute("H1", d("11-02"), "A", Side.BUY, 1, 10_000)
     assert store.conn.execute("select count(*) from position_ledger").fetchone()[0] == 0

@@ -36,8 +36,12 @@ class damaged:
     def __enter__(self):
         self.tx = self.conn.transaction(force_rollback=True)
         self.tx.__enter__()
-        for s in self.statements:
-            self.conn.execute(s)
+        try:
+            for s in self.statements:
+                self.conn.execute(s)
+        except BaseException as e:
+            self.tx.__exit__(type(e), e, e.__traceback__)
+            raise
         return self.conn
 
     def __exit__(self, *exc):
@@ -48,7 +52,7 @@ def test_a_database_built_by_the_real_operations_is_clean(conn):
     r = report(conn)
     assert list(r) == ["events", "guards", "balanced", "journal", "accounts", "positions", "cash"]
     assert all(c.ok for c in r.values()), [c for c in r.values() if not c.ok]
-    assert "빈 번호 없음" in r["events"].detail and "10개 테이블" in r["guards"].detail
+    assert "빈 번호 없음" in r["events"].detail and "13개 테이블" in r["guards"].detail
 
 
 def test_the_report_only_reads(conn):
@@ -85,16 +89,16 @@ def test_a_deleted_position_row_is_found(conn):
 
 
 def test_a_gap_in_event_numbers_is_found_and_nothing_is_replayed(conn):
-    with damaged(conn, "insert into ledger_events (seq, event_type, payload) select max(seq) + 2, 'DepositEvent',"
-                       " '{\"date\": \"2026-11-02\", \"amount\": 1}' from ledger_events"):
+    with damaged(conn, "insert into ledger_events (seq, event_type, payload, account_id) select max(seq) + 2, 'DepositEvent',"
+                       " '{\"date\": \"2026-11-02\", \"amount\": 1}', 'A0001' from ledger_events"):
         r = report(conn)
         assert not r["events"].ok and "빈 번호" in r["events"].detail
         assert not r["replay"].ok and "journal" not in r
 
 
 def test_an_event_without_its_derived_rows_is_found(conn):
-    with damaged(conn, "insert into ledger_events (seq, event_type, payload) select max(seq) + 1, 'DepositEvent',"
-                       " '{\"date\": \"2026-11-02\", \"amount\": 1000}' from ledger_events"):
+    with damaged(conn, "insert into ledger_events (seq, event_type, payload, account_id) select max(seq) + 1, 'DepositEvent',"
+                       " '{\"date\": \"2026-11-02\", \"amount\": 1000}', 'A0001' from ledger_events"):
         r = report(conn)
         assert r["events"].ok
         assert not r["journal"].ok and "저장된 분개가 모자라요" in r["journal"].detail
@@ -103,8 +107,8 @@ def test_an_event_without_its_derived_rows_is_found(conn):
 
 def test_an_unbalanced_entry_is_found_before_commit_would_refuse_it(conn):
     with damaged(conn, "set constraints all deferred",
-                 "with e as (insert into journal_entries (event_seq, date, kind, source_id)"
-                 " values (1, '2026-11-02', 'X', 'x') returning entry_id)"
+                 "with e as (insert into journal_entries (event_seq, date, kind, source_id, account_id)"
+                 " values (1, '2026-11-02', 'X', 'x', 'A0001') returning entry_id)"
                  " insert into journal_lines (entry_id, account_code, debit)"
                  " select entry_id, (select min(code) from accounts_chart), 7 from e"):
         r = report(conn)
@@ -113,9 +117,9 @@ def test_an_unbalanced_entry_is_found_before_commit_would_refuse_it(conn):
 
 
 def test_an_event_the_rules_reject_is_reported_not_raised(conn):
-    with damaged(conn, "insert into ledger_events (seq, event_type, payload) select max(seq) + 1, 'ExecutionEvent',"
+    with damaged(conn, "insert into ledger_events (seq, event_type, payload, account_id) select max(seq) + 1, 'ExecutionEvent',"
                        " '{\"exec_id\": \"X-1\", \"trade_date\": \"2026-11-02\", \"symbol\": \"NOPE\","
-                       " \"side\": \"BUY\", \"qty\": 1, \"price\": 100}' from ledger_events"):
+                       " \"side\": \"BUY\", \"qty\": 1, \"price\": 100}', 'A0001' from ledger_events"):
         r = report(conn)
         assert not r["replay"].ok and r["replay"].detail
 

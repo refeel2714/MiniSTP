@@ -61,18 +61,23 @@ def read_catalog(conn: psycopg.Connection, schema: str) -> dict:
             " where n.nspname = %s and c.relname = %s and i.indisunique and not i.indisprimary"
             " and array_length(i.indkey, 1) = 1", (schema, name))}
         fks = conn.execute(
-            "select a.attname, rc.relname, ra.attname"
+            # one row per column of each foreign key; a composite key (다계좌: 이벤트 순번 + 계좌) has several
+            "select a.attname, rc.relname, ra.attname, u.ord = 1,"
+            "       (select string_agg(x.attname, ', ' order by w.ord) from unnest(k.conkey) with ordinality w(num, ord)"
+            "          join pg_attribute x on x.attrelid = k.conrelid and x.attnum = w.num)"
             " from pg_constraint k join pg_class c on c.oid = k.conrelid"
             " join pg_namespace n on n.oid = c.relnamespace"
             " join pg_class rc on rc.oid = k.confrelid"
-            " join pg_attribute a on a.attrelid = k.conrelid and a.attnum = k.conkey[1]"
-            " join pg_attribute ra on ra.attrelid = k.confrelid and ra.attnum = k.confkey[1]"
-            " where n.nspname = %s and c.relname = %s and k.contype = 'f' order by a.attnum",
+            " cross join lateral unnest(k.conkey, k.confkey) with ordinality u(num, refnum, ord)"
+            " join pg_attribute a on a.attrelid = k.conrelid and a.attnum = u.num"
+            " join pg_attribute ra on ra.attrelid = k.confrelid and ra.attnum = u.refnum"
+            " where n.nspname = %s and c.relname = %s and k.contype = 'f' order by k.conkey[1], k.conname, u.ord",
             (schema, name)).fetchall()
         out[name] = {"kind": "view" if kind == "v" else "table", "comment": comment,
                      "columns": [{"name": c, "type": t, "not_null": nn, "comment": cm,
                                   "pk": c in pk, "unique": c in uniq} for c, t, nn, cm in cols],
-                     "fks": [{"column": a, "ref_table": rt, "ref_column": rc} for a, rt, rc in fks]}
+                     "fks": [{"column": a, "ref_table": rt, "ref_column": rc, "first": first, "label": label}
+                             for a, rt, rc, first, label in fks]}
     return out
 
 
@@ -120,8 +125,8 @@ def render(catalog: dict, version: str, digest: str, history: str) -> str:
             lines.append(f'        {_mermaid_type(c["type"])} {c["name"]}{key} "{_clean(c["comment"])}"')
         lines.append("    }")
     for t, info in tables.items():
-        for f in info["fks"]:
-            lines.append(f'    {f["ref_table"]} ||--o{{ {t} : "{f["column"]}"')
+        for f in (f for f in info["fks"] if f["first"]):    # one line per foreign key, not per column
+            lines.append(f'    {f["ref_table"]} ||--o{{ {t} : "{f["label"]}"')
     lines += ["```", "", "## 데이터 사전", ""]
     for t, info in list(tables.items()) + list(views.items()):
         label = "뷰" if info["kind"] == "view" else "테이블"
@@ -159,6 +164,8 @@ def generate(conn: psycopg.Connection, history: str, previous: str | None = None
 # ---------- shareable HTML page ----------
 
 GROUPS = [
+    ("고객과 계좌", "고객 한 명이 위탁계좌 여러 개를 가져요. 아래 모든 기록은 계좌 하나에 속해요. 계좌번호와 인증키는 DB에 없어요.",
+     ["customers", "trading_accounts", "account_status_history"]),
     ("원장", "모든 기록의 원천. 이벤트가 쌓이면 분개·보유·예수금이 함께 남아요.",
      ["ledger_events", "journal_entries", "journal_lines", "position_ledger", "cash_ledger"]),
     ("기준정보", "계정과목과 종목 마스터.", ["accounts_chart", "instruments"]),
@@ -175,6 +182,7 @@ def _esc(s: str) -> str:
 
 # Bands of the diagram, each a list of four columns of tables (left to right = data flow).
 LAYOUT = [
+    ("고객과 계좌", [["customers"], ["trading_accounts"], ["account_status_history"], []]),
     ("원장 · 기준정보", [["ledger_events"], ["journal_entries", "position_ledger", "cash_ledger"],
                      ["journal_lines"], ["accounts_chart"]]),
     ("주문", [["instruments"], ["oms_orders"], ["oms_order_acks"], []]),
@@ -232,7 +240,7 @@ def render_svg(catalog: dict) -> str:
     for t, info in tables.items():
         for f in info["fks"]:
             p, c = f["ref_table"], t
-            if p not in box or c not in box:
+            if not f["first"] or p not in box or c not in box:
                 continue
             py, cy = rows.get((p, f["ref_column"]), box[p][1] + HEAD_H / 2), rows[(c, f["column"])]
             (px, _, _), (cx, _, _) = box[p], box[c]

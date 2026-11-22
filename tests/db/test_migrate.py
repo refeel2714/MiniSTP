@@ -1,12 +1,15 @@
-"""Migrations on a sample database: rehearsal, the unchanged-rows proof, and the record of what ran."""
+"""The migration tool on a sample database: rehearsal, the unchanged-rows proof, and the record of what ran.
+
+These tests feed the tool their own migrations, numbered from 1, so the fixture removes the record of the
+shipped ones. The shipped migration (0001, 다계좌) is tested on a real v1.1 database in test_multi_account.py."""
 import os
 
 import pytest
 
 from ministp import __main__ as cli
-from ministp.ops import load_books
+from ministp.ops import load_instruments
 from ministp.sample import build_sample
-from ministp.store import migrate as mg
+from ministp.store import PostgresLedgerStore, migrate as mg
 
 psycopg = pytest.importorskip("psycopg")
 
@@ -17,12 +20,12 @@ pytestmark = [pytest.mark.db, pytest.mark.skipif(not URL, reason="MINISTP_TEST_D
 
 LEDGER_TABLES = ["ledger_events", "journal_entries", "position_ledger", "cash_ledger", "oms_orders",
                  "broker_snapshots", "recon_results"]
-# The step the 다계좌 design (ERD v2.0) relies on: a NOT NULL column with a default on append-only tables.
-ADD_ACCOUNT = "-- title: 계좌ID 추가\n-- erd: 2.0\n" + "".join(
-    f"alter table {t} add column account_id text not null default 'A0001';\n"
-    f"alter table {t} alter column account_id drop default;\n" for t in LEDGER_TABLES)
+# The step the 다계좌 migration relies on: a NOT NULL column with a default on append-only tables.
+ADD_DESK = "-- title: 데스크 추가\n-- erd: 9.9\n" + "".join(
+    f"alter table {t} add column desk text not null default 'D1';\n"
+    f"alter table {t} alter column desk drop default;\n" for t in LEDGER_TABLES)
 CLEANUP = (f"drop table if exists {mg.TABLE}; drop table if exists mig_note; drop table if exists mig_scratch;"
-           + "".join(f"alter table {t} drop column if exists account_id;" for t in LEDGER_TABLES))
+           + "".join(f"alter table {t} drop column if exists desk;" for t in LEDGER_TABLES))
 
 
 @pytest.fixture
@@ -36,8 +39,9 @@ def conn():
 
 
 def _state(conn):
-    books = load_books(conn, CAL, FEES)
-    led = books.ledger
+    store = PostgresLedgerStore(conn)   # not load_books: it refuses while the record of shipped migrations is gone
+    led = store.load(CAL, FEES, load_instruments(conn))
+    assert store.verify(led) == []
     return (len(led.events), {s: (p.qty, p.book_cost) for s, p in led.positions().items()}, led.cash_balance(),
             [(r.date, r.nav_per_1000) for r in led.nav_history()])
 
@@ -52,29 +56,30 @@ def test_status_on_a_fresh_database_changes_nothing(conn):
     assert not mg._has_table(conn, mg.TABLE)        # looking never creates the record table
 
 
-def test_rehearsal_adds_the_account_column_and_leaves_no_trace(conn):
+def test_rehearsal_adds_a_column_to_ledger_tables_and_leaves_no_trace(conn):
     before, prints = _state(conn), mg.fingerprint(conn)
-    (report,) = mg.migrate(conn, [_mig(1, "accounts", ADD_ACCOUNT)], dry_run=True)
+    (report,) = mg.migrate(conn, [_mig(1, "desks", ADD_DESK)], dry_run=True)
     assert not report.applied
     kept = {t.table: t.rows_before for t in report.kept}
     assert set(LEDGER_TABLES) <= set(kept) and kept["ledger_events"] == before[0]
     assert mg.fingerprint(conn) == prints and _state(conn) == before
     assert not mg._has_table(conn, mg.TABLE)
-    assert "account_id" not in mg._tables(conn)["ledger_events"]
+    assert "desk" not in mg._tables(conn)["ledger_events"]
 
 
 def test_applying_keeps_every_existing_row_and_records_the_migration(conn):
     prints = mg.fingerprint(conn)
-    mig = _mig(1, "accounts", ADD_ACCOUNT)
+    mig = _mig(1, "desks", ADD_DESK)
     (report,) = mg.migrate(conn, [mig])
     assert report.applied and all(t.unchanged for t in report.tables)
     assert mg.fingerprint(conn, like=prints) == prints          # same rows over the old columns
-    assert conn.execute("select distinct account_id from ledger_events").fetchall() == [("A0001",)]
-    assert mg.applied(conn) == {1: ("accounts", mig.checksum)}
-    assert conn.execute(f"select erd_version from {mg.TABLE}").fetchone() == ("2.0",)
+    assert conn.execute("select distinct desk from ledger_events").fetchall() == [("D1",)]
+    assert mg.applied(conn) == {1: ("desks", mig.checksum)}
+    assert conn.execute(f"select erd_version from {mg.TABLE}").fetchone() == ("9.9",)
     assert mg.migrate(conn, [mig]) == []                         # nothing left to do
-    with pytest.raises(psycopg.errors.NotNullViolation):         # the default is gone: new rows must name an account
-        conn.execute("insert into broker_snapshots (date, kind, payload) values (current_date, 'X', '{}')")
+    with pytest.raises(psycopg.errors.NotNullViolation, match="desk"):   # the default is gone: new rows must say
+        conn.execute("insert into broker_snapshots (date, kind, payload, account_id)"
+                     " values (current_date, 'X', '{}', 'A0001')")
 
 
 def test_a_migration_that_changes_existing_rows_is_rolled_back(conn):
@@ -124,13 +129,15 @@ def test_rehearsal_checks_deferred_constraints_too(conn):
     """The journal balance check is deferred to commit; a rehearsal never commits, so it is forced."""
     seq = conn.execute("select max(seq) from ledger_events").fetchone()[0]
     bad = _mig(1, "unbalanced", "-- changes-data: journal_entries\n"
-               f"insert into journal_entries (event_seq, date, kind, source_id) values ({seq}, current_date, 'X', 'x');")
+               "insert into journal_entries (event_seq, date, kind, source_id, account_id)"
+               f" values ({seq}, current_date, 'X', 'x', 'A0001');")
     with pytest.raises(mg.MigrationError, match="unbalanced"):
         mg.migrate(conn, [bad], dry_run=True)
 
 
-def test_db_migrate_command_reports_nothing_to_do(conn, capsys):
+def test_db_migrate_command_reports_nothing_to_do_on_a_current_database(conn, capsys):
+    build_sample(conn, CAL, FEES, days=3, seed=3)      # a new database is created current, with the record
     rc = cli.run(["db-migrate"], environ={"MINISTP_DATABASE_URL": URL})
     out = capsys.readouterr().out
     assert rc == 0 and "적용할 마이그레이션이 없어요" in out and "남은 것 0개" in out
-    assert not mg._has_table(conn, mg.TABLE)
+    assert len(mg.applied(conn)) == len(mg.discover())

@@ -13,6 +13,7 @@ import psycopg
 
 from .ledger import Ledger
 from .risk import REASON_TEXT
+from .store import DEFAULT_ACCOUNT
 
 
 @dataclass(frozen=True)
@@ -90,11 +91,14 @@ def event_trace(conn: psycopg.Connection, seq: int) -> EventTrace:
     return EventTrace(event, journal, positions, cash)
 
 
-def trial_balance(conn: psycopg.Connection) -> tuple[Dataset, bool]:
-    """시산표 and whether total debits equal total credits over the whole journal."""
+def trial_balance(conn: psycopg.Connection, account_id: str = DEFAULT_ACCOUNT) -> tuple[Dataset, bool]:
+    """One account's 시산표 and whether its total debits equal its total credits."""
     ds = _q(conn, "select code, name, normal_side, balance from account_balances_v"
-                  " where balance <> 0 order by code")
-    dr, cr = conn.execute("select coalesce(sum(debit), 0), coalesce(sum(credit), 0) from journal_lines").fetchone()
+                  " where account_id = %s and balance <> 0 order by code", (account_id,))
+    dr, cr = conn.execute(
+        "select coalesce(sum(l.debit), 0), coalesce(sum(l.credit), 0)"
+        " from journal_entries e join journal_lines l using (entry_id) where e.account_id = %s",
+        (account_id,)).fetchone()
     return ds, dr == cr
 
 
@@ -160,8 +164,8 @@ def nav_series(ledger: Ledger, date_from: dt.date | None = None, date_to: dt.dat
 
 # ---------- STP-1100 잔고 (IBOR) ----------
 
-def holdings(conn: psycopg.Connection, day: dt.date | None = None) -> Dataset:
-    """종목별 보유: 수량, 장부금액, 오늘 체결 수량, 마지막 변동 시각."""
+def holdings(conn: psycopg.Connection, day: dt.date | None = None, account_id: str = DEFAULT_ACCOUNT) -> Dataset:
+    """One account's 종목별 보유: 수량, 장부금액, 오늘 체결 수량, 마지막 변동 시각."""
     return _q(conn, """
         select p.symbol, i.name as instrument_name, i.asset_type, p.qty, p.book_cost,
                coalesce(t.today_qty, 0) as today_qty, t.last_change
@@ -170,9 +174,9 @@ def holdings(conn: psycopg.Connection, day: dt.date | None = None) -> Dataset:
           left join lateral (select sum(x.qty_delta) filter (where x.trade_date = %(d)s) as today_qty,
                                     max(e.recorded_at) as last_change
                                from position_ledger x join ledger_events e on e.seq = x.event_seq
-                              where x.symbol = p.symbol) t on true
-         where p.qty <> 0
-         order by p.book_cost desc""", {"d": day or dt.date.today()})
+                              where x.symbol = p.symbol and x.account_id = p.account_id) t on true
+         where p.account_id = %(a)s and p.qty <> 0
+         order by p.book_cost desc""", {"d": day or dt.date.today(), "a": account_id})
 
 
 def cash_summary(ledger: Ledger, open_orders) -> Dataset:
