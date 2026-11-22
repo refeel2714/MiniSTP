@@ -168,8 +168,8 @@ def recon_calendar(conn: psycopg.Connection, calendar, today: dt.date, date_from
 def order_blotter(conn: psycopg.Connection, day: dt.date) -> Dataset:
     """그날 주문: 의도 → 접수 → 반영된 체결, 체결통보 반영 지연."""
     return _q(conn, """
-        select o.client_id, o.created_at, o.symbol, i.name as instrument_name, o.side, o.qty, o.limit_price,
-               a.outcome, a.order_no, a.detail,
+        select o.client_id, o.trade_date, o.created_at, o.symbol, i.name as instrument_name, i.asset_type,
+               o.side, o.qty, o.limit_price, a.outcome, a.order_no, a.detail,
                coalesce(f.filled_qty, 0) as filled_qty, f.filled_amount,
                n.notices, n.max_booking_ms
           from oms_orders o
@@ -186,6 +186,98 @@ def order_blotter(conn: psycopg.Connection, day: dt.date) -> Dataset:
                                 and s.payload->'notice'->>'order_no' = a.order_no) n on true
          where o.trade_date = %s
          order by o.created_at desc""", (day,))
+
+
+# 주문 진행 단계: where an order stands on its way to cash. Each step is done · now · stop · wait.
+ORDER_STEPS = ("의도", "접수", "체결", "결제")
+
+
+def order_progress(outcome: str | None, qty: int, filled: int, settled: int, day_over: bool,
+                   overdue: bool) -> tuple[tuple[str, ...], str]:
+    """The state of each of ORDER_STEPS and one phrase for the whole order.
+
+    `day_over`: the order's trade date has passed, so whatever was not filled never will be
+    (orders are day orders). `overdue`: a fill is past its settlement date and still unsettled.
+    """
+    if outcome is None:        # intent stored, no answer recorded: the broker's order list has to be checked
+        return ("done", "now", "wait", "wait"), "접수 기록 없음"
+    if outcome != "ACCEPTED":
+        return ("done", "stop", "wait", "wait"), "접수 거부"
+    if filled == 0:
+        return (("done", "done", "stop", "wait"), "미체결 종료") if day_over else (("done", "done", "now", "wait"), "체결 대기")
+    if filled < qty and not day_over:
+        return ("done", "done", "now", "wait"), "부분 체결"
+    if settled >= filled:
+        return ("done", "done", "done", "done"), "결제 완료"
+    return ("done", "done", "done", "stop" if overdue else "now"), "결제 지연" if overdue else "결제 대기"
+
+
+def _order_key(trade_date: dt.date, order_no: str) -> str:
+    """What every execution id of one broker order starts with (`YYYYMMDD-주문번호-순번`)."""
+    return f"{trade_date:%Y%m%d}-{order_no}"
+
+
+def _settlement_facts(ledger: Ledger):
+    """Executions by order, the day each one settled, and the ones still waiting, all from the replayed ledger."""
+    from .ledger import ExecutionEvent, SettlementEvent
+    fills: dict[str, list] = {}
+    settled_on: dict[str, dt.date] = {}
+    for e in ledger.events:
+        if isinstance(e, ExecutionEvent):
+            fills.setdefault(e.exec_id.rsplit("-", 1)[0], []).append(e)
+        elif isinstance(e, SettlementEvent):
+            settled_on[e.exec_id] = e.date
+    pending = {x.exec_id: x.settle_date for x in ledger.pending_settlements()}
+    return fills, settled_on, pending
+
+
+def blotter_view(base: Dataset, ledger: Ledger, today: dt.date) -> Dataset:
+    """The blotter with each order's progress: settled quantity, the four steps and one phrase (진행 상태).
+
+    Settlement is read from the replayed ledger, the same one the cash screens use.
+    """
+    fills, settled_on, pending = _settlement_facts(ledger)
+    rows = []
+    for r in base.records():
+        mine = fills.get(_order_key(r["trade_date"], r["order_no"]), []) if r["order_no"] else []
+        settled = sum(e.qty for e in mine if e.exec_id in settled_on)
+        overdue = any(pending.get(e.exec_id, today) < today for e in mine)
+        steps, stage = order_progress(r["outcome"], r["qty"], r["filled_qty"], settled, r["trade_date"] < today, overdue)
+        rows.append((*r.values(), settled, list(steps), stage))
+    return Dataset((*base.columns, "settled_qty", "progress", "stage"), tuple(rows))
+
+
+@dataclass(frozen=True)
+class OrderDetail:
+    order: Dataset   # what was sent and what came back (one row)
+    fills: Dataset   # each execution of the order with its settlement
+
+
+def order_detail(conn: psycopg.Connection, ledger: Ledger, client_id: str, today: dt.date) -> OrderDetail:
+    """주문 하나의 접수 내용과 체결별 결제: 체결일 → 결제 예정일 → 결제일."""
+    order = _q(conn, """
+        select o.client_id, o.trade_date, o.limit_price, a.outcome, a.order_no, a.created_at as acked_at, a.detail,
+               n.notices, n.max_booking_ms
+          from oms_orders o
+          left join oms_order_acks a using (client_id)
+          left join lateral (select count(*) as notices, max((s.payload->>'booking_ms')::int) as max_booking_ms
+                               from broker_snapshots s
+                              where s.kind = 'FILL_NOTICE' and s.date = o.trade_date
+                                and s.payload->'notice'->>'order_no' = a.order_no) n on true
+         where o.client_id = %s""", (client_id,))
+    if not order.rows:
+        raise KeyError(f"없는 주문이에요: {client_id}")
+    o = order.records()[0]
+    fills, settled_on, pending = _settlement_facts(ledger)
+    rows = []
+    for e in fills.get(_order_key(o["trade_date"], o["order_no"]), []) if o["order_no"] else []:
+        res = ledger.execution_result(e.exec_id)
+        done = settled_on.get(e.exec_id)
+        state = "결제 완료" if done else "결제 지연" if pending.get(e.exec_id, today) < today else "결제 대기"
+        rows.append((e.exec_id, e.trade_date, e.qty, e.price, res.gross, res.commission + res.tx_tax + res.rural_tax,
+                     res.net, res.settle_date, done, state))
+    return OrderDetail(order, Dataset(("exec_id", "trade_date", "qty", "price", "gross", "fees", "net", "settle_date",
+                                       "settled_on", "settle_state"), tuple(rows)))
 
 
 # ---------- STP-2200 기준가 ----------

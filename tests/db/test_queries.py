@@ -1,10 +1,12 @@
 """Read services the screens will call: a real day's records, read back through them."""
+import pytest
+
 from db.test_ops import CAL, D, books, broker, conn  # noqa: F401
 from ministp.accounting import Account
 from ministp.ledger import Side
 from ministp.ops import clean_streak, daily_close, open_books, place_order, recon_days, resolve_break
-from ministp.queries import (TRANSACTIONS, event_trace, ledger_events, nav_series, order_blotter,
-                             recon_calendar, recon_history, trial_balance)
+from ministp.queries import (TRANSACTIONS, blotter_view, event_trace, ledger_events, nav_series, order_blotter,
+                             order_detail, order_progress, recon_calendar, recon_history, trial_balance)
 from ministp.recon import Cause
 
 DAY = D("2026-11-20")
@@ -103,6 +105,47 @@ def test_blotter_shows_intent_ack_and_fill(conn, broker):
         "ACCEPTED", "0000000001", 2, 160_000)
     assert o["notices"] == 0 and o["max_booking_ms"] is None
     assert len(order_blotter(conn, D("2026-11-23"))) == 0
+
+
+def test_order_progress_names_where_an_order_stands():
+    done, now, stop, wait = "done", "now", "stop", "wait"
+    P = order_progress   # (outcome, qty, filled, settled, day_over, overdue)
+    assert P(None, 10, 0, 0, False, False) == ((done, now, wait, wait), "접수 기록 없음")
+    assert P("REJECTED", 10, 0, 0, False, False) == ((done, stop, wait, wait), "접수 거부")
+    assert P("ACCEPTED", 10, 0, 0, False, False) == ((done, done, now, wait), "체결 대기")
+    assert P("ACCEPTED", 10, 0, 0, True, False) == ((done, done, stop, wait), "미체결 종료")
+    assert P("ACCEPTED", 10, 4, 0, False, False) == ((done, done, now, wait), "부분 체결")
+    assert P("ACCEPTED", 10, 4, 0, True, False) == ((done, done, done, now), "결제 대기")     # 남은 6주는 장이 끝나며 사라짐
+    assert P("ACCEPTED", 10, 10, 0, False, True) == ((done, done, done, stop), "결제 지연")
+    assert P("ACCEPTED", 10, 10, 10, True, False) == ((done, done, done, done), "결제 완료")
+
+
+def test_blotter_follows_an_order_to_its_settlement(conn, broker):
+    _a_day(conn, broker)                           # 11-20 (금): 2주 매수 체결, T+2라 11-24 (화) 결제
+    led = books(conn).ledger
+    (o,) = blotter_view(order_blotter(conn, DAY), led, DAY).records()
+    assert (o["asset_type"], o["settled_qty"], o["progress"], o["stage"]) == (
+        "ETF", 0, ["done", "done", "done", "now"], "결제 대기")
+    d = order_detail(conn, led, "S20261120-0001", DAY)
+    (sent,) = d.order.records()
+    assert (sent["outcome"], sent["order_no"], sent["limit_price"], sent["detail"]) == ("ACCEPTED", "0000000001", 80_000, None)
+    (f,) = d.fills.records()
+    assert (f["exec_id"], f["qty"], f["price"], f["gross"], f["fees"]) == ("20261120-0000000001-1", 2, 80_000, 160_000, 20)
+    assert (abs(f["net"]), f["settle_date"], f["settled_on"], f["settle_state"]) == (160_020, D("2026-11-24"), None, "결제 대기")
+    # 결제일이 지났는데 일 마감을 안 돌렸으면 결제 지연
+    late = blotter_view(order_blotter(conn, DAY), led, D("2026-11-25")).records()[0]
+    assert (late["progress"][-1], late["stage"]) == ("stop", "결제 지연")
+    assert order_detail(conn, led, "S20261120-0001", D("2026-11-25")).fills.records()[0]["settle_state"] == "결제 지연"
+    # 11-24 일 마감이 결제를 원장에 남기면 끝까지 간 주문
+    broker.set_day(D("2026-11-24"))
+    daily_close(books(conn), broker, D("2026-11-24"))
+    led = books(conn).ledger
+    (o,) = blotter_view(order_blotter(conn, DAY), led, D("2026-11-24")).records()
+    assert (o["settled_qty"], o["progress"], o["stage"]) == (2, ["done"] * 4, "결제 완료")
+    (f,) = order_detail(conn, led, "S20261120-0001", D("2026-11-24")).fills.records()
+    assert (f["settled_on"], f["settle_state"]) == (D("2026-11-24"), "결제 완료")
+    with pytest.raises(KeyError):
+        order_detail(conn, led, "S20261120-9999", DAY)
 
 
 def test_nav_series_keeps_each_day_as_it_was(conn, broker):
