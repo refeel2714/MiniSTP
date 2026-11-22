@@ -281,3 +281,35 @@ def test_holdings_screen_draws_the_badge_bar_meter_and_trend(client):
     assert len([c for c in grid["columns"] if not c["inside"]]) == 6
     spec = client.get("/spec/STP-1100").text
     assert "배지 안에 표시" in spec and "추세선" in spec
+
+
+# ---------- 대사 달력 ----------
+
+def test_recon_calendar_opens_on_the_latest_day_and_counts_the_gate(client, sample):
+    days, meta = _rows(client, "STP2100R02")
+    last = sample.last_day.isoformat()
+    assert days[0]["date"] == last
+    assert meta == {"clean_streak": sample.streak, "gate_left": 20 - sample.streak, "selected": last}
+    states = {r["state"] for r in days}
+    assert "판단 완료" in states and states <= {"일치", "판단 완료", "휴장"}   # 샘플은 불일치를 모두 판단해 둬요
+    # 오른쪽 상세는 달력의 한 칸이 가리키는 그날의 대사 결과
+    judged = next(r for r in days if r["state"] == "판단 완료")
+    detail, _ = _rows(client, "STP2100R01", {"date_from": judged["date"], "date_to": judged["date"], "kind": judged["kind"]})
+    assert len(detail) == judged["items"] and sum(r["status"] == "BREAK" for r in detail) == judged["breaks"]
+    assert all(r["resolved_cause"] for r in detail if r["status"] == "BREAK") and judged["open_breaks"] == 0
+    r = client.post("/api/tx/STP2100R02", json={"params": {"date_from": "2020-01-01"}})
+    assert r.status_code == 400 and "두 해" in r.json()["error"]
+    r = client.post("/api/tx/STP2100R02", json={"params": {"date_from": last, "date_to": "2026-01-02"}})
+    assert r.status_code == 400 and "시작일" in r.json()["error"]
+
+
+def test_recon_screen_is_a_calendar_with_that_days_results_next_to_it(client):
+    screen = client.get("/api/screen/STP-2100").json()
+    days, results = screen["grids"]
+    assert screen["layout"] == "split" and [c["name"] for c in screen["conditions"]] == ["date_from", "date_to", "kind"]
+    assert (days["view"], days["calendar"], days["key"]) == ("calendar", {"date": "date", "state": "state"}, "date")
+    assert (results["load"], results["master"]) == ("master", "days")
+    assert results["link"] == {"date_from": "date", "date_to": "date", "kind": "kind"}
+    assert [a["tx"] for a in results["actions"]] == ["STP2100U01"]     # 원인 판단 버튼은 그날의 결과 쪽에
+    spec = client.get("/spec/STP-2100").text
+    assert "- 표시: 달력" in spec and "`STP2100R02` | 날짜별 대사 요약" in spec

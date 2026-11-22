@@ -6,7 +6,7 @@
  * A grid's 처리 buttons (top right of the grid) open an input window and call a
  * 처리 transaction (POST /api/action/{id}); an input that takes a code opens a
  * 찾기 팝업 to pick it from a list.
- * Keys: Enter in a condition = 조회, ↑/↓ moves the row, Enter or double-click on
+ * Keys: Enter in a condition = 조회, ↑/↓ moves the row (in a calendar ←/→ a day, ↑/↓ a week), Enter or double-click on
  * a row = move to the linked screen, Ctrl+Enter anywhere = 조회, F2 in an input
  * with a 찾기 button = open the list.
  */
@@ -26,6 +26,7 @@
     MATCH: "ok", ACCEPTED: "ok", FILLED: "ok", true: "ok",
     BREAK: "bad", REJECTED: "bad", false: "bad",
     RESOLVED: "warn", UNKNOWN: "warn", CANCELED: "warn", PENDING: "warn", "적용 중": "ok", "예정": "warn",
+    "일치": "ok", "판단 완료": "warn", "불일치": "bad", "대사 없음": "miss",   // miss: something owed is not there
   };
 
   function h(tag, attrs, ...kids) {
@@ -152,6 +153,7 @@
   // ---------- 셀 표시 유형 ----------
   // A column's `display` draws a small picture next to the value. The value is never replaced:
   // the number, the name and the code stay readable, the picture adds size, trend or state.
+  const WEEK = ["월", "화", "수", "목", "금", "토", "일"];
   const HUES = 8;
   const ROUND = new Set(["STOCK"]);   // 주식은 원, 그 밖(ETF, ETN ...)은 둥근 사각
   function hue(code) {
@@ -474,7 +476,7 @@
       const details = def.grids.filter(g => g.load === "master" && g.master === master.id);
       if (!details.length || !row) return;
       const linked = g => Object.fromEntries(Object.entries(g.link).map(([p, col]) => [p, row[col]]));
-      details.forEach(g => grids[g.id].about(Object.values(linked(g)).join(" · ")));   // whose detail this is
+      details.forEach(g => grids[g.id].about([...new Set(Object.values(linked(g)))].join(" · ")));   // whose detail this is
       load(details, linked);
     }
 
@@ -574,7 +576,9 @@
         if (first) { first = false; return; }          // the opening head, nothing changed yet
         if (pending) return;
         pending = true;
-        const list = liveGrids.filter(g => grids[g.id].params);
+        // a live list takes its open details along, so the right side never shows an older state than the left
+        const follow = def.grids.filter(g => g.load === "master" && liveGrids.some(m => m.id === g.master));
+        const list = [...liveGrids, ...follow].filter(g => grids[g.id].params);
         load(list, g => grids[g.id].params, { live: true }).finally(() => { pending = false; });
       });
       es.onopen = () => { dot.classList.remove("off"); dot.classList.add("on"); dot.title = "실시간 연결됨"; };
@@ -677,7 +681,7 @@
         mark(false);
         onSelect(view[sel]);
       }
-      if (hadFocus) { const t = body.querySelector(".grid"); if (t) t.focus({ preventScroll: true }); }
+      if (hadFocus) { const t = body.querySelector(".grid, button.day.sel"); if (t) t.focus({ preventScroll: true }); }
       changed = new Map();   // highlight once; a later sort does not flash again
       previous = new Map();
       if (chartBox) renderChart();
@@ -704,8 +708,8 @@
           return (num ? x - y : String(x).localeCompare(String(y), "ko")) * sortDir;
         });
       }
-      count.textContent = g.view === "cards" ? "" : `${nf.format(rows.length)}건`;
-      g.view === "cards" ? renderCards() : renderTable();
+      count.textContent = g.view === "grid" ? `${nf.format(rows.length)}건` : "";
+      g.view === "cards" ? renderCards() : g.view === "calendar" ? renderCalendar() : renderTable();
     }
 
     function flashed(r, col) {
@@ -725,6 +729,67 @@
         if (NUMERIC.has(c.format)) roll(values[i], old[c.name], r[c.name], c.format);
         else if (old[c.name] !== r[c.name]) anim(values[i], [{ opacity: 0, transform: "translateY(3px)" }, { opacity: 1, transform: "none" }], 180);
       });
+    }
+
+    // 달력 보기: a cell a day, coloured by the state column's colour rule, a block a month.
+    // Weekends are drawn only when a row falls on one; a day without a row is a faint number.
+    // The other columns are the cell's hover text; picking a cell picks the row, as in a table.
+    const iso = v => String(v ?? "").slice(0, 10);
+    const dow = d => (new Date(d + "T00:00:00Z").getUTCDay() + 6) % 7;   // Monday = 0
+    const dayIndex = () => new Map(view.map((r, i) => [iso(r[g.calendar.date]), i]));
+    function renderCalendar() {
+      if (!rows.length) return body.replaceChildren(h("div", { class: "empty", text: "조회된 내역이 없어요" }));
+      const sc = g.columns.find(c => c.name === g.calendar.state);
+      const rest = g.columns.filter(c => c !== sc && c.name !== g.calendar.date);
+      const at = dayIndex();
+      const span = [...at.keys()].some(d => dow(d) > 4) ? 7 : 5;
+      const dayCell = (d, n, i) => {
+        const r = view[i];
+        const lines = [`${d} (${WEEK[dow(d)]}) ${fmt(r[sc.name], sc.format)}`, ...rest
+          .filter(c => r[c.name] !== null && r[c.name] !== undefined && r[c.name] !== "")
+          .map(c => `${c.label} ${fmt(r[c.name], c.format)}`)];
+        return h("button", { type: "button", "data-i": i, "data-k": rowKey(r), tabindex: "-1", "aria-pressed": "false",
+          class: ["day", tone(r[sc.name], sc.color, r), d === DATA.today ? "today" : "", flashed(r, sc.name) ? "flash" : ""].filter(Boolean).join(" "),
+          title: lines.join("\n"), "aria-label": lines.join(", "), onclick: () => select(i) }, String(n));
+      };
+      const months = [...new Set([...at.keys()].map(d => d.slice(0, 7)))].sort().map(m => {
+        const [y, mo] = m.split("-").map(Number);
+        const lead = dow(m + "-01"), cells = [];
+        for (let n = 1, last = new Date(Date.UTC(y, mo, 0)).getUTCDate(); n <= last; n++) {
+          const d = `${m}-${String(n).padStart(2, "0")}`, col = dow(d);
+          if (col >= span) continue;
+          const i = at.get(d);
+          const cell = i === undefined ? h("span", { class: "day off", "aria-hidden": "true", text: n }) : dayCell(d, n, i);
+          cells.push([cell, col, Math.floor((n - 1 + lead) / 7)]);
+        }
+        const top = Math.min(...cells.map(c => c[2]));   // a month that starts on a weekend has no first row
+        for (const [cell, col, week] of cells) { cell.style.gridColumnStart = col + 1; cell.style.gridRowStart = week - top + 2; }
+        return h("section", { class: "month", "aria-label": `${y}년 ${mo}월` }, h("h3", { text: `${y}년 ${mo}월` }),
+          h("div", { class: "mgrid" + (span === 7 ? " w7" : "") },
+            WEEK.slice(0, span).map(w => h("span", { class: "wd", "aria-hidden": "true", text: w })), cells.map(c => c[0])));
+      });
+      // The legend is made of what is on screen: each state once, with how many days it has.
+      const seen = new Map();
+      for (const r of view) {
+        const v = fmt(r[sc.name], sc.format), e = seen.get(v) || { cls: tone(r[sc.name], sc.color, r), n: 0 };
+        e.n += 1; seen.set(v, e);
+      }
+      const order = ["st-ok", "st-warn", "st-bad", "st-miss", ""];
+      const legend = h("div", { class: "legend" }, [...seen].sort((a, b) => order.indexOf(a[1].cls) - order.indexOf(b[1].cls))
+        .map(([v, e]) => h("span", {}, h("i", { class: ("day " + e.cls).trim(), "aria-hidden": "true" }), `${v} ${nf.format(e.n)}일`)));
+      body.replaceChildren(h("div", { class: "cal", role: "group", "aria-label": g.title, onkeydown: calKey }, legend, months));
+    }
+    // ←/→ a day, ↑/↓ a week; days without a row (weekends, days out of range) are stepped over.
+    function calKey(e) {
+      const step = { ArrowLeft: -1, ArrowRight: 1, ArrowUp: -7, ArrowDown: 7 }[e.key];
+      if (!step || sel < 0) return;
+      e.preventDefault();
+      const at = dayIndex(), t = new Date(iso(view[sel][g.calendar.date]) + "T00:00:00Z");
+      for (let tries = 0; tries < 14; tries++) {
+        t.setUTCDate(t.getUTCDate() + step);
+        const i = at.get(t.toISOString().slice(0, 10));
+        if (i !== undefined) return select(i);
+      }
     }
 
     function renderTable() {
@@ -784,6 +849,20 @@
       flip(body, () => { apply(); sel = keep ? view.indexOf(keep) : -1; mark(false); });   // the bar slides with its row
     }
     function mark(scroll = true) {
+      if (g.view === "calendar") {
+        let on = null;
+        body.querySelectorAll("button.day").forEach(b => {
+          const hit = Number(b.dataset.i) === sel;
+          b.classList.toggle("sel", hit); b.setAttribute("aria-pressed", hit ? "true" : "false"); b.tabIndex = hit ? 0 : -1;
+          if (hit) on = b;
+        });
+        if (on && scroll) on.scrollIntoView({ block: "nearest" });
+        else if (on && (on.offsetTop < body.scrollTop || on.offsetTop + on.offsetHeight > body.scrollTop + body.clientHeight)) {
+          body.scrollTop = on.offsetTop - body.clientHeight / 2;   // opened on a long range: bring the picked day into view
+        }
+        if (on && body.contains(document.activeElement)) on.focus({ preventScroll: true });
+        return syncActions();
+      }
       body.querySelectorAll("tbody tr").forEach((tr, i) => {
         tr.classList.toggle("sel", i === sel); tr.setAttribute("aria-selected", i === sel ? "true" : "false");
       });

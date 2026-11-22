@@ -2,9 +2,9 @@
 from db.test_ops import CAL, D, books, broker, conn  # noqa: F401
 from ministp.accounting import Account
 from ministp.ledger import Side
-from ministp.ops import daily_close, open_books, place_order, resolve_break
+from ministp.ops import clean_streak, daily_close, open_books, place_order, recon_days, resolve_break
 from ministp.queries import (TRANSACTIONS, event_trace, ledger_events, nav_series, order_blotter,
-                             recon_history, trial_balance)
+                             recon_calendar, recon_history, trial_balance)
 from ministp.recon import Cause
 
 DAY = D("2026-11-20")
@@ -63,6 +63,35 @@ def test_recon_history_shows_judgement_next_to_the_break(conn, broker):
     assert all(r["resolved_cause"] == "FEE_DIFF" and r["resolved_note"] == "모의계좌 수수료" for r in breaks)
     assert [r["item"] for r in recon_history(conn, only_breaks=True).records()] == [r["item"] for r in breaks]
     assert len(recon_history(conn, kind="INTRADAY_RECON")) == 0
+
+
+def test_recon_calendar_reads_each_day_the_way_the_gate_does(conn, broker):
+    _a_day(conn, broker)                           # 11-20 (금): 불일치 둘, 둘 다 판단함
+    late = D("2026-11-24")
+    broker.set_day(late)
+    daily_close(books(conn), broker, late)         # 11-24 (화): 불일치 둘, 판단 안 함. 11-23 (월)은 건너뜀
+    today = D("2026-11-25")
+    rows = {r["date"]: r for r in recon_calendar(conn, CAL, today).records()}
+    assert list(rows) == sorted(rows, reverse=True)
+    assert (rows[DAY]["state"], rows[DAY]["breaks"], rows[DAY]["open_breaks"]) == ("판단 완료", 2, 0)
+    assert (rows[late]["state"], rows[late]["breaks"], rows[late]["open_breaks"]) == ("불일치", 2, 2)
+    assert rows[DAY]["items"] == len(recon_history(conn, DAY, DAY))
+    assert (rows[D("2026-11-23")]["state"], rows[D("2026-11-23")]["items"]) == ("대사 없음", None)   # 빠진 영업일
+    assert rows[today]["state"] == "대사 전"
+    assert D("2026-11-19") not in rows and D("2026-11-21") not in rows   # 첫 대사 전날, 토요일
+    # 달력이 깨끗하다고 그린 날이 곧 게이트가 세는 날
+    assert {d: day.clean for d, day in recon_days(conn).items()} == {DAY: True, late: False}
+    assert clean_streak(conn, CAL, DAY) == 1 and clean_streak(conn, CAL, late) == 0
+    # 휴장일은 대사가 없어도 빠진 날이 아니에요 (12-25 성탄절)
+    xmas = recon_calendar(conn, CAL, D("2026-12-28"), D("2026-12-24"), D("2026-12-25")).records()
+    assert [(r["date"], r["state"]) for r in xmas] == [(D("2026-12-25"), "휴장"), (D("2026-12-24"), "대사 없음")]
+    # 장중 대사는 날마다 해야 하는 것이 아니라서 없는 날을 빠졌다고 하지 않아요
+    assert {r["state"] for r in recon_calendar(conn, CAL, today, kind="INTRADAY_RECON").records()} <= {"휴장"}
+    # 그 뒤에 같은 날을 다시 대사하면 나중 실행이 그날의 결과
+    broker.cash_skew = 0
+    daily_close(books(conn), broker, late)
+    assert recon_calendar(conn, CAL, today, late, late).records()[0]["state"] == "일치"
+    assert clean_streak(conn, CAL, late) == 1
 
 
 def test_blotter_shows_intent_ack_and_fill(conn, broker):
