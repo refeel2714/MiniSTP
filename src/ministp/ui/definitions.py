@@ -32,8 +32,14 @@ STEP_STATES = {"done", "now", "stop", "wait"}
 MAX_STEPS = 6
 PILL_COLORS = {"status", "side", "verdict"}
 # 그리드 보기: grid 표 · cards 한 행 요약 카드 · calendar 달력(하루가 한 칸, 칸 색은 상태 열의 색 규칙)
-VIEWS = {"grid", "cards", "calendar"}
-VIEW_NAMES = {"cards": "카드", "calendar": "달력"}
+#            · taccount T계정(분개 한 줄이 계정의 차변은 왼쪽, 대변은 오른쪽에. 표로 바꿔 볼 수 있음)
+#            · map 구성 지도(행 하나가 타일 하나, 면적은 크기 열, 색은 부호 열. 표 보기의 그리드에 map만 적으면 바꿔 보는 보기로 붙음)
+VIEWS = {"grid", "cards", "calendar", "taccount", "map"}
+VIEW_NAMES = {"cards": "카드", "calendar": "달력", "taccount": "T계정", "map": "구성 지도"}
+MAP_NEEDS = {"label", "size"}       # map: 타일의 이름 열, 면적이 되는 열
+MAP_KEYS = MAP_NEEDS | {"tone"}     # tone: 색이 되는 열 (크기 대비 +는 빨강, -는 파랑)
+TACCOUNT_NEEDS = {"account", "debit", "credit"}       # view: taccount 에 꼭 적는 열
+TACCOUNT_KEYS = TACCOUNT_NEEDS | {"name", "entry"}     # name: 계정명 열 · entry: 전표를 가르는 열
 LOADS = {"search", "open", "master", "input"}
 LAYOUTS = {"stack", "split"}   # stack: grids one under another · split: 목록 왼쪽, 상세 오른쪽
 MAX_DETAILS = 3                # a split screen shows at most this many detail grids next to its list
@@ -121,8 +127,10 @@ class Grid:
     master: str | None = None
     link: dict[str, str] = field(default_factory=dict)   # tx param -> master column
     totals: list[str] = field(default_factory=list)
-    view: str = "grid"          # VIEWS: grid | cards (one-row summaries) | calendar (a cell a day)
+    view: str = "grid"          # VIEWS: grid | cards (one-row summaries) | calendar (a cell a day) | taccount
     calendar: dict | None = None  # view: calendar: {date: column, state: column}; the rest show on hover
+    taccount: dict | None = None  # view: taccount: {account, debit, credit[, name][, entry]}: columns of this grid
+    map: dict | None = None       # 구성 지도: {label, size[, tone]}. With view: grid it is a second view next to the table
     meta: dict[str, str] = field(default_factory=dict)   # tx meta key -> label
     drill: dict | None = None   # {screen: STP-xxxx, params: {cond: column}, account: column}
                                 # account: open the target screen for the account in that column
@@ -292,6 +300,51 @@ def _calendar_problems(g: Grid, gw: str) -> list[str]:
     return errs
 
 
+def _taccount_problems(g: Grid, s: Screen, gw: str) -> list[str]:
+    if g.view != "taccount":
+        return [f"{gw}: taccount는 T계정 보기(view: taccount)에만 써요"] if g.taccount else []
+    t = g.taccount or {}
+    if not TACCOUNT_NEEDS <= set(t) <= TACCOUNT_KEYS:
+        return [f"{gw}: T계정 보기는 taccount에 account(계정 열), debit(차변 열), credit(대변 열)을 적어요"
+                " (name 계정명 열, entry 전표를 가르는 열은 있으면)"]
+    errs = []
+    cols = {c.name: c for c in g.columns}
+    for role, name in t.items():
+        if name not in cols:
+            errs.append(f"{gw}: T계정의 {role} 열 {name}가 이 그리드에 없어요")
+        elif role in ("debit", "credit") and cols[name].format != "money":
+            errs.append(f"{gw}: T계정의 {role} 열 {name}는 금액(money) 형식이어야 해요")
+    if len(set(t.values())) != len(t):
+        errs.append(f"{gw}: T계정의 열은 서로 달라야 해요")
+    if g.chart or g.drill:
+        errs.append(f"{gw}: T계정 보기에는 차트·화면 이동을 쓰지 않아요")
+    # a T shows an account, not a row: nothing can hang on a picked row
+    if any(b.needs_row for b in g.actions) or any(x.master == g.id for x in s.grids):
+        errs.append(f"{gw}: T계정 보기는 행을 고르지 않아요. 고른 행에 쓰는 버튼이나 이 그리드를 목록으로 삼는 상세를 둘 수 없어요")
+    return errs
+
+
+def _map_problems(g: Grid, gw: str) -> list[str]:
+    if g.map is None:
+        return [f"{gw}: 구성 지도 보기는 map에 label(이름 열)과 size(면적이 되는 열)를 적어요"] if g.view == "map" else []
+    if g.view not in ("grid", "map"):
+        return [f"{gw}: map(구성 지도)은 표 보기나 구성 지도 보기의 그리드에만 써요"]
+    if not MAP_NEEDS <= set(g.map) <= MAP_KEYS:
+        return [f"{gw}: 구성 지도는 map에 label(이름 열)과 size(면적이 되는 열)를 적어요 (tone 색이 되는 열은 있으면)"]
+    errs = []
+    cols = {c.name: c for c in g.columns}
+    for role, name in g.map.items():
+        if name not in cols:
+            errs.append(f"{gw}: 구성 지도의 {role} 열 {name}가 이 그리드에 없어요")
+        elif role != "label" and cols[name].format not in ("number", "money"):
+            errs.append(f"{gw}: 구성 지도의 {role} 열 {name}는 수량(number)이나 금액(money) 형식이어야 해요")
+    if len(set(g.map.values())) != len(g.map):
+        errs.append(f"{gw}: 구성 지도의 열은 서로 달라야 해요")
+    if g.chart:
+        errs.append(f"{gw}: 구성 지도와 차트를 한 그리드에 같이 두지 않아요")
+    return errs
+
+
 def lookup_problems(lookups: dict[str, Lookup], catalog: dict) -> list[str]:
     """찾기 팝업 definitions against the schema catalog and the read transactions."""
     errs = []
@@ -422,6 +475,8 @@ def validate(screens: dict[str, Screen], catalog: dict, lookups: dict[str, Looku
             if g.view not in VIEWS:
                 errs.append(f"{gw}: view는 {sorted(VIEWS)} 중 하나")
             errs += _calendar_problems(g, gw)
+            errs += _taccount_problems(g, s, gw)
+            errs += _map_problems(g, gw)
             errs += _button_problems(g, s, gw, catalog, lookups)
             if not isinstance(g.weight, int) or not 1 <= g.weight <= 5:
                 errs.append(f"{gw}: weight(높이 비중)는 1~5 사이 정수")
@@ -492,6 +547,26 @@ def resolve(screen: Screen, catalog: dict, lookups: dict[str, Lookup] | None = N
         lk = lookups[name]
         out["lookups"][name] = {**asdict(lk), "columns": [{**asdict(c), "label": label(c), "align": c.align}
                                                           for c in lk.columns]}
+    return out
+
+
+def jump_targets(screens: dict[str, Screen], catalog: dict, lookups: dict[str, Lookup] | None = None) -> list[dict]:
+    """바로 가기 창이 화면 말고도 찾아 주는 것: 조회조건에 찾기 팝업이 붙은 코드(종목 등)와, 그 코드로 열 수 있는 화면.
+
+    Nothing is declared for it. A screen whose condition takes a code through a 찾기 팝업 can be
+    opened for that code, so the list follows the screen definitions by itself."""
+    lookups = load_lookups() if lookups is None else lookups
+    into: dict[str, list[dict]] = {}
+    for s in screens.values():
+        for c in s.conditions:
+            if c.lookup in lookups and not c.lookup_params:      # a list that needs a fixed parameter is not one list
+                into.setdefault(c.lookup, []).append({"id": s.id, "title": s.title, "param": c.name})
+    out = []
+    for name, targets in into.items():
+        lk = lookups[name]
+        out.append({**asdict(lk), "into": targets,
+                    "columns": [{**asdict(c), "label": c.label or short(column_comment(catalog, c.source)),
+                                 "align": c.align} for c in lk.columns]})
     return out
 
 

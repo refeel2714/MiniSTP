@@ -54,7 +54,12 @@ def test_the_page_carries_the_accounts_to_pick_from_and_nothing_secret(client):
     assert data["default_account"] == "A0001"
     assert [(a["account_id"], a["customer_id"], a["status"]) for a in data["accounts"]] == [
         ("A0001", "C0001", "OPEN"), ("A0002", "C0001", "OPEN"), ("A0003", "C0002", "OPEN")]
-    assert set(data["accounts"][0]) == {"account_id", "alias", "customer_id", "status"}
+    assert set(data["accounts"][0]) == {"account_id", "alias", "customer_id", "status", "env"}
+    # 실전 테두리: the page is told each account's environment, so picking a LIVE one frames the screens
+    # even when the shell that started the server points at 모의. The sample's accounts are all 모의.
+    assert {a["env"] for a in data["accounts"]} == {"PAPER"}
+    script = client.get("/static/stpui.js").text
+    assert '.env === "LIVE"' in script and 'document.body.dataset.env = "live"' in script
     assert "account_no" not in page and "APP_KEY" not in page and "KIS_2" not in page
 
 

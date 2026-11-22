@@ -263,6 +263,81 @@ def test_a_meter_reads_as_text_next_to_its_bar():
 
 # ---------- 달력 보기 ----------
 
+T_COLUMNS = [Column("entry", label="전표", format="number"), Column("account", label="계정", format="code"),
+             Column("name", label="계정명"), Column("debit", label="차변", format="money"),
+             Column("credit", label="대변", format="money")]
+T_ROLES = {"entry": "entry", "account": "account", "name": "name", "debit": "debit", "credit": "credit"}
+
+
+def t_grid(columns=None, **grid):
+    return screen(columns or T_COLUMNS, **{"view": "taccount", "taccount": T_ROLES, **grid})
+
+
+def test_t_account_view_names_the_account_and_both_sides():
+    """T계정 보기: 어느 열이 계정이고 어느 열이 차변·대변인지를 정의가 말해요."""
+    s = t_grid()
+    assert validate(s, CATALOG) == []
+    assert resolve(s["STP-1100"], CATALOG)["grids"][0]["taccount"] == T_ROLES
+    assert validate(t_grid(taccount={"account": "account", "debit": "debit", "credit": "credit"}), CATALOG) == []   # name, entry: optional
+    shipped = next(g for g in load_screens()["STP-3100"].grids if g.id == "journal")
+    assert shipped.view == "taccount" and shipped.taccount == {
+        "entry": "entry_id", "account": "account_code", "name": "account_name", "debit": "debit", "credit": "credit"}
+
+
+@pytest.mark.parametrize("s, problem", [
+    (t_grid(taccount=None), "account(계정 열), debit(차변 열), credit(대변 열)을 적어요"),
+    (t_grid(taccount={"account": "account", "debit": "debit"}), "account(계정 열), debit(차변 열), credit(대변 열)을 적어요"),
+    (t_grid(taccount={**T_ROLES, "side": "name"}), "account(계정 열), debit(차변 열), credit(대변 열)을 적어요"),
+    (t_grid(taccount={**T_ROLES, "credit": "nope"}), "credit 열 nope가 이 그리드에 없어요"),
+    (t_grid(taccount={**T_ROLES, "debit": "entry"}), "debit 열 entry는 금액(money) 형식이어야 해요"),
+    (t_grid(taccount={**T_ROLES, "credit": "debit"}), "T계정의 열은 서로 달라야 해요"),
+    (t_grid(drill={"screen": "STP-1100", "params": {}}), "차트·화면 이동을 쓰지 않아요"),
+    (t_grid([*T_COLUMNS[:3], Column("debit", label="차변", format="money", display="bar"), T_COLUMNS[4]]),
+     "T계정 보기에는 표시 유형을 쓰지 않아요"),
+    (screen(T_COLUMNS, taccount=T_ROLES), "taccount는 T계정 보기(view: taccount)에만 써요"),
+])
+def test_t_account_view_problems(s, problem):
+    errs = validate(s, CATALOG)
+    assert any(problem in e for e in errs), errs
+
+
+def test_nothing_hangs_on_a_row_of_a_t_account_view():
+    s = t_grid()
+    s["STP-1100"].grids.append(Grid("d", "상세", "STP1100R01", [Column("qty", "positions_v.qty", format="number")],
+                                    load="master", master="g", link={}))
+    assert any("T계정 보기는 행을 고르지 않아요" in e for e in validate(s, CATALOG))
+
+
+MAP_COLUMNS = [Column("name", label="이름"), Column("cost", label="장부금액", format="money"),
+               Column("pnl", label="평가손익", format="money", hidden=True)]
+MAP_ROLES = {"label": "name", "size": "cost", "tone": "pnl"}
+
+
+def test_a_table_can_offer_a_map_of_its_rows():
+    """구성 지도: 표 보기의 그리드에 map을 적으면 바꿔 보는 보기가 붙고, view: map이면 지도가 먼저 나와요."""
+    for view in ("grid", "map"):
+        s = screen(MAP_COLUMNS, view=view, map=MAP_ROLES) if view == "grid" else screen(MAP_COLUMNS[:2], view=view, map={"label": "name", "size": "cost"})
+        assert validate(s, CATALOG) == []
+        assert resolve(s["STP-1100"], CATALOG)["grids"][0]["map"]["size"] == "cost"
+    shipped = next(g for g in load_screens()["STP-1100"].grids if g.id == "holdings")
+    assert shipped.view == "grid" and shipped.map == {"label": "instrument_name", "size": "book_cost", "tone": "unrealized_pnl"}
+
+
+@pytest.mark.parametrize("s, problem", [
+    (screen(MAP_COLUMNS[:2], view="map"), "label(이름 열)과 size(면적이 되는 열)를 적어요"),
+    (screen(MAP_COLUMNS, map={"label": "name"}), "label(이름 열)과 size(면적이 되는 열)를 적어요"),
+    (screen(MAP_COLUMNS, map={**MAP_ROLES, "depth": "pnl"}), "label(이름 열)과 size(면적이 되는 열)를 적어요"),
+    (screen(MAP_COLUMNS, map={**MAP_ROLES, "tone": "nope"}), "tone 열 nope가 이 그리드에 없어요"),
+    (screen(MAP_COLUMNS, map={**MAP_ROLES, "size": "name"}), "수량(number)이나 금액(money) 형식이어야 해요"),
+    (screen(MAP_COLUMNS, map={**MAP_ROLES, "tone": "cost"}), "구성 지도의 열은 서로 달라야 해요"),
+    (screen(MAP_COLUMNS[:2], view="cards", map={"label": "name", "size": "cost"}), "표 보기나 구성 지도 보기의 그리드에만 써요"),
+    (screen(MAP_COLUMNS, map=MAP_ROLES, chart={"x": "name", "y": "cost"}), "구성 지도와 차트를 한 그리드에 같이 두지 않아요"),
+])
+def test_map_problems(s, problem):
+    errs = validate(s, CATALOG)
+    assert any(problem in e for e in errs), errs
+
+
 def calendar_grid(columns=None, **grid):
     cols = columns or [Column("date", label="날짜", format="date"), Column("state", label="결과", color="status"),
                        Column("qty", "positions_v.qty", format="number")]
@@ -320,3 +395,26 @@ def test_an_instrument_looks_the_same_on_every_screen():
     assert len(shown) >= 7                                        # 계좌 보유(STP-4400), 고객별 보유(STP-4500)까지
     for sid, gid, c in shown:
         assert (c.display, c.code, c.shape) == ("badge", "symbol", "asset_type"), f"{sid} {gid}"
+
+
+def test_the_jump_box_offers_a_code_for_every_screen_that_takes_it():
+    """바로 가기 창: 조회조건이 찾기 팝업으로 받는 코드는 그 화면을 여는 열쇠가 돼요. 따로 적어 두는 목록이 없어요."""
+    from ministp.ui.definitions import Lookup, jump_targets, load_lookups
+    lk = Lookup("symbol", "종목 찾기", "STP4100R01", "symbol", [Column("symbol", "instruments.symbol", format="code"),
+                                                              Column("name", "instruments.name")], shows="name")
+    screens = {
+        **screen([], [Condition("symbol", source="instruments.symbol", lookup="symbol")], sid="STP-1300"),
+        **screen([], [Condition("day", "date", label="기준일")], sid="STP-2100"),                       # takes no code
+        **screen([], [Condition("code", label="코드", lookup="symbol", lookup_params={"group_id": "X"})],
+                 sid="STP-4600"),                                                                     # a list that needs a fixed parameter
+        **screen([], [Condition("item", source="instruments.symbol", lookup="symbol")], sid="STP-3100"),
+    }
+    (jump,) = jump_targets(screens, CATALOG, {"symbol": lk})
+    assert (jump["name"], jump["tx"], jump["value"], jump["shows"]) == ("symbol", "STP4100R01", "symbol", "name")
+    assert [c["label"] for c in jump["columns"]] == ["종목코드", "종목명"]
+    assert jump["into"] == [{"id": "STP-1300", "title": "잔고", "param": "symbol"},
+                            {"id": "STP-3100", "title": "잔고", "param": "item"}]
+    assert jump_targets(screen([], [Condition("day", "date", label="기준일")]), CATALOG, {"symbol": lk}) == []
+
+    real = {j["name"]: [t["id"] for t in j["into"]] for j in jump_targets(load_screens(), CATALOG, load_lookups())}
+    assert real == {"symbol": ["STP-1300", "STP-3100"]}                # a 종목 opens 주문가능 조회 and 원장·분개 조회

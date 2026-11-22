@@ -77,6 +77,17 @@ def test_live_needs_two_switches():
     assert "openapi.koreainvestment.com:9443" in c.base_url
 
 
+def test_trading_env_is_read_in_one_place():
+    """명령도 화면(실전 테두리)도 같은 함수로 환경을 읽어요. 모르는 값은 모의로 넘기지 않고 거절해요."""
+    from ministp.broker import KisError, trading_env
+    assert trading_env({}) == "paper"
+    assert trading_env({"MINISTP_KIS_ENV": "paper"}) == "paper"
+    assert trading_env({"MINISTP_KIS_ENV": "live"}) == "live"           # says where the shell points, not that trading is allowed
+    for wrong in ("real", "LIVE", ""):
+        with pytest.raises(KisError):
+            trading_env({"MINISTP_KIS_ENV": wrong})
+
+
 def test_missing_env_is_reported():
     with pytest.raises(KisError, match="MINISTP_KIS_APP_SECRET"):
         KisConfig.from_env({"MINISTP_KIS_APP_KEY": "x", "MINISTP_KIS_ACCOUNT": "12345678"})
