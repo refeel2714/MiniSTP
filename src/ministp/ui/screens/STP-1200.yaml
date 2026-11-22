@@ -1,0 +1,26 @@
+id: STP-1200
+title: 주문·체결 블로터
+purpose: 주문 의도 → 증권사 접수 → 원장 반영 체결을 한 줄로 보고, 체결통보가 원장에 반영되기까지 걸린 시간을 확인해요.
+conditions:
+  - {name: day, type: date, source: oms_orders.trade_date, default: today}
+grids:
+  - id: orders
+    title: 주문
+    tx: STP1200R01
+    totals: [filled_amount]
+    drill: {screen: STP-3100, params: {symbol: symbol}}
+    columns:
+      - {name: client_id, source: oms_orders.client_id, format: code}
+      - {name: created_at, source: oms_orders.created_at, format: datetime}
+      - {name: symbol, source: oms_orders.symbol, format: code}
+      - {name: instrument_name, source: instruments.name}
+      - {name: side, source: oms_orders.side, format: code, color: side}
+      - {name: qty, source: oms_orders.qty, format: number}
+      - {name: limit_price, source: oms_orders.limit_price, format: money}
+      - {name: outcome, source: oms_order_acks.outcome, format: code, color: status}
+      - {name: order_no, source: oms_order_acks.order_no, format: code}
+      - {name: filled_qty, label: 체결수량, format: number}
+      - {name: filled_amount, label: 체결금액, format: money}
+      - {name: notices, label: 체결통보 건수, format: number}
+      - {name: max_booking_ms, label: 통보 반영 지연(ms), format: number}
+      - {name: detail, source: oms_order_acks.detail}

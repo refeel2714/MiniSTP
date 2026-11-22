@@ -87,6 +87,9 @@ def run(argv, *, environ=os.environ, client_factory=KisClient, connect=psycopg.c
     p.add_argument("note")
     p = sub.add_parser("sample-db")
     p.add_argument("--days", type=int, default=40, help="시뮬레이션할 영업일 수")
+    p = sub.add_parser("ui", help="업무화면(STP-UI)을 이 PC에서만 열기 (조회 전용)")
+    p.add_argument("--sample", action="store_true", help="샘플 DB(ministp_sample)로 열기")
+    p.add_argument("--port", type=int, default=8765)
     args = ap.parse_args(argv)
 
     started = now()
@@ -105,6 +108,9 @@ def run(argv, *, environ=os.environ, client_factory=KisClient, connect=psycopg.c
 
         if args.cmd == "sample-db":
             return _sample_db(url, environ, connect, calendar, args.days)
+
+        if args.cmd == "ui":
+            return _ui(url, environ, calendar, fees, args.sample, args.port)
 
         with connect(url, autocommit=True) as conn:
             if args.cmd == "instrument":
@@ -273,6 +279,30 @@ def _sample_db(url: str, environ, connect, calendar, days: int) -> int:
         for n in s.notes:
             print(f"  {n}")
     print("운영 DB(ministp)는 건드리지 않았어요. pgAdmin에서 ministp_sample을 열어 보세요.")
+    return 0
+
+
+def ui_database_url(url: str, environ, sample: bool) -> str:
+    if sample:
+        return environ.get("MINISTP_SAMPLE_DATABASE_URL") or psycopg.conninfo.make_conninfo(url, dbname=SAMPLE_DB)
+    return environ.get("MINISTP_UI_DATABASE_URL") or url
+
+
+def _ui(url: str, environ, calendar, fees, sample: bool, port: int, serve=None) -> int:
+    from .ui.app import create_app, sample_today
+    from .ui.definitions import DefinitionError
+    dsn = ui_database_url(url, environ, sample)
+    try:
+        app = create_app(dsn, calendar=calendar, fees=fees, today=sample_today(dsn) if sample else None,
+                         label="샘플" if sample else "")
+    except DefinitionError as e:
+        print(f"오류: {e}")
+        return 1
+    print(f"STP-UI: http://127.0.0.1:{port}  (조회 전용, 이 PC에서만 열려요. 끝낼 때 Ctrl+C)")
+    if serve is None:
+        import uvicorn
+        serve = lambda a: uvicorn.run(a, host="127.0.0.1", port=port, log_level="warning")  # noqa: E731
+    serve(app)
     return 0
 
 

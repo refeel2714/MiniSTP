@@ -1,0 +1,76 @@
+id: STP-3100
+title: 원장·분개 조회
+purpose: 원장 이벤트 하나를 고르면 그 이벤트가 만든 분개, 보유수량 변동, 예수금 변동을 바로 아래에 보여줘요. 원장이 틀리지 않는다는 걸 숫자로 따라가 확인하는 화면이에요.
+conditions:
+  - {name: date_from, type: date, label: 시작일}
+  - {name: date_to, type: date, label: 종료일}
+  - {name: event_type, type: select, source: ledger_events.event_type,
+     options: [DepositEvent, OpeningPositionEvent, ExecutionEvent, SettlementEvent, RevaluationEvent, NavEvent]}
+  - {name: symbol, type: text, source: instruments.symbol}
+grids:
+  - id: events
+    title: 원장 이벤트
+    tx: STP3100R01
+    load: open
+    columns:
+      - {name: seq, source: ledger_events.seq, format: number}
+      - {name: event_type, source: ledger_events.event_type, format: code}
+      - {name: date, label: 영업일, format: date}
+      - {name: symbol, source: instruments.symbol, format: code}
+      - {name: recorded_at, source: ledger_events.recorded_at, format: datetime}
+      - {name: payload, source: ledger_events.payload, format: json}
+  - id: journal
+    title: 분개
+    tx: STP3100R02
+    dataset: journal
+    load: master
+    master: events
+    link: {seq: seq}
+    totals: [debit, credit]
+    meta: {balanced: 차대 일치}
+    columns:
+      - {name: entry_id, source: journal_entries.entry_id, format: number}
+      - {name: date, source: journal_entries.date, format: date}
+      - {name: kind, source: journal_entries.kind, format: code}
+      - {name: source_id, source: journal_entries.source_id, format: code}
+      - {name: account_code, source: journal_lines.account_code, format: code}
+      - {name: account_name, source: accounts_chart.name}
+      - {name: debit, source: journal_lines.debit, format: money}
+      - {name: credit, source: journal_lines.credit, format: money}
+      - {name: reverses_entry_id, source: journal_entries.reverses_entry_id, format: number}
+  - id: positions
+    title: 보유수량 변동
+    tx: STP3100R02
+    dataset: positions
+    load: master
+    master: events
+    link: {seq: seq}
+    columns:
+      - {name: trade_date, source: position_ledger.trade_date, format: date}
+      - {name: symbol, source: position_ledger.symbol, format: code}
+      - {name: exec_id, source: position_ledger.exec_id, format: code}
+      - {name: qty_delta, source: position_ledger.qty_delta, format: number, color: sign}
+      - {name: cost_delta, source: position_ledger.cost_delta, format: money, color: sign}
+      - {name: realized_pnl, source: position_ledger.realized_pnl, format: money, color: sign}
+  - id: cash
+    title: 예수금 변동
+    tx: STP3100R02
+    dataset: cash
+    load: master
+    master: events
+    link: {seq: seq}
+    columns:
+      - {name: date, source: cash_ledger.date, format: date}
+      - {name: reason, source: cash_ledger.reason, format: code}
+      - {name: amount, source: cash_ledger.amount, format: money, color: sign}
+      - {name: ref_id, source: cash_ledger.ref_id, format: code}
+  - id: trial
+    title: 시산표
+    tx: STP3100R03
+    load: open
+    meta: {balanced: 차대 일치}
+    columns:
+      - {name: code, source: accounts_chart.code, format: code}
+      - {name: name, source: accounts_chart.name}
+      - {name: normal_side, source: accounts_chart.normal_side, format: code}
+      - {name: balance, source: account_balances_v.balance, format: money}

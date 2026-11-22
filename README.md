@@ -11,6 +11,7 @@ Phase 0 (스펙 확정), Phase 1 (원장 코어 + 백테스트) 완료. Phase 2 
 ## 문서
 
 - [스펙](docs/spec/README.md): 결정 사항, 도메인 규칙, 데이터 모델, 손계산 샘플 거래 세트
+- [화면정의서와 영향도](docs/screens/README.md): STP-UI 화면별 조회조건·그리드·열(DB 컬럼과 한글명), DB 컬럼 → 화면 영향도. 화면 정의에서 자동 생성(테스트가 강제).
 - [ERD와 데이터 사전](docs/erd/ERD.md): 전 테이블·컬럼 한글 명칭, 스키마에서 자동 생성. 스키마를 바꾸면 `-- ERD version`과 [변경 이력](docs/erd/HISTORY.md)을 올리고 `scripts/gen_erd.py`로 `ERD.md`와 `erd.html`을 다시 만들어요(테스트가 강제).
 
 ## 로드맵
@@ -30,7 +31,7 @@ Phase 0 (스펙 확정), Phase 1 (원장 코어 + 백테스트) 완료. Phase 2 
 
 1. **게이트 기간**: 운영 DB를 바꾸지 않는 백엔드만. 장중 `run` 실측 보완, 주문가능 계산 공통화(R-37), 조회 서비스 계층(원장 추적, 대사 이력, 기준가 추이), 샘플 DB 생성기, 장중 현재가 시세.
 2. **게이트 통과 후**: 스키마가 바뀌는 계정계 확장. 다계좌, ABOR 일 마감(`DayClosed`), 감사 로그, 권리 처리. 변경마다 ERD 버전을 올리고 마이그레이션 스크립트를 함께 냅니다.
-3. **화면 플랫폼 STP-UI**: 화면 정의 파일을 DB 스키마와 대조해 화면·조회 API·화면정의서를 함께 생성하는 업무화면 플랫폼. 조회 화면(원장·분개, 대사) → 실시간 화면(잔고, 주문·체결, 기준가, Dataset 변경분 갱신) → 화면 주문 입력 순서.
+3. **화면 플랫폼 STP-UI**: 화면 정의 파일을 DB 스키마와 대조해 화면·조회 API·화면정의서를 함께 생성하는 업무화면 플랫폼. 조회 화면(원장·분개, 대사) → 실시간 화면(잔고, 주문·체결, 기준가, Dataset 변경분 갱신) → 화면 주문 입력 순서. 플랫폼 코어(조회 전용)는 운영 DB를 바꾸지 않아서 샘플 DB 위에서 먼저 만들었습니다.
 
 ## 샘플 DB (데모용)
 
@@ -40,10 +41,34 @@ python -m ministp sample-db            # ministp_sample DB에 영업일 40일치
 
 운영 DB(`ministp`)와 별개의 `ministp_sample` DB를 만들고, 매번 지우고 다시 만듭니다. 같은 시드면 항상 같은 데이터가 나옵니다. 종목 3개(KODEX 200, TIGER 미국S&P500, 삼성전자), 부분 체결, 미체결 취소, 수수료 차이 불일치와 판단 기록이 들어 있습니다. 가격은 가상 시세입니다.
 
+## 업무화면 STP-UI (조회 전용)
+
+```bash
+python -m ministp ui --sample          # 샘플 DB로 열기 → http://127.0.0.1:8765
+python -m ministp ui                   # 내 DB로 열기 (조회만 해요)
+```
+
+![STP-3100 원장·분개 조회 (샘플 DB)](docs/screens/stp-3100.png)
+
+화면은 HTML을 손으로 짜지 않고 [화면 정의 파일](src/ministp/ui/screens/)(YAML)에서 만들어집니다. 정의에는 무엇을 보여줄지만 적고(조회조건, 그리드, 호출할 조회 트랜잭션, 열마다 DB 컬럼), 열의 한글명은 DB 주석에서 가져옵니다. 그래서 ERD, pgAdmin, 화면, 화면정의서가 늘 같은 말을 씁니다.
+
+- **서버 시작 시 대조**: 모든 화면 정의를 DB 스키마와 대조해서, 없는 컬럼·트랜잭션·조회조건이 하나라도 있으면 서버가 뜨지 않습니다. 테스트는 각 그리드의 열이 트랜잭션 결과에 실제로 있는지까지 확인합니다.
+- **조회 트랜잭션**: 화면은 `POST /api/tx/STP3100R02`처럼 트랜잭션 ID로만 데이터를 받습니다(화면번호 + R + 일련번호). 같은 트랜잭션을 쓰는 그리드는 한 번만 호출합니다.
+- **화면 기능**: 조회조건(기본값 `today`), 정렬, 금액·수량 서식, 상승·매수 빨강/하락·매도 파랑, 합계 행, 마스터-디테일(이벤트를 고르면 분개·보유·예수금 변동), 다른 화면으로 이동(행 더블클릭·Enter), 상태 배지(차대 일치, 무오류 연속일), 기준가 선 그래프, 키보드(↑↓, Ctrl+Enter 조회), 라이트·다크.
+- **화면정의서·영향도**: `scripts/gen_screen_docs.py`가 [docs/screens/](docs/screens/README.md)를 만듭니다. 스키마를 바꾸기 전에 그 컬럼을 쓰는 화면을 영향도 표에서 봅니다.
+- **보안**: DB 세션은 읽기 전용(`default_transaction_read_only`)이고 127.0.0.1에서만 열리며 Host 헤더도 확인합니다. 쓰기(주문, 마감, 판단 기록)는 지금처럼 명령어로만 합니다. 더 엄격하게 하려면 조회 전용 DB 계정을 만들어 `MINISTP_UI_DATABASE_URL`에 넣으세요.
+
+```sql
+create role ministp_ui login password '...';
+grant connect on database ministp to ministp_ui;
+grant usage on schema public to ministp_ui;
+grant select on all tables in schema public to ministp_ui;
+```
+
 ## 개발
 
 ```bash
-uv venv && uv pip install -e . pytest
+uv venv && uv pip install -e . pytest httpx
 .venv/bin/pytest -q            # 전체
 .venv/bin/pytest -q -m gate    # 스펙 04 게이트 테스트만
 ```
@@ -72,6 +97,7 @@ MINISTP_TEST_DATABASE_URL=postgresql://postgres:postgres@localhost:5432/ministp_
 | `broker.kis_ws` | 실시간 체결통보 수신(접속키, 구독, AES 복호화, PINGPONG, 재연결) | D6 |
 | `store` | PostgreSQL 이벤트 저장, 재생 복원, DB 수준 append-only·차대변 통제 | 03 데이터 모델, R-04, R-50 |
 | `queries` | 조회 서비스 계층: 화면이 호출할 조회 트랜잭션(원장 목록·추적, 시산표, 대사 이력, 주문 블로터, 기준가 추이). DB 읽기만 하고 DB 컬럼명 그대로 Dataset으로 반환 | 화면 기획서 |
+| `ui` | 업무화면 플랫폼 STP-UI: 화면 정의(YAML)와 DB 스키마 대조 검증, 조회 트랜잭션(ID별), FastAPI 서버(읽기 전용), 화면 런타임(JS), 화면정의서 생성 | 화면 기획서 |
 | `sample`, `broker.sim` | 데모·화면 개발용 샘플 DB: 가상 모의계좌로 영업일 수십 일을 실제 운영 코드(원장 시작, 주문, 마감 대사, 판단 기록) 그대로 돌려 생성. 이름에 `sample`이 없는 DB는 거부 | 화면 기획서 |
 
 ## 한국투자증권 모의투자 연결 확인 (본인 PC에서)
