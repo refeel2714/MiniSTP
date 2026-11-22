@@ -21,7 +21,39 @@
     MATCH: "ok", ACCEPTED: "ok", FILLED: "ok", true: "ok",
     BREAK: "bad", REJECTED: "bad", false: "bad",
     RESOLVED: "warn", UNKNOWN: "warn", CANCELED: "warn", PENDING: "warn", "적용 중": "ok", "예정": "warn",
+    OPEN: "ok", SUSPENDED: "warn", CLOSED: "bad",
   };
+
+  // ---------- account (다계좌) ----------
+  // Every screen looks at one account, picked in the top bar and remembered in this browser.
+  // The server gets it with every transaction; it never comes from a screen definition.
+  const ACCOUNTS = DATA.accounts || [];
+  const ACCOUNT_KEY = "stpui.account";
+  const ACCOUNT_STATUS = { SUSPENDED: "정지", CLOSED: "해지" };
+  const knownAccount = id => ACCOUNTS.some(a => a.account_id === id);
+  function rememberAccount(id) { try { localStorage.setItem(ACCOUNT_KEY, id); } catch (e) { /* private mode */ } }
+  const ACCOUNT = (function () {
+    const url = new URL(location.href), asked = url.searchParams.get("account");
+    let saved = null;
+    try { saved = localStorage.getItem(ACCOUNT_KEY); } catch (e) { /* private mode */ }
+    if (asked !== null) {              // a link from the account list: take it, then keep the address clean
+      url.searchParams.delete("account");
+      history.replaceState(null, "", url.pathname + url.search);
+      if (knownAccount(asked)) rememberAccount(asked);
+    }
+    return [asked, saved, DATA.default_account].find(knownAccount) || (ACCOUNTS[0] || {}).account_id || DATA.default_account;
+  })();
+  function accountPicker() {
+    if (ACCOUNTS.length < 2) return null;   // one account: nothing to pick, the bar stays as it was
+    const el = h("select", { id: "acct", "aria-label": "조회할 계좌" }, ACCOUNTS.map(a => h("option", {
+      value: a.account_id, selected: a.account_id === ACCOUNT,
+      text: `${a.account_id} ${a.alias}` + (ACCOUNT_STATUS[a.status] ? ` · ${ACCOUNT_STATUS[a.status]}` : ""),
+    })));
+    el.addEventListener("change", () => { rememberAccount(el.value); location.reload(); });
+    const me = ACCOUNTS.find(a => a.account_id === ACCOUNT) || {};
+    return h("label", { class: "acct" + (me.status && me.status !== "OPEN" ? " warn" : ""), for: "acct",
+      title: `고객 ${me.customer_id || ""} · 모든 화면이 이 계좌를 보여줘요` }, h("span", { text: "계좌" }), el);
+  }
 
   function h(tag, attrs, ...kids) {
     const el = document.createElement(tag);
@@ -132,6 +164,7 @@
     return h("header", { class: "top" },
       h("a", { class: "brand", href: "/" }, "MiniSTP ", h("b", { text: "STP-UI" })),
       nav,
+      accountPicker(),
       h("span", { class: "env", title: `DB ${DATA.db} · 읽기 전용 연결` },
         h("span", { class: "dot", id: "live-dot" }), `${DATA.label || DATA.db} · 기준일 ${DATA.today} · 조회 전용`));
   }
@@ -194,7 +227,7 @@
     async function call(tx, params) {
       const r = await fetch("/api/tx/" + tx, {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ params }),
+        body: JSON.stringify({ params, account: ACCOUNT }),
       });
       const body = await r.json().catch(() => ({ error: "응답을 읽지 못했어요 (HTTP " + r.status + ")" }));
       if (!r.ok || body.error) throw new Error(body.error || "HTTP " + r.status);
@@ -276,6 +309,7 @@
       }
       const q = new URLSearchParams();
       for (const [cond, col] of Object.entries(g.drill.params || {})) if (row[col] != null) q.set(cond, row[col]);
+      if (g.drill.account && row[g.drill.account]) q.set("account", row[g.drill.account]);   // open it for that account
       location.href = "/screen/" + g.drill.screen + "?" + q.toString();
     }
 

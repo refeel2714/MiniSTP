@@ -53,7 +53,8 @@ class Grid:
     totals: list[str] = field(default_factory=list)
     view: str = "grid"          # grid | cards (one-row summaries)
     meta: dict[str, str] = field(default_factory=dict)   # tx meta key -> label
-    drill: dict | None = None   # {screen: STP-xxxx, params: {cond: column}}
+    drill: dict | None = None   # {screen: STP-xxxx, params: {cond: column}, account: column}
+                                # account: open the target screen for the account in that column
     chart: dict | None = None   # {x: column, y: column}: a line over the rows
     live: bool = False          # reload when the DB changes (SSE), changed rows highlighted
     key: str | None = None      # column that identifies a row across reloads (default: first column)
@@ -171,6 +172,8 @@ def validate(screens: dict[str, Screen], catalog: dict) -> list[str]:
                             errs.append(f"{gw}: {target.id}에 없는 조회조건 {cond}로 이동")
                         if col not in {c.name for c in g.columns}:
                             errs.append(f"{gw}: 이동 값 {col}이 열에 없어요")
+                if g.drill.get("account") and g.drill["account"] not in {c.name for c in g.columns}:
+                    errs.append(f"{gw}: 이동할 계좌 열 {g.drill['account']}이 열에 없어요")
             if g.chart and not {g.chart.get("x"), g.chart.get("y")} <= {c.name for c in g.columns}:
                 errs.append(f"{gw}: 차트 열 {g.chart}이 열에 없어요")
         for c in s.conditions:

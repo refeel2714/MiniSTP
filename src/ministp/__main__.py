@@ -349,7 +349,7 @@ def _sample_db(url: str, environ, connect, calendar, days: int, accounts: int = 
             print(f"  계좌 {a.account_id} {a.alias}: {a.opened_on} 개설, 주문 {a.orders}건, 체결 {a.fills}건, "
                   f"거부 {a.refused}건, 불일치 판단 {a.breaks_resolved}건, 무오류 연속 {a.streak}일, 상태 {a.status}")
         if s.others:
-            print("화면은 아직 기본 계좌 A0001만 보여줘요. 다른 계좌는 pgAdmin이나 verify --sample로 확인할 수 있어요.")
+            print("화면(ui --sample)의 위쪽 막대에서 계좌를 골라 볼 수 있어요.")
     print("운영 DB(ministp)는 건드리지 않았어요. pgAdmin에서 ministp_sample을 열어 보세요.")
     return 0
 

@@ -24,7 +24,8 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 from ..calendar import BusinessCalendar, CalendarNotLoadedError
 from ..fees import FeeSchedule
 from ..ops import OpsError
-from ..store import erd
+from ..accounts import ACCOUNT_ID_RE
+from ..store import DEFAULT_ACCOUNT, erd
 from .definitions import DefinitionError, load_screens, resolve, validate
 from .spec import screen_markdown
 from .transactions import TxContext, TxError, run_tx
@@ -119,8 +120,15 @@ def create_app(dsn: str, *, calendar: BusinessCalendar, fees: FeeSchedule, today
 
     app.mount("/static", StaticFiles(directory=str(files("ministp.ui").joinpath("static"))), name="static")
 
+    def accounts() -> list[dict]:
+        """For the account picker in the top bar: id, alias, customer and status. Never a number or a key."""
+        with connect_read_only(dsn, connect) as conn:
+            return [dict(zip(("account_id", "alias", "customer_id", "status"), r)) for r in conn.execute(
+                "select account_id, alias, customer_id, status from account_status_v order by account_id")]
+
     def shell_data(screen_id: str | None) -> str:
         data = {"menu": menu, "today": business_day().isoformat(), "db": db_name, "label": label,
+                "accounts": accounts(), "default_account": DEFAULT_ACCOUNT,
                 "screen": resolved.get(screen_id) if screen_id else None}
         # Embedded as JSON in a non-executed script tag; '<' escaped so no value can close the tag.
         return json.dumps(data, ensure_ascii=False, default=str).replace("<", "\\u003c")
@@ -159,16 +167,21 @@ def create_app(dsn: str, *, calendar: BusinessCalendar, fees: FeeSchedule, today
         except ValueError:
             body = {}
         params = body.get("params", {}) if isinstance(body, dict) else {}
+        account = (body.get("account") if isinstance(body, dict) else None) or DEFAULT_ACCOUNT
+        if not isinstance(account, str) or not ACCOUNT_ID_RE.match(account):
+            return JSONResponse({"error": "계좌 ID 형식이 올바르지 않아요"}, status_code=400)
         started = time.perf_counter()
         try:
             with connect_read_only(dsn, connect) as conn:
-                result = run_tx(tx_id, TxContext(conn, calendar, fees, business_day()), params)
+                if conn.execute("select 1 from trading_accounts where account_id = %s", (account,)).fetchone() is None:
+                    raise TxError(f"등록되지 않은 계좌예요: {account}")
+                result = run_tx(tx_id, TxContext(conn, calendar, fees, business_day(), account), params)
         except (TxError, OpsError, CalendarNotLoadedError) as e:
             return JSONResponse({"error": str(e)}, status_code=400)
         except psycopg.Error as e:
             return JSONResponse({"error": f"DB 오류: {e.diag.message_primary or type(e).__name__}"},
                                 status_code=500)
-        return {"tx": tx_id, "elapsed_ms": round((time.perf_counter() - started) * 1000, 1),
+        return {"tx": tx_id, "account": account, "elapsed_ms": round((time.perf_counter() - started) * 1000, 1),
                 "meta": {k: to_json(v) for k, v in result.meta.items()},
                 "datasets": {name: {"columns": list(ds.columns),
                                     "rows": [[to_json(v) for v in r] for r in ds.rows]}

@@ -257,6 +257,50 @@ def order_check(books, day: dt.date, symbol: str, side: str, qty: int, limit_pri
                               cap.max_buy_qty, cap.held_qty, cap.pending_sell_qty, cap.sellable_qty,
                               reason == "", reason, REASON_TEXT.get(reason, reason)),))
 
+# ---------- STP-4400 고객·계좌 (조회 전용) ----------
+
+def account_list(conn: psycopg.Connection, calendar) -> Dataset:
+    """Every account with its customer, current status and the size of its books.
+
+    The account number and the keys are not in the database; `credential_ref` is only
+    the name of the environment variables the owner's PC keeps them in."""
+    from .ops import clean_streak
+    ds = _q(conn, """
+        select t.account_id, t.alias, t.customer_id, c.alias as customer_alias, t.broker, t.env,
+               t.account_type, s.status, s.effective_from as status_from, t.opened_on, t.credential_ref,
+               (select count(*) from ledger_events e where e.account_id = t.account_id) as events,
+               (select balance from cash_balance_v b where b.account_id = t.account_id) as cash_d0,
+               (select count(*) from positions_v p where p.account_id = t.account_id) as holdings,
+               (select coalesce(sum(p.book_cost), 0) from positions_v p where p.account_id = t.account_id) as book_cost,
+               (select max(b.date) from broker_snapshots b
+                 where b.account_id = t.account_id and b.kind = 'DAILY_RECON') as last_recon_date
+          from trading_accounts t
+          join customers c using (customer_id)
+          join account_status_v s using (account_id)
+         order by t.customer_id, t.account_id""")
+    at = ds.columns.index("last_recon_date")
+    rows = tuple(r + (clean_streak(conn, calendar, r[at], r[0]) if r[at] else 0,) for r in ds.rows)
+    return Dataset(ds.columns + ("clean_streak",), rows)
+
+
+def account_status_history(conn: psycopg.Connection, account_id: str) -> Dataset:
+    """One account's status rows, newest first (a change is a new row, never an update)."""
+    return _q(conn, "select id, status, effective_from, reason, created_at from account_status_history"
+                    " where account_id = %s order by effective_from desc, id desc", (account_id,))
+
+
+def customer_positions(conn: psycopg.Connection) -> Dataset:
+    """고객별 보유 합산: one customer's accounts added up per symbol (`customer_positions_v`)."""
+    return _q(conn, """
+        select v.customer_id, c.alias as customer_alias, v.symbol, i.name as instrument_name, v.qty, v.book_cost,
+               (select count(distinct p.account_id) from positions_v p join trading_accounts t using (account_id)
+                 where t.customer_id = v.customer_id and p.symbol = v.symbol) as accounts
+          from customer_positions_v v
+          join customers c using (customer_id)
+          join instruments i using (symbol)
+         order by v.customer_id, v.book_cost desc""")
+
+
 # ---------- STP-4100·4200·4300 기준정보 (조회 전용) ----------
 # Reference data as the system really uses it: instruments from the DB, fee rates,
 # settlement rules, tick sizes and the holiday calendar from the objects the
@@ -312,10 +356,13 @@ def account_summary(books, calendar, today: dt.date) -> Dataset:
         " where b.kind = 'DAILY_RECON' and b.account_id = %s"
         " group by b.snapshot_id order by b.snapshot_id desc limit 1", (books.account_id,)).fetchone()
     last_nav = max((r.date for r in led.nav_history()), default=None)
+    alias = books.conn.execute("select alias from trading_accounts where account_id = %s",
+                               (books.account_id,)).fetchone()[0]
     return Dataset(
-        ("opened", "cash_d0", "receivables", "payables", "projected_cash", "unsettled", "holdings",
+        ("account_id", "alias", "status", "opened", "cash_d0", "receivables", "payables", "projected_cash", "unsettled", "holdings",
          "market_value", "valued_on", "last_recon_date", "last_recon_at", "open_breaks", "clean_streak"),
-        ((opened, led.cash_balance(), sum(s.signed for s in pending if s.signed > 0),
+        ((books.account_id, alias, books.status, opened, led.cash_balance(),
+          sum(s.signed for s in pending if s.signed > 0),
           -sum(s.signed for s in pending if s.signed < 0), led.projected_cash(), len(pending), len(held),
           market_value, close_day, recon[0] if recon else None, recon[1] if recon else None,
           recon[2] if recon else None, clean_streak(books.conn, calendar, last_nav, books.account_id) if last_nav else 0),))

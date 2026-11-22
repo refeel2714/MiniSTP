@@ -1,0 +1,55 @@
+id: STP-4400
+title: 고객·계좌
+purpose: 고객과 위탁계좌의 목록, 계좌 상태 이력, 고객별 보유 합산을 보여줘요. 계좌번호와 인증키는 DB에 없고 이 화면에도 나오지 않아요. 인증정보 참조는 PC 환경변수 이름의 머리말일 뿐이에요. 계좌를 고르면 상태 이력이 아래에 나오고, 더블클릭하면 그 계좌의 계좌정보로 가요. 다른 화면은 위쪽 막대에서 고른 계좌 하나만 보여줘요. 등록과 상태 변경은 CLI(customer, account 명령)로만 해요.
+grids:
+  - id: accounts
+    title: 위탁계좌
+    live: true
+    tx: STP4400R01
+    load: open
+    key: account_id
+    totals: [cash_d0, book_cost]
+    drill: {screen: STP-4200, account: account_id}
+    columns:
+      - {name: account_id, source: trading_accounts.account_id, format: code}
+      - {name: alias, source: trading_accounts.alias}
+      - {name: customer_id, source: customers.customer_id, format: code}
+      - {name: customer_alias, source: customers.alias}
+      - {name: status, source: account_status_v.status, format: code, color: status}
+      - {name: status_from, source: account_status_v.effective_from, format: date}
+      - {name: opened_on, source: trading_accounts.opened_on, format: date}
+      - {name: broker, source: trading_accounts.broker, format: code}
+      - {name: env, source: trading_accounts.env, format: code}
+      - {name: account_type, source: trading_accounts.account_type, format: code}
+      - {name: cash_d0, label: 예수금 D+0, format: money}
+      - {name: holdings, label: 보유 종목 수, format: number}
+      - {name: book_cost, label: 보유 장부금액, format: money}
+      - {name: events, label: 원장 이벤트 수, format: number}
+      - {name: last_recon_date, label: 마지막 대사일, format: date}
+      - {name: clean_streak, label: 무오류 연속 영업일, format: number}
+      - {name: credential_ref, source: trading_accounts.credential_ref, format: code}
+  - id: status_history
+    title: 이 계좌의 상태 이력
+    tx: STP4400R02
+    load: master
+    master: accounts
+    link: {account_id: account_id}
+    columns:
+      - {name: status, source: account_status_history.status, format: code, color: status}
+      - {name: effective_from, source: account_status_history.effective_from, format: date}
+      - {name: reason, source: account_status_history.reason}
+      - {name: created_at, source: account_status_history.created_at, format: datetime}
+  - id: customer_positions
+    title: 고객별 보유 합산 (같은 고객의 계좌를 더한 값)
+    live: true
+    tx: STP4400R03
+    load: open
+    totals: [book_cost]
+    columns:
+      - {name: customer_id, source: customer_positions_v.customer_id, format: code}
+      - {name: customer_alias, source: customers.alias}
+      - {name: symbol, source: customer_positions_v.symbol, format: code}
+      - {name: instrument_name, source: instruments.name}
+      - {name: qty, source: customer_positions_v.qty, format: number}
+      - {name: book_cost, source: customer_positions_v.book_cost, format: money}
+      - {name: accounts, label: 보유 계좌 수, format: number}
