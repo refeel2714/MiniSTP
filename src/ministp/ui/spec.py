@@ -108,7 +108,10 @@ def screen_markdown(screen: Screen, catalog: dict, lookups=None, menu=None) -> s
             facts.append(f"- 상태 표시: {', '.join(f'{v} (`{k}`)' for k, v in g.meta.items())}")
         if g.drill:
             params = ", ".join(f"`{k}` ← `{v}`" for k, v in g.drill.get("params", {}).items())
-            facts.append(f"- 행 더블클릭·Enter: {g.drill['screen']}로 이동 ({params})")
+            where = (f"`{g.drill['by']}` 열이 가리키는 화면({', '.join(g.drill['screens'])})" if g.drill.get("by")
+                     else g.drill["screen"])
+            facts.append(f"- 행 더블클릭·Enter: {where}으로 이동 ({params})" if g.drill.get("by")
+                         else f"- 행 더블클릭·Enter: {where}로 이동 ({params})")
         if g.live:
             facts.append(f"- 실시간: DB가 바뀌면 마지막 조회조건으로 다시 조회, 바뀐 칸 강조 (행 식별 열 `{g.key or g.columns[0].name}`)")
         if g.chart:

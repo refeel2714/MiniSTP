@@ -140,6 +140,44 @@ def trial_balance(conn: psycopg.Connection, account_id: str = DEFAULT_ACCOUNT) -
     return ds, dr == cr
 
 
+# ---------- STP-2110 원장 내부 대사 ----------
+
+RESULT_TEXT = {True: "일치", False: "불일치"}
+
+
+def integrity_checks(conn: psycopg.Connection, calendar, fees, instruments,
+                     account_id: str = DEFAULT_ACCOUNT) -> Dataset:
+    """The `verify` report as rows: one check a row, in the order a person reads them. The checks of the
+    whole database (event stream, guards, balance) and those of one account's books (replay against what
+    is stored); the other accounts' checks are not listed, `verify` prints them all.
+    It replays the events itself and does not go through `load_books`, which refuses books that
+    fail these very checks: this is the list to look at when every other screen will not open."""
+    from .store.integrity import integrity_report
+    checks = [c for c in integrity_report(conn, calendar, fees, instruments) if c.account in ("", account_id)]
+    return Dataset(("key", "title", "result", "detail"),
+                   tuple((c.key, c.title, RESULT_TEXT[c.ok], c.detail) for c in checks))
+
+
+def integrity_compared(conn: psycopg.Connection, title: str, calendar, fees,
+                       instruments, account_id: str = DEFAULT_ACCOUNT) -> tuple[Dataset, Dataset]:
+    """The check named `title` as (its verdict in a sentence, the numbers behind it side by side): what
+    is stored, what it has to equal and the difference, as the broker reconciliation shows 내부 값 and
+    증권사 값. Both are read in one snapshot. KeyError when there is no such check."""
+    from .store.integrity_view import compared
+    top = conn.info.transaction_status == psycopg.pq.TransactionStatus.IDLE
+    with conn.transaction():
+        if top:
+            conn.execute("set transaction isolation level repeatable read read only")
+        checks = integrity_checks(conn, calendar, fees, instruments, account_id)
+        check = next((r for r in checks.rows if r[1] == title), None)
+        if check is None:
+            raise KeyError(f"없는 점검 항목: {title}")
+        rows = compared(conn, check[0], calendar, fees, instruments, account_id)
+    return (Dataset(checks.columns, (check,)),
+            Dataset(("item", "stored", "expected", "basis", "diff", "result"),
+                    tuple((r.item, r.stored, r.expected, r.basis, r.diff, RESULT_TEXT[r.ok]) for r in rows)))
+
+
 # ---------- STP-2100 대사 결과 ----------
 
 def recon_history(conn: psycopg.Connection, date_from: dt.date | None = None, date_to: dt.date | None = None,
@@ -332,6 +370,182 @@ def nav_series(ledger: Ledger, date_from: dt.date | None = None, date_to: dt.dat
                  if (date_from is None or r.date >= date_from) and (date_to is None or r.date <= date_to))
     return Dataset(("date", "cash", "receivables", "payables", "market_value", "net_assets", "units",
                     "nav_per_1000"), rows)
+
+
+# ---------- STP-2210 기준가 변동 원인 ----------
+
+# What an account's movement does to net assets: equity put in or taken out, income, expense.
+# Assets and liabilities are what net assets is made of, so they explain nothing here.
+MOVE_KIND = {"3": "입출금", "4": "수익", "5": "비용"}
+
+
+@dataclass(frozen=True)
+class NavChange:
+    date: dt.date
+    prev_net_assets: int
+    net_assets: int
+    moves: tuple[tuple[str, str, str, int], ...]   # (구분, 계정코드, 계정명, 순자산에 준 영향)
+
+    @property
+    def change(self) -> int:
+        return self.net_assets - self.prev_net_assets
+
+    @property
+    def explained(self) -> int:
+        return sum(m[3] for m in self.moves)
+
+    @property
+    def unexplained(self) -> int:
+        return self.change - self.explained
+
+
+def nav_changes(ledger: Ledger) -> list[NavChange]:
+    """Each NAV day's change in net assets against what the journal booked since the day before.
+
+    Net assets is counted from what is held (예수금 + 미수 - 미지급 + 보유수량 × 종가, R-60); the journal
+    says why it moved (투자원금, 수익, 비용 accounts). The two are worked out separately, so their
+    difference is a check: it is 0 when every won of the change has an entry behind it.
+    A day struck more than once counts once, at its last NAV."""
+    days: dict[dt.date, tuple[int, list]] = {}
+    for row, entries in ledger.nav_steps():
+        days[row.date] = (row.net_assets, days.get(row.date, (0, []))[1] + list(entries))
+    out, prev = [], 0
+    for date, (net, entries) in days.items():
+        effect: dict = {}
+        for e in entries:
+            for ln in e.lines:
+                if ln.account.code[0] in MOVE_KIND:
+                    effect[ln.account] = effect.get(ln.account, 0) + ln.credit - ln.debit
+        moves = tuple((MOVE_KIND[a.code[0]], a.code, a.value[1], v)
+                      for a, v in sorted(effect.items(), key=lambda kv: kv[0].code) if v)
+        out.append(NavChange(date, prev, net, moves))
+        prev = net
+    return out
+
+
+def nav_change_days(ledger: Ledger, date_from: dt.date | None = None, date_to: dt.date | None = None) -> Dataset:
+    """기준일 목록, newest first: 순자산, 전일 대비 변동, 분개로 설명된 변동, 설명되지 않은 차이."""
+    rows = tuple((c.date, c.net_assets, c.change, c.explained, c.unexplained, RESULT_TEXT[c.unexplained == 0])
+                 for c in reversed(nav_changes(ledger))
+                 if (date_from is None or c.date >= date_from) and (date_to is None or c.date <= date_to))
+    return Dataset(("date", "net_assets", "change", "explained", "unexplained", "result"), rows)
+
+
+def nav_change_bridge(ledger: Ledger, date: dt.date) -> Dataset:
+    """One day's change as a bridge read top to bottom: 전일 순자산, each account that moved it,
+    what no entry explains, 당일 순자산. `running` is net assets so far. It reaches the day's net assets by
+    construction, so the check is the 설명되지 않은 차이 row being 0.
+    KeyError when no NAV was struck that day."""
+    c = next((c for c in nav_changes(ledger) if c.date == date), None)
+    if c is None:
+        raise KeyError(f"{date} 기준가가 없어요")
+    rows, running = [("전일 순자산", None, None, None, c.prev_net_assets)], c.prev_net_assets
+    for kind, code, name, amount in c.moves:
+        running += amount
+        rows.append((kind, code, name, amount, running))
+    running += c.unexplained
+    rows.append(("설명되지 않은 차이", None, None, c.unexplained, running))
+    rows.append(("당일 순자산", None, None, None, c.net_assets))
+    return Dataset(("kind", "code", "name", "amount", "running"), tuple(rows))
+
+
+# ---------- STP-2300 시세 점검 ----------
+
+NOT_VALUED = "평가 전"
+
+
+def _rate_pct(rate) -> float | None:
+    """0.0123 -> 1.23 (a percentage with two places, for a column that is coloured by its sign)."""
+    return None if rate is None else float(round(rate * 100, 2))
+
+
+def price_check_days(ledger: Ledger, calendar, today: dt.date, date_from: dt.date | None = None,
+                     date_to: dt.date | None = None) -> Dataset:
+    """기준일 목록, newest first: how many closes the books took that day and how many were flagged.
+    A business day that has holdings but no close yet is listed first as 평가 전 (the day's `daily` has
+    not run): its rows are what will be valued, against the last close the ledger knows."""
+    from .pricecheck import BAD, WARN, price_checks, worst
+    days: dict[dt.date, list] = {}
+    for c in price_checks(ledger):
+        days.setdefault(c.date, []).append(c.level)
+    rows = [(d, len(levels), levels.count(BAD), levels.count(WARN), worst(levels))
+            for d, levels in sorted(days.items(), reverse=True)]
+    held = [s for s, p in ledger.positions().items() if p.qty]
+    if held and today not in days and calendar.is_business_day(today) and (not days or today > max(days)):
+        rows.insert(0, (today, len(held), None, None, NOT_VALUED))
+    return Dataset(("date", "symbols", "flagged", "warned", "result"),
+                   tuple(r for r in rows if (date_from is None or r[0] >= date_from)
+                         and (date_to is None or r[0] <= date_to)))
+
+
+def price_check_rows(ledger: Ledger, date: dt.date) -> Dataset:
+    """One day's closes, each against the close before it and the day's executions, worst first.
+    A day the books have not valued yet lists the holdings with the last close the ledger knows."""
+    from .pricecheck import _RANK, price_checks
+    checks = price_checks(ledger)
+    cols = ("symbol", "instrument_name", "asset_type", "close", "prev_date", "prev_close", "change",
+            "exec_gap", "level", "reasons")
+
+    def named(symbol):
+        inst = ledger.instruments.get(symbol)
+        return (symbol, inst.name if inst else None, inst.asset_type.value if inst else None)
+
+    mine = sorted((c for c in checks if c.date == date), key=lambda c: (-_RANK[c.level], c.symbol))
+    if mine:
+        return Dataset(cols, tuple((*named(c.symbol), c.close, c.prev_date, c.prev_close, _rate_pct(c.change),
+                                    _rate_pct(c.exec_gap), c.level, " · ".join(c.reasons)) for c in mine))
+    last = {c.symbol: c for c in checks if c.date < date}
+    return Dataset(cols, tuple((*named(s), None, last[s].date if s in last else None,
+                                last[s].close if s in last else None, None, None, NOT_VALUED, "")
+                               for s, p in sorted(ledger.positions().items()) if p.qty))
+
+
+# ---------- STP-2400 마감 점검 ----------
+
+def _close_board(conn: psycopg.Connection, calendar, fees, today: dt.date,
+                 account_id: str = DEFAULT_ACCOUNT) -> dict:
+    """Every business day's steps for one account (closeboard.board). The books are replayed here and not
+    taken from `load_books`, which refuses books that fail verification: the board is where that failure
+    has to show. 원장 내부 대사 counts the checks of the whole database and of this account."""
+    from . import closeboard as cb
+    from .ops import load_instruments, recon_days
+    from .store.integrity import integrity_report
+    from .store.integrity_view import replay
+    instruments = load_instruments(conn)
+    checks = [c for c in integrity_report(conn, calendar, fees, instruments) if c.account in ("", account_id)]
+    orders: dict[dt.date, list] = {}
+    for day, qty, outcome, order_no in conn.execute(
+            "select o.trade_date, o.qty, a.outcome, a.order_no from oms_orders o"
+            " left join oms_order_acks a using (client_id) where o.account_id = %s order by o.created_at",
+            (account_id,)):
+        orders.setdefault(day, []).append((qty, outcome, order_no))
+    outside = cb.Outside(orders, recon_days(conn), len(checks), sum(not c.ok for c in checks))
+    try:
+        ledger = replay(conn, calendar, fees, instruments, account_id)
+    except Exception:       # events the rules reject: no day can be read, the one thing to show is that
+        return {today: [cb.integrity_step(outside)]}
+    return cb.board(ledger, calendar, today, outside)
+
+
+def close_days(conn: psycopg.Connection, calendar, fees, today: dt.date, date_from: dt.date | None = None,
+               date_to: dt.date | None = None, account_id: str = DEFAULT_ACCOUNT) -> Dataset:
+    """영업일 목록, newest first: how many of the day's steps are finished and whether anything needs a decision."""
+    from . import closeboard as cb
+    rows = [(day, cb.finished(steps), len(steps), cb.needing(steps), cb.day_state(steps))
+            for day, steps in _close_board(conn, calendar, fees, today, account_id).items()
+            if (date_from is None or day >= date_from) and (date_to is None or day <= date_to)]
+    return Dataset(("date", "done", "steps", "attention", "state"), tuple(rows))
+
+
+def close_steps(conn: psycopg.Connection, calendar, fees, today: dt.date, date: dt.date,
+                account_id: str = DEFAULT_ACCOUNT) -> Dataset:
+    """One day's steps in the order `daily` does them, each with its state, what it found and the screen
+    that shows the detail."""
+    days = _close_board(conn, calendar, fees, today, account_id)
+    if date not in days:
+        raise KeyError(f"{date}은 영업일이 아니거나 원장을 시작하기 전이에요")
+    return Dataset(("no", "step", "state", "detail", "screen", "date"),
+                   tuple((s.no, s.name, s.state, s.detail, s.screen, date) for s in days[date]))
 
 
 # ---------- STP-1100 잔고 (IBOR) ----------
@@ -607,8 +821,16 @@ TRANSACTIONS = {
     "STP3200R02": event_journal,
     "STP3300R01": trial_balance,
     "STP2100R01": recon_history,
+    "STP2110R01": integrity_checks,
+    "STP2110R02": integrity_compared,
     "STP1200R01": order_blotter,
     "STP2200R01": nav_series,
+    "STP2210R01": nav_change_days,
+    "STP2210R02": nav_change_bridge,
+    "STP2300R01": price_check_days,
+    "STP2300R02": price_check_rows,
+    "STP2400R01": close_days,
+    "STP2400R02": close_steps,
     "STP4100R01": instrument_master,
     "STP4100R02": instrument_events,
     "STP4200R01": account_summary,
