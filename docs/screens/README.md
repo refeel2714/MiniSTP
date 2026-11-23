@@ -12,8 +12,10 @@
 |  | 12 주문·체결 | [STP-1200](STP-1200.md) 주문·체결 블로터 |
 |  | 13 주문가능 | [STP-1300](STP-1300.md) 주문가능 조회 |
 |  | 14 고객별 보유 | [STP-1400](STP-1400.md) 고객별 보유 |
-| **2 대사·평가**<br>증권사와 맞는지, 하루의 값이 얼마인지 | 21 대사 | [STP-2100](STP-2100.md) 일일 대사 결과 |
-|  | 22 기준가 | [STP-2200](STP-2200.md) 기준가·무오류 현황 |
+| **2 대사·평가**<br>증권사와 맞는지, 하루의 값이 얼마인지 | 21 대사 | [STP-2100](STP-2100.md) 일일 대사 결과, [STP-2110](STP-2110.md) 원장 내부 대사 |
+|  | 22 기준가 | [STP-2200](STP-2200.md) 기준가·무오류 현황, [STP-2210](STP-2210.md) 기준가 변동 원인 |
+|  | 23 시세 점검 | [STP-2300](STP-2300.md) 시세 점검 |
+|  | 24 마감 점검 | [STP-2400](STP-2400.md) 마감 점검 |
 | **3 원장·회계**<br>기록된 이벤트와 그 분개 (ABOR) | 31 원장 | [STP-3100](STP-3100.md) 원장 조회 |
 |  | 32 분개 | [STP-3200](STP-3200.md) 분개 조회 |
 |  | 33 시산표 | [STP-3300](STP-3300.md) 시산표 |
@@ -31,7 +33,11 @@
 | [STP-1300](STP-1300.md) | 주문가능 조회 | 2 | `STP1300R02`, `STP1300R01` |
 | [STP-1400](STP-1400.md) | 고객별 보유 | 3 | `STP1400R01`, `STP1400R02`, `STP1400R03` |
 | [STP-2100](STP-2100.md) | 일일 대사 결과 | 2 | `STP2100R02`, `STP2100R01`, `STP2100U01` |
+| [STP-2110](STP-2110.md) | 원장 내부 대사 | 3 | `STP2110R01`, `STP2110R02` |
 | [STP-2200](STP-2200.md) | 기준가·무오류 현황 | 1 | `STP2200R01` |
+| [STP-2210](STP-2210.md) | 기준가 변동 원인 | 2 | `STP2210R01`, `STP2210R02` |
+| [STP-2300](STP-2300.md) | 시세 점검 | 2 | `STP2300R01`, `STP2300R02` |
+| [STP-2400](STP-2400.md) | 마감 점검 | 2 | `STP2400R01`, `STP2400R02` |
 | [STP-3100](STP-3100.md) | 원장 조회 | 3 | `STP3100R01`, `STP3100R02` |
 | [STP-3200](STP-3200.md) | 분개 조회 | 2 | `STP3200R01`, `STP3200R02` |
 | [STP-3300](STP-3300.md) | 시산표 | 1 | `STP3300R01` |
@@ -46,7 +52,7 @@
 
 | 찾는 것 | 목록을 주는 트랜잭션 | 열 수 있는 화면 (넘기는 조회조건) |
 |---|---|---|
-| 화면 | - | 화면 13개 모두 |
+| 화면 | - | 화면 17개 모두 |
 | 종목 | `STP4100R01` | STP-1300 주문가능 조회(`symbol`), STP-3100 원장 조회(`symbol`), STP-3200 분개 조회(`symbol`) |
 
 ## 영향도: DB 컬럼 → 화면
@@ -60,8 +66,8 @@
 | `account_status_history.reason` | 사유 | STP-4400 status_history |
 | `account_status_history.status` | 상태 | STP-4400 status_history |
 | `account_status_v.status` | 현재 상태 | STP-1400 accounts, STP-4200 account, STP-4400 accounts |
-| `accounts_chart.code` | 계정코드 | STP-3300 trial |
-| `accounts_chart.name` | 계정명 | STP-3200 journal, STP-3300 trial |
+| `accounts_chart.code` | 계정코드 | STP-2210 bridge, STP-3300 trial |
+| `accounts_chart.name` | 계정명 | STP-2210 bridge, STP-3200 journal, STP-3300 trial |
 | `accounts_chart.normal_side` | 정상잔액 방향 | STP-3300 trial |
 | `broker_snapshots.kind` | 유형 | STP-2100 days, STP-2100 조회조건 |
 | `broker_snapshots.taken_at` | 수신 시각 | STP-2100 results |
@@ -74,10 +80,10 @@
 | `customer_positions_v.symbol` | 종목코드 | STP-1400 positions |
 | `customers.alias` | 고객 별칭 | STP-1400 customers, STP-4400 accounts |
 | `customers.customer_id` | 고객 ID | STP-1400 customers |
-| `instruments.asset_type` | 자산 유형 | STP-1100 holdings, STP-1200 orders, STP-1300 symbols, STP-1400 positions, STP-4100 instruments, STP-4200 settlements, STP-4300 fees, STP-4300 ticks, STP-4400 positions |
+| `instruments.asset_type` | 자산 유형 | STP-1100 holdings, STP-1200 orders, STP-1300 symbols, STP-1400 positions, STP-2300 prices, STP-4100 instruments, STP-4200 settlements, STP-4300 fees, STP-4300 ticks, STP-4400 positions |
 | `instruments.market` | 시장 | STP-4100 instruments, STP-4300 fees |
-| `instruments.name` | 종목명 | STP-1100 holdings, STP-1200 orders, STP-1300 symbols, STP-1400 positions, STP-4100 instruments, STP-4200 settlements, STP-4400 positions |
-| `instruments.symbol` | 종목코드 | STP-1100 holdings, STP-1300 symbols, STP-1300 조회조건, STP-3100 events, STP-3100 조회조건, STP-3200 events, STP-3200 조회조건, STP-4100 instruments, STP-4200 settlements |
+| `instruments.name` | 종목명 | STP-1100 holdings, STP-1200 orders, STP-1300 symbols, STP-1400 positions, STP-2300 prices, STP-4100 instruments, STP-4200 settlements, STP-4400 positions |
+| `instruments.symbol` | 종목코드 | STP-1100 holdings, STP-1300 symbols, STP-1300 조회조건, STP-2300 prices, STP-3100 events, STP-3100 조회조건, STP-3200 events, STP-3200 조회조건, STP-4100 instruments, STP-4200 settlements |
 | `journal_entries.date` | 회계일 | STP-3200 journal |
 | `journal_entries.entry_id` | 전표 번호 | STP-3200 journal |
 | `journal_entries.kind` | 전표 유형 | STP-3200 journal |
