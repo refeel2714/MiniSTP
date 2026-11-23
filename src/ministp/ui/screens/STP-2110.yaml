@@ -1,0 +1,44 @@
+id: STP-2110
+title: 원장 내부 대사
+purpose: 저장된 잔고와 분개가 원장 이벤트를 처음부터 다시 계산한 값과 같은지를 항목별로 보여줘요. 증권사와 맞추는 일일 대사(STP-2100)가 바깥과의 대사라면 이 화면은 원장 안에서의 대사예요. 왼쪽에서 점검 항목을 고르면 오른쪽에 판정과, 저장된 값과 맞아야 하는 값을 나란히 놓은 비교가 나와요. 터미널의 verify 명령과 같은 점검이고 읽기만 해요. 불일치가 있으면 그 항목이 먼저 골라져 있어요. 이벤트 순번, 수정·삭제 방지, 분개 대차는 DB 전체를, 나머지 점검은 위쪽에서 고른 계좌의 장부를 봐요.
+layout: split
+left: 30
+grids:
+  - id: checks
+    title: 점검 항목
+    live: true
+    key: key
+    tx: STP2110R01
+    load: open
+    meta: {all_ok: 모두 일치, breaks: 불일치 수}
+    columns:
+      - {name: title, label: 점검 항목}
+      - {name: result, label: 결과, color: status, display: pill}
+      - {name: key, label: 점검 코드, format: code, hidden: true}
+  - id: verdict
+    title: 판정
+    tx: STP2110R02
+    dataset: check
+    load: master
+    master: checks
+    link: {title: title}
+    view: cards
+    weight: 1
+    columns:
+      - {name: result, label: 결과, color: status}
+      - {name: detail, label: 판정 내용}
+  - id: compared
+    title: 값 비교
+    tx: STP2110R02
+    dataset: rows
+    load: master
+    master: checks
+    link: {title: title}
+    weight: 4
+    columns:
+      - {name: item, label: 비교 항목}
+      - {name: stored, label: 저장된 값, format: number}
+      - {name: expected, label: 맞아야 하는 값, format: number}
+      - {name: diff, label: 차이, format: number, color: sign}
+      - {name: result, label: 결과, color: status, display: pill}
+      - {name: basis, label: 맞아야 하는 값의 근거}

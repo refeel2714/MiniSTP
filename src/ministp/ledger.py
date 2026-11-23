@@ -372,6 +372,19 @@ class Ledger:
         """Cash after every booked trade settles (증권사 D+2 예수금, D+1 after a T+1 cutover)."""
         return self.cash_balance() + self.pending_settlement_net()
 
+    def nav_steps(self) -> list[tuple[NavRow, tuple[JournalEntry, ...]]]:
+        """Every recorded NAV with the journal entries booked after the NAV before it, in recording
+        order: what the books say moved net assets from one NAV to the next (STP-2210)."""
+        led = Ledger(self.calendar, self.fees, self.instruments, self.settlement_cycle)
+        steps, since = [], 0
+        for ev in self._events:
+            led._record(ev)
+            if isinstance(ev, NavEvent):
+                journal = led.journal
+                steps.append((led._nav_row(ev.date, dict(ev.closes)), journal[since:]))
+                since = len(journal)
+        return steps
+
     @property
     def units(self) -> int:
         return self._s.units
