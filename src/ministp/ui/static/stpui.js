@@ -1318,5 +1318,5 @@
     const said = sessionStorage.getItem(TOAST_KEY);
     if (said) { sessionStorage.removeItem(TOAST_KEY); toast(said); }
   } catch (e) { /* private mode */ }
-  revealTab();
+  revealLeaf();
 })();
