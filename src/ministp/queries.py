@@ -478,7 +478,7 @@ def order_check(books, day: dt.date, symbol: str, side: str, qty: int, limit_pri
                               cap.max_buy_qty, cap.held_qty, cap.pending_sell_qty, cap.sellable_qty,
                               reason == "", reason, REASON_TEXT.get(reason, reason)),))
 
-# ---------- STP-4400 계좌 목록 · STP-4500 고객별 보유 (조회 전용) ----------
+# ---------- STP-4400 계좌 목록 · STP-1400 고객별 보유 (조회 전용) ----------
 
 def account_list(conn: psycopg.Connection, calendar) -> Dataset:
     """Every account with its customer, current status and the size of its books.
