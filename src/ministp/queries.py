@@ -136,6 +136,41 @@ def trial_balance(conn: psycopg.Connection) -> tuple[Dataset, bool]:
     return ds, dr == cr
 
 
+# ---------- STP-2110 원장 내부 대사 ----------
+
+RESULT_TEXT = {True: "일치", False: "불일치"}
+
+
+def integrity_checks(conn: psycopg.Connection, calendar, fees, instruments) -> Dataset:
+    """The `verify` report as rows: one check a row, in the order a person reads them.
+    It replays the events itself and does not go through `load_books`, which refuses books that
+    fail these very checks: this is the list to look at when every other screen will not open."""
+    from .store.integrity import integrity_report
+    checks = integrity_report(conn, calendar, fees, instruments)
+    return Dataset(("key", "title", "result", "detail"),
+                   tuple((c.key, c.title, RESULT_TEXT[c.ok], c.detail) for c in checks))
+
+
+def integrity_compared(conn: psycopg.Connection, title: str, calendar, fees,
+                       instruments) -> tuple[Dataset, Dataset]:
+    """The check named `title` as (its verdict in a sentence, the numbers behind it side by side): what
+    is stored, what it has to equal and the difference, as the broker reconciliation shows 내부 값 and
+    증권사 값. Both are read in one snapshot. KeyError when there is no such check."""
+    from .store.integrity_view import compared
+    top = conn.info.transaction_status == psycopg.pq.TransactionStatus.IDLE
+    with conn.transaction():
+        if top:
+            conn.execute("set transaction isolation level repeatable read read only")
+        checks = integrity_checks(conn, calendar, fees, instruments)
+        check = next((r for r in checks.rows if r[1] == title), None)
+        if check is None:
+            raise KeyError(f"없는 점검 항목: {title}")
+        rows = compared(conn, check[0], calendar, fees, instruments)
+    return (Dataset(checks.columns, (check,)),
+            Dataset(("item", "stored", "expected", "basis", "diff", "result"),
+                    tuple((r.item, r.stored, r.expected, r.basis, r.diff, RESULT_TEXT[r.ok]) for r in rows)))
+
+
 # ---------- STP-2100 대사 결과 ----------
 
 def recon_history(conn: psycopg.Connection, date_from: dt.date | None = None, date_to: dt.date | None = None,
@@ -602,6 +637,8 @@ TRANSACTIONS = {
     "STP3200R02": event_journal,
     "STP3300R01": trial_balance,
     "STP2100R01": recon_history,
+    "STP2110R01": integrity_checks,
+    "STP2110R02": integrity_compared,
     "STP1200R01": order_blotter,
     "STP2200R01": nav_series,
     "STP4100R01": instrument_master,
