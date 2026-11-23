@@ -480,7 +480,7 @@ def nav_change_bridge(ledger: Ledger, date: dt.date) -> Dataset:
 
 def _rate_pct(rate) -> float | None:
     """0.0123 -> 1.23 (a percentage with two places, for a column that is coloured by its sign)."""
-    return None if rate is None else float(round(rate * 100, 2))
+    return None if rate is None else float(round(rate * 100, 2)) + 0.0   # + 0.0: -0.001% shows as 0.00, not -0.00
 
 
 def _in_period(checks, date_from: dt.date | None, date_to: dt.date | None) -> list:
@@ -572,6 +572,102 @@ def close_steps(conn: psycopg.Connection, calendar, fees, today: dt.date, date: 
         raise KeyError(f"{date}은 영업일이 아니거나 원장을 시작하기 전이에요")
     return Dataset(("no", "step", "state", "detail", "screen", "date"),
                    tuple((s.no, s.name, s.state, s.detail, s.screen, date) for s in days[date]))
+
+
+# ---------- STP-6100 수익률 ----------
+# The book's return is the return of its NAV per 1000 units (R-67). Money put in or taken out buys or
+# redeems units at the NAV before it (R-61), so it moves net assets but not the NAV: the NAV's change is
+# the return on what was invested, the time-weighted return, with no cash-flow arithmetic of its own.
+# 손익 is the same day in won: the change in net assets less what was put in or taken out.
+
+@dataclass(frozen=True)
+class ReturnDay:
+    date: dt.date
+    base_nav: object      # Decimal: the NAV before this day (1,000.00 before the first)
+    nav: object           # Decimal: the day's NAV
+    net_assets: int
+    flows: int            # 입출금 booked since the NAV before
+    profit: int           # change in net assets less flows
+
+    @property
+    def day_return(self):
+        return self.nav / self.base_nav - 1
+
+
+def return_days(ledger: Ledger) -> list[ReturnDay]:
+    """Every NAV day (a day struck twice counts once, at its last NAV) with what it returned."""
+    from .ledger import INITIAL_NAV
+    out = []
+    for c in nav_changes(ledger):
+        flows = sum(m[3] for m in c.moves if m[0] == "입출금")
+        base = INITIAL_NAV if c.prev_nav_per_1000 is None else c.prev_nav_per_1000
+        out.append(ReturnDay(c.date, base, c.nav_per_1000, c.net_assets, flows, c.change - flows))
+    return out
+
+
+def _period_days(days: list[ReturnDay], date_from: dt.date | None, date_to: dt.date | None) -> list[ReturnDay]:
+    return [d for d in days if (date_from is None or d.date >= date_from) and (date_to is None or d.date <= date_to)]
+
+
+def _return(base, end) -> float | None:
+    return _rate_pct(end / base - 1) if base else None
+
+
+def _month_back(day: dt.date) -> dt.date:
+    """The same day a month earlier (the month's last day when it is shorter): 03-31 -> 02-28."""
+    import calendar as cal
+    y, m = (day.year, day.month - 1) if day.month > 1 else (day.year - 1, 12)
+    return dt.date(y, m, min(day.day, cal.monthrange(y, m)[1]))
+
+
+def return_periods(ledger: Ledger) -> dict:
+    """기간 수익률 to the last NAV: 설정 이후, 연초 이후, 최근 1개월. Each is the last NAV against the NAV
+    just before the period starts (1,000.00 when the books start inside it). Percentages with two places;
+    {} before the first NAV. The return of a period asked for is the newest month's 누적 (return_months)."""
+    days = return_days(ledger)
+    if not days:
+        return {}
+    last = days[-1]
+
+    def after(start: dt.date) -> float | None:      # from the NAV on or before `start` to the last NAV
+        inside = [d for d in days if d.date > start]
+        return _return(inside[0].base_nav, last.nav) if inside else 0.0
+
+    return {"last_date": last.date, "since_start": _return(days[0].base_nav, last.nav),
+            "year_to_date": after(dt.date(last.date.year - 1, 12, 31)), "one_month": after(_month_back(last.date))}
+
+
+def return_months(ledger: Ledger, date_from: dt.date | None = None, date_to: dt.date | None = None) -> Dataset:
+    """월별 수익률, newest first. A month's return is its last NAV against the NAV before the month (the
+    month-end before it); 누적 runs from the start of the period (from the first NAV when none is asked).
+    손익 and 입출금 are the month's won. `trend` is the month's NAVs, oldest first."""
+    days = _period_days(return_days(ledger), date_from, date_to)
+    months: dict[str, list[ReturnDay]] = {}
+    for d in days:
+        months.setdefault(f"{d.date:%Y-%m}", []).append(d)
+    start = days[0].base_nav if days else None
+    rows = tuple((month, ds[0].date, ds[-1].date, len(ds), ds[0].base_nav, ds[-1].nav,
+                  _return(ds[0].base_nav, ds[-1].nav), _return(start, ds[-1].nav), sum(d.flows for d in ds),
+                  sum(d.profit for d in ds), ds[-1].net_assets, [float(d.nav) for d in ds], date_from, date_to)
+                 for month, ds in reversed(months.items()))
+    return Dataset(("month", "first_date", "last_date", "days", "base_nav", "end_nav", "month_return",
+                    "cum_return", "flows", "profit", "net_assets", "trend", "date_from", "date_to"), rows)
+
+
+def return_month_days(ledger: Ledger, month: str, date_from: dt.date | None = None,
+                      date_to: dt.date | None = None) -> Dataset:
+    """One month's NAV days, newest first: the day's return, the month's return so far, and the won.
+    ValueError when `month` is not YYYY-MM."""
+    try:
+        first = dt.datetime.strptime(month, "%Y-%m").date()
+    except (TypeError, ValueError):
+        raise ValueError(f"월은 YYYY-MM으로 적어 주세요: {month}") from None
+    days = [d for d in _period_days(return_days(ledger), date_from, date_to)
+            if (d.date.year, d.date.month) == (first.year, first.month)]
+    base = days[0].base_nav if days else None
+    return Dataset(("date", "nav_per_1000", "day_return", "month_to_date", "net_assets", "flows", "profit"),
+                   tuple((d.date, d.nav, _rate_pct(d.day_return), _return(base, d.nav), d.net_assets, d.flows,
+                          d.profit) for d in reversed(days)))
 
 
 # ---------- STP-1100 잔고 (IBOR) ----------
@@ -876,6 +972,8 @@ TRANSACTIONS = {
     "STP2300R02": price_trend_rows,
     "STP2400R01": close_days,
     "STP2400R02": close_steps,
+    "STP6100R01": return_months,
+    "STP6100R02": return_month_days,
     "STP4100R01": instrument_master,
     "STP4100R02": instrument_rules,
     "STP4300R01": fee_rules,
