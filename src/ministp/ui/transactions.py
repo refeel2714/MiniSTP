@@ -235,10 +235,13 @@ def _instruments(c: TxContext, p) -> TxResult:
     return TxResult({"main": q.instrument_master(c.books)})
 
 
-def _instrument_events(c: TxContext, p) -> TxResult:
+def _instrument_rules(c: TxContext, p) -> TxResult:
     if not p.get("symbol"):
         raise TxError("종목코드가 필요해요")
-    return TxResult({"main": q.instrument_events(c.conn, p["symbol"])})
+    try:
+        return TxResult({"main": q.instrument_rules(c.books, p["symbol"], c.today)})
+    except KeyError as e:
+        raise TxError(e.args[0]) from e
 
 
 def _account(c: TxContext, p) -> TxResult:
@@ -304,11 +307,11 @@ TRANSACTIONS: dict[str, Tx] = {t.tx_id: t for t in [
                                             "symbol": "text", "seq": "int"}, _journal_events),
     Tx("STP3200R02", "이벤트의 분개", {"seq": "int"}, _journal),
     Tx("STP3300R01", "시산표", {}, _trial),
+    Tx("STP3400R01", "계좌 요약", {}, _account),
+    Tx("STP3400R02", "예수금 D+n", {}, _ladder),
+    Tx("STP3400R03", "결제 예정", {}, _settlements),
     Tx("STP4100R01", "종목정보", {}, _instruments),
-    Tx("STP4100R02", "종목 원장 이벤트", {"symbol": "text"}, _instrument_events),
-    Tx("STP4200R01", "계좌 요약", {}, _account),
-    Tx("STP4200R02", "예수금 D+n", {}, _ladder),
-    Tx("STP4200R03", "결제 예정", {}, _settlements),
+    Tx("STP4100R02", "종목에 적용되는 거래 기준", {"symbol": "text"}, _instrument_rules),
     Tx("STP4300R01", "수수료·세금", {}, _fees),
     Tx("STP4300R02", "결제주기 규칙", {}, _settlement_rules),
     Tx("STP4300R03", "호가단위", {}, _ticks),

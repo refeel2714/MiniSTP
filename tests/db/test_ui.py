@@ -281,7 +281,7 @@ def test_live_endpoint_is_an_event_stream(client):
     assert "GET" in route.methods
 
 
-# ---------- STP-4100·4200·4300 기준정보 ----------
+# ---------- STP-4100·4300 기준정보, STP-3400 계좌정보 ----------
 
 def _rows(client, tx, params=None, dataset="main"):
     body = client.post(f"/api/tx/{tx}", json={"params": params or {}}).json()
@@ -289,24 +289,29 @@ def _rows(client, tx, params=None, dataset="main"):
     return [dict(zip(ds["columns"], r)) for r in ds["rows"]], body["meta"]
 
 
-def test_instrument_master_shows_the_tick_and_tax_the_system_uses(client):
-    from ministp.instruments import AssetType
-    from ministp.ticks import tick_size
+def test_instrument_master_holds_nothing_of_the_account_and_shows_the_rules_the_system_uses(client):
     rows, _ = _rows(client, "STP4100R01")
-    priced = [r for r in rows if r["last_close"] is not None]
-    assert priced
-    for r in priced:
-        assert r["tick"] == tick_size(r["last_close"], AssetType(r["asset_type"]))
+    # reference data is the same whichever account is looked at: no holdings, no closes the books took
+    assert set(rows[0]) == {"symbol", "instrument_name", "market", "asset_type", "sell_tax"}
     kospi_stock = next(r for r in rows if r["market"] == "KOSPI" and r["asset_type"] == "STOCK")
     assert kospi_stock["sell_tax"] == "0.2%"          # 0.05% 거래세 + 0.15% 농특세
-    events, _ = _rows(client, "STP4100R02", {"symbol": kospi_stock["symbol"]})
-    assert all(e["payload"].get("symbol") == kospi_stock["symbol"] for e in events)
+    rules, _ = _rows(client, "STP4100R02", {"symbol": kospi_stock["symbol"]})
+    by_item = {r["item"]: r["value"] for r in rules}
+    assert (by_item["위탁수수료율"], by_item["증권거래세율"], by_item["농어촌특별세율"]) == ("0.015%", "0.05%", "0.15%")
+    assert by_item["결제주기"] == "T+2" and by_item["2,000원 미만"] == "1원" and by_item["500,000원 이상"] == "1,000원"
+    etf = next(r for r in rows if r["asset_type"] == "ETF")
+    etf_rules, _ = _rows(client, "STP4100R02", {"symbol": etf["symbol"]})
+    assert [(r["item"], r["value"]) for r in etf_rules if r["kind"] == "호가단위"] == [("모든 가격", "5원")]
+    assert {r["item"]: r["value"] for r in etf_rules}["증권거래세율"] == "0%"
+    assert client.post("/api/tx/STP4100R02", json={"params": {"symbol": "999999"}}).status_code == 400
+    screen = client.get("/api/screen/STP-4100").json()
+    assert not any(c["name"] in ("qty", "book_cost", "last_close") for g in screen["grids"] for c in g["columns"])
 
 
 def test_account_ladder_ends_at_the_cash_after_every_settlement(client):
-    (acct,), _ = _rows(client, "STP4200R01")
-    ladder, _ = _rows(client, "STP4200R02")
-    pending, _ = _rows(client, "STP4200R03")
+    (acct,), _ = _rows(client, "STP3400R01")
+    ladder, _ = _rows(client, "STP3400R02")
+    pending, _ = _rows(client, "STP3400R03")
     assert [r["day_label"] for r in ladder[:3]] == ["D+0", "D+1", "D+2"]   # D+2까지는 결제가 없어도 보여요
     assert ladder[0]["cash_after"] == acct["cash_d0"] + ladder[0]["cash_in"] - ladder[0]["cash_out"]
     assert ladder[-1]["cash_after"] == acct["projected_cash"]
@@ -317,8 +322,8 @@ def test_account_ladder_ends_at_the_cash_after_every_settlement(client):
 
 
 def test_account_screen_never_carries_an_account_number(client):
-    page = client.get("/screen/STP-4200").text
-    body = client.post("/api/tx/STP4200R01", json={"params": {}}).text
+    page = client.get("/screen/STP-3400").text
+    body = client.post("/api/tx/STP3400R01", json={"params": {}}).text
     for text in (page, body):
         assert "account_no" not in text and "CANO" not in text
 
@@ -365,7 +370,7 @@ def test_holdings_are_valued_at_the_last_close_the_ledger_recorded(client, conn,
     for r in rows:
         assert r["market_value"] == r["qty"] * closes[r["symbol"]]
         assert r["unrealized_pnl"] == r["market_value"] - r["book_cost"]
-    account = _rows(client, "STP4200R01")[0][0]
+    account = _rows(client, "STP3400R01")[0][0]
     assert sum(r["market_value"] for r in rows) == account["market_value"]
     grid = next(g for g in client.get("/api/screen/STP-1100").json()["grids"] if g["id"] == "holdings")
     cols = {c["name"]: c for c in grid["columns"]}

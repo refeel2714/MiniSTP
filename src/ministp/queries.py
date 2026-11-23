@@ -660,10 +660,12 @@ def order_check(books, day: dt.date, symbol: str, side: str, qty: int, limit_pri
                               cap.max_buy_qty, cap.held_qty, cap.pending_sell_qty, cap.sellable_qty,
                               reason == "", reason, REASON_TEXT.get(reason, reason)),))
 
-# ---------- STP-4100·4200·4300 기준정보 (조회 전용) ----------
+# ---------- STP-4100·4300 기준정보 (조회 전용) ----------
 # Reference data as the system really uses it: instruments from the DB, fee rates,
 # settlement rules, tick sizes and the holiday calendar from the objects the
 # ledger is built with. Nothing here is a second copy that could drift.
+# Reference data is what holds whichever account is looked at: no holdings, no balances and
+# no closes the books happened to take. Those are the account's (STP-1100, STP-2300, STP-3400).
 
 WEEKDAYS = "월화수목금토일"
 
@@ -675,28 +677,41 @@ def _pct(rate) -> str:
 
 
 def instrument_master(books) -> Dataset:
-    """종목정보: 등록 종목, 최근 종가와 그 가격의 호가단위, 매도 세율, 보유."""
-    from .ticks import tick_size
+    """종목정보: 등록 종목과 그 종목을 팔 때의 세율. 계좌와 무관한 값만 있어요."""
     fees = books.ledger.fees
-    close_day, closes = last_closes(books.ledger)
-    held = books.ledger.positions()
     rows = []
     for sym, inst in sorted(books.instruments.items()):
-        price = closes.get(sym)
         tx, rural = fees.sell_tax_rates[(inst.market, inst.asset_type)]
-        pos = held.get(sym)
-        rows.append((sym, inst.name, inst.market.value, inst.asset_type.value, price,
-                     close_day if price is not None else None,
-                     tick_size(price, inst.asset_type) if price is not None else None,
-                     _pct(tx + rural), pos.qty if pos else 0, pos.book_cost if pos else 0))
-    return Dataset(("symbol", "instrument_name", "market", "asset_type", "last_close", "close_date", "tick",
-                    "sell_tax", "qty", "book_cost"), tuple(rows))
+        rows.append((sym, inst.name, inst.market.value, inst.asset_type.value, _pct(tx + rural)))
+    return Dataset(("symbol", "instrument_name", "market", "asset_type", "sell_tax"), tuple(rows))
 
 
-def instrument_events(conn: psycopg.Connection, symbol: str) -> Dataset:
-    """한 종목의 원장 이벤트 (개시 보유, 체결), newest first. 결제 이벤트는 체결ID로만 이어져 여기엔 없어요."""
-    return ledger_events(conn, symbol=symbol)
+def instrument_rules(books, symbol: str, today: dt.date) -> Dataset:
+    """한 종목에 적용되는 거래 기준: 수수료, 매도 세금, 결제주기, 호가단위. The same objects the ledger and the
+    order check calculate with (STP-4300 shows them for every market and asset type).
+    KeyError when the symbol is not registered."""
+    from .ticks import tick_table
+    inst = books.instruments.get(symbol)
+    if inst is None:
+        raise KeyError(f"등록되지 않은 종목이에요: {symbol}")
+    fees, rules = books.ledger.fees, books.ledger.settlement_cycle.rules
+    tx, rural = fees.sell_tax_rates[(inst.market, inst.asset_type)]
+    cycle = max((r for r in rules if r[0] <= today), key=lambda r: r[0], default=None)
+    rows = [("수수료", "위탁수수료율", _pct(fees.commission_rate), "매수·매도 모두, 체결금액 기준"),
+            ("수수료", "수수료 절사 단위", f"{fees.commission_unit:,}원", "이 단위 미만은 버려요"),
+            ("세금", "증권거래세율", _pct(tx), "매도할 때만"),
+            ("세금", "농어촌특별세율", _pct(rural), "매도할 때만"),
+            ("결제", "결제주기", f"T+{cycle[1]}" if cycle else None, "오늘 체결하면 적용되는 규칙")]
+    for asset, lo, hi, tick in tick_table():
+        if asset == inst.asset_type.value:
+            band = "모든 가격" if not lo and hi is None else f"{lo:,}원 이상" if hi is None else f"{hi:,}원 미만"
+            rows.append(("호가단위", band, f"{tick:,}원", ""))
+    return Dataset(("kind", "item", "value", "note"), tuple(rows))
 
+
+# ---------- STP-3400 계좌정보 ----------
+# The account's own state (balances, what is still to settle, the last recon): it is the books' view of one
+# account, so it sits with the ledger screens and not with reference data.
 
 def account_summary(books, calendar, today: dt.date) -> Dataset:
     """계좌 요약 (원장 기준). 계좌번호와 키는 DB에 없고 화면에도 나오지 않아요."""
@@ -808,6 +823,9 @@ TRANSACTIONS = {
     "STP3200R01": journal_events,
     "STP3200R02": event_journal,
     "STP3300R01": trial_balance,
+    "STP3400R01": account_summary,
+    "STP3400R02": cash_ladder,
+    "STP3400R03": pending_settlements,
     "STP2100R01": recon_history,
     "STP2110R01": integrity_checks,
     "STP2110R02": integrity_compared,
@@ -820,10 +838,7 @@ TRANSACTIONS = {
     "STP2400R01": close_days,
     "STP2400R02": close_steps,
     "STP4100R01": instrument_master,
-    "STP4100R02": instrument_events,
-    "STP4200R01": account_summary,
-    "STP4200R02": cash_ladder,
-    "STP4200R03": pending_settlements,
+    "STP4100R02": instrument_rules,
     "STP4300R01": fee_rules,
     "STP4300R02": settlement_rules,
     "STP4300R03": tick_rules,
