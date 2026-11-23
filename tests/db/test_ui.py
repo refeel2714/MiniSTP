@@ -463,3 +463,13 @@ def test_blotter_shows_where_each_order_stands_and_its_settlements(client, conn,
     assert r.status_code == 400 and "없는 주문" in r.json()["error"]
     spec = client.get("/spec/STP-1200").text
     assert "진행 단계(의도 → 접수 → 체결 → 결제" in spec and "`filled_qty` 막대 안에 표시" in spec and "숨김" in spec
+
+
+def test_returns_screen_reads_the_nav_month_by_month(client):
+    months, meta = _rows(client, "STP6100R01")
+    assert months and {"since_start", "year_to_date", "one_month", "last_date"} <= set(meta)
+    assert meta["since_start"] == f"{months[0]['cum_return']:+.2f}%"     # the newest month's 누적 runs from the start
+    assert sum(m["flows"] for m in months) > 0                             # the opening deposit, not a return
+    days, _ = _rows(client, "STP6100R02", {"month": months[0]["month"]})
+    assert days[0]["month_to_date"] == months[0]["month_return"] and days[0]["date"] == months[0]["last_date"]
+    assert client.post("/api/tx/STP6100R02", json={"params": {"month": "11월"}}).status_code == 400
