@@ -131,7 +131,7 @@ def test_split_layout_is_one_list_on_the_left_and_a_few_details_on_the_right():
     shipped = load_screens()
     for sid, on_left, on_right, under in [("STP-3100", ["events"], ["positions", "cash"], []),
                                           ("STP-3200", ["events"], ["journal"], []),   # the journal has the right side to itself
-                                          ("STP-4100", ["instruments"], ["events"], [])]:
+                                          ("STP-4100", ["instruments"], ["rules"], [])]:
         assert shipped[sid].layout == "split"
         left, right, below = split_sides(shipped[sid])
         assert ([g.id for g in left], [g.id for g in right], [g.id for g in below]) == (on_left, on_right, under)

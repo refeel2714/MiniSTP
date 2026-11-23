@@ -1,35 +1,29 @@
 id: STP-4100
 title: 종목정보
 layout: split
-left: 55
-purpose: 등록된 종목의 기본정보와, 시스템이 실제로 쓰는 값(최근 종가의 호가단위, 매도 세율)을 함께 보여줘요. 왼쪽에서 종목을 고르면 그 종목의 원장 이벤트가 오른쪽에 나오고, 더블클릭하면 주문가능 조회로 가요. 종목 등록·변경은 지금은 CLI(instrument 명령)로만 해요.
+left: 50
+purpose: 등록된 종목의 기본정보를 보여줘요. 기준정보는 어느 계좌를 보든 같은 값만 담아요. 그래서 보유수량과 장부금액은 잔고(STP-1100)에, 종가는 시세(STP-2300)에, 종목의 원장 이벤트는 원장 조회(STP-3100)에 있어요. 왼쪽에서 종목을 고르면 그 종목을 거래할 때 적용되는 기준(수수료, 매도 세금, 결제주기, 호가단위)이 오른쪽에 나오고, 더블클릭하면 주문가능 조회로 가요. 종목 등록·변경은 지금은 CLI(instrument 명령)로만 해요.
 grids:
   - id: instruments
     title: 등록 종목
-    live: true
     tx: STP4100R01
     load: open
+    key: symbol
     drill: {screen: STP-1300, params: {symbol: symbol}}
     columns:
       - {name: symbol, source: instruments.symbol, format: code}
       - {name: instrument_name, source: instruments.name, display: badge, code: symbol, shape: asset_type}
       - {name: market, source: instruments.market, format: code}
       - {name: asset_type, source: instruments.asset_type, format: code}
-      - {name: last_close, label: 최근 종가, format: money}
-      - {name: close_date, label: 종가 기준일, format: date}
-      - {name: tick, label: 호가단위(종가 기준), format: money}
       - {name: sell_tax, label: 매도 세율(거래세+농특세)}
-      - {name: qty, source: positions_v.qty, format: number}
-      - {name: book_cost, source: positions_v.book_cost, format: money}
-  - id: events
-    title: 이 종목의 원장 이벤트
+  - id: rules
+    title: 이 종목에 적용되는 거래 기준
     tx: STP4100R02
     load: master
     master: instruments
     link: {symbol: symbol}
     columns:
-      - {name: seq, source: ledger_events.seq, format: number}
-      - {name: event_type, source: ledger_events.event_type, format: code}
-      - {name: date, label: 업무일자, format: date}
-      - {name: recorded_at, source: ledger_events.recorded_at, format: datetime}
-      - {name: payload, source: ledger_events.payload, format: json}
+      - {name: kind, label: 구분}
+      - {name: item, label: 항목}
+      - {name: value, label: 값}
+      - {name: note, label: 비고}
