@@ -133,3 +133,55 @@ def test_cli_run(opened, capsys):
     assert rc == 0
     out = capsys.readouterr().out
     assert "장중 실행 시작" in out and "장중 실행 종료" in out
+
+
+def test_quotes_are_recorded_every_minute_for_ibor_only(opened):
+    """R-68: 현재가는 증권사 기록에만 남고, 기준가는 일일 마감의 종가로 내요."""
+    from ministp.quotes import latest_quotes
+    conn, broker = opened
+    clock, out = Clock(), []
+    r = runner(conn, broker, clock, out)
+    events = conn.execute("select count(*) from ledger_events").fetchone()[0]
+    broker.prices["069500"] = 81_000
+    clock.t = 59
+    r.step(timeout=0)
+    assert r.stats.quotes == 0
+    clock.t = 60
+    r.step(timeout=0)
+    assert r.stats.quotes == 1 and r.quotes["069500"].price == 81_000
+    payload, = conn.execute("select payload from broker_snapshots where kind = 'INTRADAY_PRICE'").fetchone()
+    assert payload == {"at": "2026-11-23T10:00:00", "prices": {"069500": 81_000}, "failed": {}}
+    assert conn.execute("select count(*) from ledger_events").fetchone()[0] == events   # 원장에는 없음
+    r.print_status()
+    assert any("현재가 10:00 81,000" in line and "평가손익 +460" in line for line in out)   # 1주 @80,540
+    # 다시 띄워도 오늘 받은 가격부터 시작해요
+    assert latest_quotes(conn, DAY)["069500"].price == 81_000
+    assert runner(conn, broker, Clock(), []).quotes["069500"].price == 81_000
+    # 기준가는 종가로: 마감 때 시세가 80,700이면 그 값이 원장에 들어가요
+    broker.prices["069500"] = 80_700
+    daily_close(books(conn), broker, DAY)
+    from ministp.queries import last_closes
+    assert last_closes(books(conn).ledger) == (DAY, {"069500": 80_700})
+
+
+def test_a_failing_quote_does_not_stop_the_runner(opened):
+    conn, broker = opened
+    clock, out = Clock(), []
+    r = runner(conn, broker, clock, out)
+
+    def broken(symbol):
+        raise TimeoutError("시세 응답 없음")
+    good, broker.get_price = broker.get_price, broken
+    clock.t = 60
+    assert r.step(timeout=0) is True
+    clock.t = 120
+    r.step(timeout=0)
+    assert r.stats.quotes == 2 and r.stats.quote_failures == 2 and r.quotes == {}
+    assert sum("현재가를 받지 못했어요: 069500" in line for line in out) == 1      # 한 번만 알려요
+    failed, = conn.execute("select payload -> 'failed' from broker_snapshots where kind = 'INTRADAY_PRICE'"
+                           " order by snapshot_id desc limit 1").fetchone()
+    assert failed == {"069500": "시세 응답 없음"}
+    broker.get_price = good
+    clock.t = 180
+    r.step(timeout=0)
+    assert r.quotes["069500"].price == 80_540 and any("현재가 다시 받는 중" in line for line in out)
