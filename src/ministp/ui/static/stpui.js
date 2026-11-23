@@ -1198,13 +1198,17 @@
         const td = h("td", { class: [c.align === "right" ? "r" : "", drawn ? "" : tone(v, c.color, r), c.format === "json" ? "js" : "",
           c.display ? "d-" + c.display : "", flashed(r, c.name) ? "flash" : ""].filter(Boolean).join(" ") || null,
           title: c.format === "json" ? text : null, text: drawn ? null : text });
+        if (c.sub) {   // a second, smaller line under the value: its time, its rate
+          const sc = g.columns.find(x => x.name === c.sub), sv = fmt(r[c.sub], sc ? sc.format : "text");
+          if (sv) td.append(h("span", { class: "csub", text: sv }));
+        }
         if (c.display === "badge") td.append(badge(r, c));
         else if (c.display === "meter") td.append(c.of ? meter(v, r[c.of]) : meter(v));
         else if (c.display === "steps") td.append(steps(v, c.steps));
         else if (c.display === "spark") td.append(spark(v));
         else if (c.display === "pill" && text) td.append(h("span", { class: ("pill " + tone(v, c.color, r)).trim(), text }));
         else if (c.display === "bar" && peak[c.name]) td.style.setProperty("--p", (Math.abs(Number(v) || 0) / peak[c.name] * 100).toFixed(1) + "%");
-        if (NUMERIC.has(c.format) && !drawn && flashed(r, c.name)) {
+        if (NUMERIC.has(c.format) && !drawn && !c.sub && flashed(r, c.name)) {
           const was = previous.get(rowKey(r));
           if (was) rolls.push([td, was[c.name], v, c.format]);
         }
@@ -1212,7 +1216,8 @@
       }))));
       const foot = g.totals.length ? h("tfoot", {}, h("tr", {}, h("td", { class: "rn", text: "합계" }), cols.map(c =>
         g.totals.includes(c.name)
-          ? h("td", { class: "r", text: fmt(rows.reduce((s, r) => s + (Number(r[c.name]) || 0), 0), c.format) })
+          ? (sum => h("td", { class: ("r " + (c.color === "sign" ? tone(sum, "sign") : "")).trim(), text: fmt(sum, c.format) }))(
+              rows.reduce((s, r) => s + (Number(r[c.name]) || 0), 0))
           : h("td", {})))) : null;
       const table = h("table", { class: "grid", tabindex: "0", role: "grid", "aria-rowcount": rows.length,
         onkeydown: key }, h("thead", {}, head), tbody, foot);
