@@ -175,6 +175,7 @@ button.primary:hover { filter: brightness(1.08); }
 .iname { display: flex; flex-direction: column; min-width: 0; line-height: 1.25; }
 .iname b { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .iname span { font: 11px ui-monospace, Consolas, monospace; color: var(--muted); }
+.grid td .csub { display: block; font: 11px ui-monospace, Consolas, monospace; color: var(--muted); }
 .grid td.d-bar { background-image: linear-gradient(var(--bar), var(--bar)); background-repeat: no-repeat;
   background-size: var(--p, 0%) 64%; background-position: 0 50%; --bar: color-mix(in srgb, var(--accent) 16%, transparent); }
 .meter { display: flex; flex-direction: column; gap: 3px; width: 112px; }
