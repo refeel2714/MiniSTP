@@ -122,7 +122,7 @@ def test_off_tick_limit_price_never_reaches_the_broker(session):
     assert session.submit(DAY, "A", Side.BUY, 1, limit_price=50_050) is None   # 50,000원부터 100원 단위
     assert session.broker.placed == []
     assert session.anomalies[-1].detail == "risk: BAD_TICK"
-    assert session.submit(DAY, "E", Side.BUY, 1, limit_price=50_005)          # ETF는 5원 단위
+    assert session.submit(DAY, "E", Side.BUY, 1, limit_price=50_005)          # ETF는 2,000원부터 5원 단위
     assert session.broker.placed == [("E", "BUY", 1, 50_005)]
 
 
