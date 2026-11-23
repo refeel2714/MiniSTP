@@ -162,23 +162,29 @@ def _nav_bridge(c: TxContext, p) -> TxResult:
         raise TxError(e.args[0]) from e
 
 
-def _price_days(c: TxContext, p) -> TxResult:
+def _price_symbols(c: TxContext, p) -> TxResult:
     from ..pricecheck import BAD, WARN, PriceRules
-    ds = q.price_check_days(c.books.ledger, c.calendar, c.today, p.get("date_from"), p.get("date_to"))
+    ds = q.price_trend_symbols(c.books.ledger, p.get("date_from"), p.get("date_to"))
     rules = PriceRules()
     meta = {"warn_change": q._pct(rules.warn_change), "limit_change": q._pct(rules.limit_change),
             "warn_exec_gap": q._pct(rules.warn_exec_gap)}
     rows = ds.records()
-    opens = next((r for r in rows if r["result"] == BAD), None) or next((r for r in rows if r["result"] == WARN), None)
+    opens = next((r for r in rows if r["level"] == BAD), None) or next((r for r in rows if r["level"] == WARN), None)
     if opens:
-        meta["selected"] = opens["date"].isoformat()   # the latest day with a close to look at
+        meta["selected"] = opens["symbol"]      # a symbol with a close to look at in the period
     return TxResult({"main": ds}, meta)
 
 
 def _price_rows(c: TxContext, p) -> TxResult:
-    if not p.get("date"):
-        raise TxError("기준일이 필요해요")
-    return TxResult({"main": q.price_check_rows(c.books.ledger, p["date"])})
+    if not p.get("symbol"):
+        raise TxError("종목코드가 필요해요")
+    ds = q.price_trend_rows(c.books.ledger, p["symbol"], p.get("date_from"), p.get("date_to"))
+    closes = [(r["close"], r["date"]) for r in ds.records()]
+    meta = {}
+    if closes:
+        (hi, hi_day), (lo, lo_day) = max(closes), min(closes)
+        meta = {"high": f"{hi:,} ({hi_day:%m-%d})", "low": f"{lo:,} ({lo_day:%m-%d})"}
+    return TxResult({"main": ds}, meta)
 
 
 def _close_days(c: TxContext, p) -> TxResult:
@@ -296,8 +302,8 @@ TRANSACTIONS: dict[str, Tx] = {t.tx_id: t for t in [
     Tx("STP2200R01", "기준가 추이", {"date_from": "date", "date_to": "date"}, _nav),
     Tx("STP2210R01", "기준가 이력", {"date_from": "date", "date_to": "date"}, _nav_changes),
     Tx("STP2210R02", "기준일의 변동 상세 내역", {"date": "date"}, _nav_bridge),
-    Tx("STP2300R01", "기준일별 시세 점검 요약", {"date_from": "date", "date_to": "date"}, _price_days),
-    Tx("STP2300R02", "기준일의 종목별 종가 점검", {"date": "date"}, _price_rows),
+    Tx("STP2300R01", "종목별 기간 시세", {"date_from": "date", "date_to": "date"}, _price_symbols),
+    Tx("STP2300R02", "종목의 기간별 종가", {"symbol": "text", "date_from": "date", "date_to": "date"}, _price_rows),
     Tx("STP2400R01", "영업일별 마감 점검 요약", {"date_from": "date", "date_to": "date"}, _close_days),
     Tx("STP2400R02", "영업일의 작업 단계별 상태", {"date": "date"}, _close_steps),
     Tx("STP3100R01", "원장 이벤트 목록", {"date_from": "date", "date_to": "date", "event_type": "text",

@@ -1,4 +1,4 @@
-"""STP-2300 시세 점검: the closes the books took, checked against each other and the day before."""
+"""STP-2300 시세 추이: the closes the books took over a period, and the checks on the closes themselves."""
 from decimal import Decimal
 
 from ministp import queries as q
@@ -86,29 +86,33 @@ def test_a_day_closed_twice_is_checked_at_its_last_closes(ledger):
     assert [c.level for c in price_checks(ledger)] == [OK, OK]
 
 
-def test_days_list_newest_first_with_counts_and_a_day_not_valued_yet(ledger, calendar):
+def test_the_period_summary_reads_each_symbol_from_the_close_before_the_period(ledger):
     held(ledger)
     close(ledger, "11-02", {"A": 10_000, "E": 10_000})
     close(ledger, "11-03", {"A": 12_000, "E": 10_003})
-    rows = q.price_check_days(ledger, calendar, d("11-03")).records()
-    assert [(r["date"], r["symbols"], r["flagged"], r["warned"], r["result"]) for r in rows] == [
-        (d("11-03"), 2, 1, 1, BAD), (d("11-02"), 2, 0, 0, OK)]
-    # the next business day has holdings and no close yet
-    rows = q.price_check_days(ledger, calendar, d("11-04")).records()
-    assert (rows[0]["date"], rows[0]["symbols"], rows[0]["flagged"], rows[0]["result"]) == (d("11-04"), 2, None, "평가 전")
-    assert len(q.price_check_days(ledger, calendar, d("11-07")).records()) == 2       # a Saturday is not waited for
-    assert [r["date"] for r in q.price_check_days(ledger, calendar, d("11-04"), d("11-03"), d("11-03")).records()] \
-        == [d("11-03")]
+    close(ledger, "11-04", {"A": 11_000, "E": 10_005})
+    a, e = q.price_trend_symbols(ledger).records()
+    assert (a["symbol"], a["instrument_name"], a["asset_type"], a["days"]) == ("A", "가상종목A", "STOCK", 3)
+    assert (a["base_close"], a["last_close"], a["last_date"], a["change"]) == (10_000, 11_000, d("11-04"), 10.0)
+    assert (a["high"], a["low"], a["trend"], a["level"]) == (12_000, 10_000, [10_000, 12_000, 11_000], WARN)
+    assert (e["level"], e["trend"]) == (BAD, [10_000, 10_003, 10_005])      # the worst check of the period
+    # one day reads as that day against the day before; the period travels with the row for the detail
+    [a] = [r for r in q.price_trend_symbols(ledger, d("11-04"), d("11-04")).records() if r["symbol"] == "A"]
+    assert (a["days"], a["base_close"], a["last_close"], a["change"], a["level"]) == (1, 12_000, 11_000, -8.33, OK)
+    assert (a["date_from"], a["date_to"]) == (d("11-04"), d("11-04"))
+    assert q.price_trend_symbols(ledger, d("11-05"), None).records() == []
 
 
-def test_a_days_rows_put_the_worst_first_and_an_unvalued_day_shows_what_will_be_valued(ledger):
+def test_a_symbols_rows_list_the_period_newest_first_with_the_change_in_won_and_percent(ledger):
     held(ledger)
     close(ledger, "11-02", {"A": 10_000, "E": 10_000})
     close(ledger, "11-03", {"A": 12_000, "E": 10_003})
-    rows = q.price_check_rows(ledger, d("11-03")).records()
-    assert [(r["symbol"], r["level"]) for r in rows] == [("E", BAD), ("A", WARN)]
-    assert (rows[1]["instrument_name"], rows[1]["asset_type"], rows[1]["change"]) == ("가상종목A", "STOCK", 20.0)
-    assert rows[1]["prev_date"] == d("11-02") and rows[1]["prev_close"] == 10_000
-    waiting = q.price_check_rows(ledger, d("11-04")).records()
-    assert [(r["symbol"], r["close"], r["prev_close"], r["level"]) for r in waiting] == [
-        ("A", None, 12_000, "평가 전"), ("E", None, 10_003, "평가 전")]
+    close(ledger, "11-04", {"A": 11_000, "E": 10_005})
+    rows = q.price_trend_rows(ledger, "A").records()
+    assert [(r["date"], r["close"], r["diff"], r["change"], r["level"]) for r in rows] == [
+        (d("11-04"), 11_000, -1_000, -8.33, OK), (d("11-03"), 12_000, 2_000, 20.0, WARN),
+        (d("11-02"), 10_000, None, None, OK)]
+    assert rows[2]["exec_gap"] == 0.0 and "15%" in rows[1]["reasons"]     # bought at 10,000 the day it closed there
+    assert [r["date"] for r in q.price_trend_rows(ledger, "A", d("11-03"), d("11-03")).records()] == [d("11-03")]
+    assert "호가단위" in q.price_trend_rows(ledger, "E", d("11-03"), d("11-03")).records()[0]["reasons"]
+    assert q.price_trend_rows(ledger, "Z").records() == []

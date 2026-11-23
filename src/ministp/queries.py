@@ -455,55 +455,53 @@ def nav_change_bridge(ledger: Ledger, date: dt.date) -> Dataset:
     return Dataset(("kind", "code", "name", "amount", "running"), tuple(rows))
 
 
-# ---------- STP-2300 시세 점검 ----------
-
-NOT_VALUED = "평가 전"
-
+# ---------- STP-2300 시세 추이 ----------
 
 def _rate_pct(rate) -> float | None:
     """0.0123 -> 1.23 (a percentage with two places, for a column that is coloured by its sign)."""
     return None if rate is None else float(round(rate * 100, 2))
 
 
-def price_check_days(ledger: Ledger, calendar, today: dt.date, date_from: dt.date | None = None,
-                     date_to: dt.date | None = None) -> Dataset:
-    """기준일 목록, newest first: how many closes the books took that day and how many were flagged.
-    A business day that has holdings but no close yet is listed first as 평가 전 (the day's `daily` has
-    not run): its rows are what will be valued, against the last close the ledger knows."""
-    from .pricecheck import BAD, WARN, price_checks, worst
-    days: dict[dt.date, list] = {}
-    for c in price_checks(ledger):
-        days.setdefault(c.date, []).append(c.level)
-    rows = [(d, len(levels), levels.count(BAD), levels.count(WARN), worst(levels))
-            for d, levels in sorted(days.items(), reverse=True)]
-    held = [s for s, p in ledger.positions().items() if p.qty]
-    if held and today not in days and calendar.is_business_day(today) and (not days or today > max(days)):
-        rows.insert(0, (today, len(held), None, None, NOT_VALUED))
-    return Dataset(("date", "symbols", "flagged", "warned", "result"),
-                   tuple(r for r in rows if (date_from is None or r[0] >= date_from)
-                         and (date_to is None or r[0] <= date_to)))
+def _in_period(checks, date_from: dt.date | None, date_to: dt.date | None) -> list:
+    return [c for c in checks if (date_from is None or c.date >= date_from) and (date_to is None or c.date <= date_to)]
 
 
-def price_check_rows(ledger: Ledger, date: dt.date) -> Dataset:
-    """One day's closes, each against the close before it and the day's executions, worst first.
-    A day the books have not valued yet lists the holdings with the last close the ledger knows."""
-    from .pricecheck import _RANK, price_checks
-    checks = price_checks(ledger)
-    cols = ("symbol", "instrument_name", "asset_type", "close", "prev_date", "prev_close", "change",
-            "exec_gap", "level", "reasons")
+def price_trend_symbols(ledger: Ledger, date_from: dt.date | None = None, date_to: dt.date | None = None) -> Dataset:
+    """종목별 기간 시세: one row for every symbol the books took a close for in the period.
 
-    def named(symbol):
+    기간 등락 is the last close against the close before the period (the first close of the period when
+    there is none before it), so a one-day period reads as that day against the day before. `trend` is the
+    period's closes, oldest first. `level` is the worst result of the period's checks on the closes themselves
+    (pricecheck: tick grid, valuation and NAV at the same close, the price limit): whether a close can be a
+    close, not why the price moved. The period is carried on each row for the detail to use."""
+    from decimal import Decimal
+
+    from .pricecheck import price_checks, worst
+    by_symbol: dict[str, list] = {}
+    for c in _in_period(price_checks(ledger), date_from, date_to):
+        by_symbol.setdefault(c.symbol, []).append(c)
+    rows = []
+    for symbol, mine in sorted(by_symbol.items()):
         inst = ledger.instruments.get(symbol)
-        return (symbol, inst.name if inst else None, inst.asset_type.value if inst else None)
+        base = mine[0].prev_close or mine[0].close
+        closes = [c.close for c in mine]
+        rows.append((symbol, inst.name if inst else None, inst.asset_type.value if inst else None, len(mine), base,
+                     closes[-1], mine[-1].date, _rate_pct(Decimal(closes[-1]) / base - 1) if base > 0 else None,
+                     max(closes), min(closes), closes, worst(c.level for c in mine), date_from, date_to))
+    return Dataset(("symbol", "instrument_name", "asset_type", "days", "base_close", "last_close", "last_date",
+                    "change", "high", "low", "trend", "level", "date_from", "date_to"), tuple(rows))
 
-    mine = sorted((c for c in checks if c.date == date), key=lambda c: (-_RANK[c.level], c.symbol))
-    if mine:
-        return Dataset(cols, tuple((*named(c.symbol), c.close, c.prev_date, c.prev_close, _rate_pct(c.change),
-                                    _rate_pct(c.exec_gap), c.level, " · ".join(c.reasons)) for c in mine))
-    last = {c.symbol: c for c in checks if c.date < date}
-    return Dataset(cols, tuple((*named(s), None, last[s].date if s in last else None,
-                                last[s].close if s in last else None, None, None, NOT_VALUED, "")
-                               for s, p in sorted(ledger.positions().items()) if p.qty))
+
+def price_trend_rows(ledger: Ledger, symbol: str, date_from: dt.date | None = None,
+                     date_to: dt.date | None = None) -> Dataset:
+    """One symbol's closes over the period, newest first: each against the close before it and the day's
+    executions, with what the checks on the close said."""
+    from .pricecheck import price_checks
+    mine = [c for c in _in_period(price_checks(ledger), date_from, date_to) if c.symbol == symbol]
+    return Dataset(("date", "close", "prev_close", "diff", "change", "exec_gap", "level", "reasons"),
+                   tuple((c.date, c.close, c.prev_close, c.close - c.prev_close if c.prev_close else None,
+                          _rate_pct(c.change), _rate_pct(c.exec_gap), c.level, " · ".join(c.reasons))
+                         for c in reversed(mine)))
 
 
 # ---------- STP-2400 마감 점검 ----------
@@ -846,8 +844,8 @@ TRANSACTIONS = {
     "STP2200R01": nav_series,
     "STP2210R01": nav_change_days,
     "STP2210R02": nav_change_bridge,
-    "STP2300R01": price_check_days,
-    "STP2300R02": price_check_rows,
+    "STP2300R01": price_trend_symbols,
+    "STP2300R02": price_trend_rows,
     "STP2400R01": close_days,
     "STP2400R02": close_steps,
     "STP4100R01": instrument_master,
