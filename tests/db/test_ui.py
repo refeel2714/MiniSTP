@@ -301,7 +301,7 @@ def test_instrument_master_holds_nothing_of_the_account_and_shows_the_rules_the_
     assert by_item["결제주기"] == "T+2" and by_item["2,000원 미만"] == "1원" and by_item["500,000원 이상"] == "1,000원"
     etf = next(r for r in rows if r["asset_type"] == "ETF")
     etf_rules, _ = _rows(client, "STP4100R02", {"symbol": etf["symbol"]})
-    assert [(r["item"], r["value"]) for r in etf_rules if r["kind"] == "호가단위"] == [("모든 가격", "5원")]
+    assert [(r["item"], r["value"]) for r in etf_rules if r["kind"] == "호가단위"] == [("2,000원 미만", "1원"), ("2,000원 이상", "5원")]
     assert {r["item"]: r["value"] for r in etf_rules}["증권거래세율"] == "0%"
     assert client.post("/api/tx/STP4100R02", json={"params": {"symbol": "999999"}}).status_code == 400
     screen = client.get("/api/screen/STP-4100").json()
@@ -337,7 +337,8 @@ def test_reference_data_is_read_from_what_the_ledger_uses(client):
     assert [h["date"] for h in holidays] == [d.isoformat() for d in CAL.holidays]
     assert meta["until"] == CAL.verified_until.isoformat() == "2027-01-31"   # 휴장일이 확인된 날까지만
     ticks, _ = _rows(client, "STP4300R03")
-    assert ticks[-1] == {"asset_type": "ETF", "price_from": 0, "price_below": None, "tick": 5}
+    assert ticks[-2:] == [{"asset_type": "ETF", "price_from": 0, "price_below": 2_000, "tick": 1},
+                          {"asset_type": "ETF", "price_from": 2_000, "price_below": None, "tick": 5}]
 
 
 # ---------- 셀 표시 유형 (실시간 잔고) ----------
