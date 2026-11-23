@@ -58,6 +58,6 @@ insert into common_codes (group_id, code, name, description, sort_order) values
     ('CASH_REASON', 'WITHDRAWAL', '출금', null, 4),
     ('CASH_REASON', 'TRANSFER_OUT', '대체 출금', '다른 계좌로 보낸 돈', 5),
     ('CASH_REASON', 'TRANSFER_IN', '대체 입금', '다른 계좌에서 받은 돈', 6),
-    ('AUDIT_ACTION', 'CASH_DEPOSIT', '입금 기록', '증권사 계좌에 들어온 돈', 18),
-    ('AUDIT_ACTION', 'CASH_WITHDRAW', '출금 기록', '증권사 계좌에서 나간 돈', 19),
-    ('AUDIT_ACTION', 'CASH_TRANSFER', '계좌 간 대체', '같은 고객의 두 계좌 사이로 옮긴 돈', 20);
+    ('AUDIT_ACTION', 'CASH_DEPOSIT', '입금 기록', '증권사 계좌에 들어온 돈', 19),
+    ('AUDIT_ACTION', 'CASH_WITHDRAW', '출금 기록', '증권사 계좌에서 나간 돈', 20),
+    ('AUDIT_ACTION', 'CASH_TRANSFER', '계좌 간 대체', '같은 고객의 두 계좌 사이로 옮긴 돈', 21);
