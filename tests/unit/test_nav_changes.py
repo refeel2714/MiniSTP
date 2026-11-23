@@ -1,4 +1,4 @@
-"""STP-2210 기준가 변동 원인: net assets counted from holdings, explained by the journal."""
+"""STP-2210 기준가 내역: net assets counted from holdings, explained by the journal."""
 import pytest
 
 from ministp import queries as q
@@ -49,7 +49,7 @@ def test_a_day_struck_twice_counts_once_at_its_last_nav(ledger):
     ledger.revalue(d("11-02"), {"A": 10_000})
     ledger.nav(d("11-02"), {"A": 10_000})
     [c] = q.nav_changes(ledger)
-    assert c.prev_net_assets == 0 and c.unexplained == 0
+    assert c.prev_net_assets == 0 and c.unexplained == 0 and c.struck == 2      # the history says it was restruck
     assert {m[2] for m in c.moves} == {"투자원금", "지급수수료"}
 
 
@@ -74,3 +74,17 @@ def test_days_are_listed_newest_first_and_cut_to_the_period(ledger):
         ledger.nav(d(date), {})
     assert [r["date"] for r in q.nav_change_days(ledger).records()] == [d("11-04"), d("11-03"), d("11-02")]
     assert [r["date"] for r in q.nav_change_days(ledger, d("11-03"), d("11-03")).records()] == [d("11-03")]
+
+
+def test_the_history_carries_the_nav_record_of_each_day(ledger):
+    ledger.deposit(d("11-02"), 1_000_000)
+    ledger.nav(d("11-02"), {})
+    ledger.execute("X1", d("11-03"), "A", Side.BUY, 10, 10_000)
+    ledger.revalue(d("11-03"), {"A": 11_000})
+    ledger.nav(d("11-03"), {"A": 11_000})
+    second, first = q.nav_change_days(ledger).records()
+    by_day = {r.date: r for r in ledger.nav_history()}
+    assert (first["nav_per_1000"], first["nav_change"], first["struck"]) == (by_day[d("11-02")].nav_per_1000, None, 1)
+    assert (second["nav_per_1000"], second["units"]) == (by_day[d("11-03")].nav_per_1000, by_day[d("11-03")].units)
+    assert second["nav_change"] == second["nav_per_1000"] - first["nav_per_1000"] and second["nav_change"] > 0
+    assert second["net_assets"] - first["net_assets"] == second["change"] == second["explained"]
