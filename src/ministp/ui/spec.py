@@ -122,7 +122,8 @@ def screen_markdown(screen: Screen, catalog: dict, lookups=None, menu=None) -> s
             shown = DISPLAY_TEXT[c.display]
             if cd["inside"]:
                 host = next(x for x in g.columns if x.name == cd["inside"])
-                shown = f"`{host.name}` {INSIDE_TEXT[host.display]} 안에 표시"
+                shown = (f"`{host.name}` 칸 아래에 작게 표시" if host.sub == c.name
+                         else f"`{host.name}` {INSIDE_TEXT[host.display]} 안에 표시")
             elif c.hidden:
                 shown = "숨김 (행 식별·연결에만 씀)"
             elif c.of:

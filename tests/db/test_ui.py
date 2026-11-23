@@ -343,45 +343,55 @@ def test_reference_data_is_read_from_what_the_ledger_uses(client):
 
 # ---------- 셀 표시 유형 (실시간 잔고) ----------
 
-def test_holdings_carry_the_weight_and_the_closing_prices_the_ledger_recorded(client, conn, sample):
-    from ministp.ops import load_books
-    from ministp.queries import close_trends, last_closes
-    rows, _ = _rows(client, "STP1100R01")
-    assert rows, "the sample holds something"
-    # 비중: 장부금액 ÷ 장부금액 합계, so the column adds up to one
-    total = sum(r["book_cost"] for r in rows)
-    assert sum(r["weight"] for r in rows) == pytest.approx(1, abs=0.001)
-    assert all(r["weight"] == pytest.approx(r["book_cost"] / total, abs=0.0001) for r in rows)
-    # 추세선: 원장이 남긴 종가만, 오래된 날부터. 마지막 값은 다른 화면이 쓰는 최근 종가와 같아요
-    ledger = load_books(conn, CAL, FEES).ledger
-    trends, (_, closes) = close_trends(ledger), last_closes(ledger)
-    for r in rows:
-        assert r["trend"] == trends[r["symbol"]]
-        assert 2 <= len(r["trend"]) <= 20 and r["trend"][-1] == closes[r["symbol"]]
-
-
-def test_holdings_are_valued_at_the_last_close_the_ledger_recorded(client, conn, sample):
-    """구성 지도의 색이 되는 평가손익: 보유수량 × 원장의 최근 종가 − 장부금액. 계좌정보의 평가금액과 같은 값이에요."""
+def test_holdings_are_valued_at_the_last_close_when_run_has_no_quotes(client, conn, sample):
+    """R-68: `run`이 오늘 현재가를 남기지 않았으면 원장의 최근 종가로 평가해요. 계좌정보의 평가금액과 같은 값이에요."""
     from ministp.ledger import Ledger
     from ministp.ops import load_books
     from ministp.queries import Dataset, holdings_view, last_closes
-    rows, _ = _rows(client, "STP1100R01")
-    _, closes = last_closes(load_books(conn, CAL, FEES).ledger)
+    rows, meta = _rows(client, "STP1100R01")
+    close_day, closes = last_closes(load_books(conn, CAL, FEES).ledger)
     assert rows and all(r["symbol"] in closes for r in rows)
     for r in rows:
+        assert r["price"] == closes[r["symbol"]] and r["price_at"] == f"종가 {close_day:%m-%d}"
         assert r["market_value"] == r["qty"] * closes[r["symbol"]]
         assert r["unrealized_pnl"] == r["market_value"] - r["book_cost"]
+        assert r["pnl_rate"] == f"{float(r['unrealized_pnl']) / float(r['book_cost']) * 100 + 0.0:+.2f}%"
+    assert meta == {"basis": f"종가 {close_day:%m-%d}"}
+    # 비중: 평가금액 ÷ 평가금액 합계
+    total = sum(r["market_value"] for r in rows)
+    assert sum(r["weight"] for r in rows) == pytest.approx(1, abs=0.001)
+    assert all(r["weight"] == pytest.approx(r["market_value"] / total, abs=0.0001) for r in rows)
     account = _rows(client, "STP3400R01")[0][0]
-    assert sum(r["market_value"] for r in rows) == account["market_value"]
-    grid = next(g for g in client.get("/api/screen/STP-1100").json()["grids"] if g["id"] == "holdings")
-    cols = {c["name"]: c for c in grid["columns"]}
-    assert grid["map"] == {"label": "instrument_name", "size": "book_cost", "tone": "unrealized_pnl"}
-    assert cols["market_value"]["hidden"] and cols["unrealized_pnl"]["hidden"]      # on the map, not one more column of the table
+    assert total == account["market_value"]
 
-    # a holding the ledger has no close for yet (bought today, before the day's close) is left unvalued, not guessed
+    # a holding the ledger has no price for yet (bought today, before the day's close) is left unvalued, not guessed
     bare = holdings_view(Dataset(("symbol", "qty", "book_cost"), (("999999", 3, 30_000),)), Ledger(CAL, FEES, {}))
-    assert dict(zip(bare.columns, bare.rows[0]))["market_value"] is None
-    assert dict(zip(bare.columns, bare.rows[0]))["unrealized_pnl"] is None
+    row = dict(zip(bare.columns, bare.rows[0]))
+    assert row["price"] is row["market_value"] is row["unrealized_pnl"] is row["weight"] is None
+
+
+def test_holdings_take_todays_quotes_and_say_which_price(conn, sample):
+    """R-68: 오늘 받은 현재가가 종가보다 늦으면 현재가로. 목록 위 평가 기준은 가장 오래된 쪽을 말해요."""
+    import datetime as dt
+    from ministp.ops import load_books
+    from ministp.queries import Dataset, holdings_view, last_closes, valuation_basis
+    from ministp.quotes import Quote
+    ledger = load_books(conn, CAL, FEES).ledger
+    close_day, closes = last_closes(ledger)
+    sym, other = sorted(closes)[:2]
+    at = dt.datetime.combine(close_day + dt.timedelta(days=3), dt.time(10, 32))
+    quotes = {sym: Quote(sym, closes[sym] + 100, at)}
+    base = Dataset(("symbol", "qty", "book_cost"), ((sym, 2, 1_000), (other, 1, 1_000)))
+    rows = [dict(zip(v.columns, r)) for v in [holdings_view(base, ledger, quotes, at)] for r in v.rows]
+    assert rows[0]["price"] == closes[sym] + 100 and rows[0]["price_at"] == "10:32"
+    assert rows[0]["market_value"] == 2 * (closes[sym] + 100)
+    assert rows[1]["price"] == closes[other] and rows[1]["price_at"] == f"종가 {close_day:%m-%d}"
+    assert valuation_basis(ledger, [sym, other], quotes, at) == f"종가 {close_day:%m-%d}"    # 섞이면 오래된 쪽
+    assert valuation_basis(ledger, [sym], quotes, at) == "현재가 10:32"
+    later = at + dt.timedelta(minutes=6)
+    assert valuation_basis(ledger, [sym], quotes, later) == "현재가 10:32 · 갱신 멈춤"
+    assert holdings_view(base, ledger, quotes, later).rows[0][4] == "10:32 갱신 멈춤"
+    assert valuation_basis(ledger, [], quotes, at) == "가격 없음"
 
 
 def test_close_trends_keep_the_last_days_only(conn, sample):
@@ -393,17 +403,24 @@ def test_close_trends_keep_the_last_days_only(conn, sample):
     assert all(full[sym][-len(v):] == v for sym, v in short.items())
 
 
-def test_holdings_screen_draws_the_badge_bar_meter_and_trend(client):
+def test_holdings_screen_draws_the_badge_meter_and_the_lines_under_prices(client):
     screen = client.get("/api/screen/STP-1100").json()
     grid = next(g for g in screen["grids"] if g["id"] == "holdings")
     cols = {c["name"]: c for c in grid["columns"]}
     assert cols["instrument_name"]["display"] == "badge"
     assert cols["symbol"]["inside"] == cols["asset_type"]["inside"] == "instrument_name"
-    assert [cols[n]["display"] for n in ("book_cost", "weight", "trend")] == ["bar", "meter", "spark"]
-    # 그림을 더한 만큼 열을 줄여요: 일곱 열이던 그리드가 여섯 열로 보여요
-    assert len([c for c in grid["columns"] if not c["inside"] and not c["hidden"]]) == 6     # 숨긴 열(구성 지도의 평가금액·평가손익)은 표에 안 나와요
+    assert cols["weight"]["display"] == "meter"
+    # 가격 시각과 손익률은 열을 따로 차지하지 않고 가격·손익 칸 아래에 작게 적혀요
+    assert cols["price"]["sub"] == "price_at" and cols["price_at"]["inside"] == "price"
+    assert cols["unrealized_pnl"]["sub"] == "pnl_rate" and cols["pnl_rate"]["inside"] == "unrealized_pnl"
+    # 평가 열 셋을 보이게 한 대신 최근 종가 추세 열을 뺐어요 (UI-02, UI-12)
+    assert "trend" not in cols
+    shown = [c["name"] for c in grid["columns"] if not c["inside"] and not c["hidden"]]
+    assert shown == ["instrument_name", "qty", "price", "market_value", "unrealized_pnl", "book_cost", "weight", "today_qty"]
+    assert grid["meta"] == {"basis": "평가 기준"} and grid["totals"] == ["market_value", "unrealized_pnl", "book_cost"]
+    assert grid["map"] == {"label": "instrument_name", "size": "book_cost", "tone": "unrealized_pnl"}
     spec = client.get("/spec/STP-1100").text
-    assert "배지 안에 표시" in spec and "추세선" in spec
+    assert "배지 안에 표시" in spec and "칸 아래에 작게 표시" in spec
 
 
 # ---------- 대사 달력 ----------

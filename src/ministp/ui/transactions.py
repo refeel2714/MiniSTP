@@ -50,7 +50,13 @@ COERCE = {"date": _date, "text": str, "int": int, "bool": lambda v: v in (True, 
 
 
 def _holdings(c: TxContext, p) -> TxResult:
-    return TxResult({"main": q.holdings_view(q.holdings(c.conn, p.get("day") or c.today), c.books.ledger)})
+    """보유는 오늘 `run`이 받은 현재가로 평가해요 (R-68). `run`이 꺼져 있으면 가장 최근 종가로."""
+    from ..quotes import latest_quotes
+    quotes, now = latest_quotes(c.conn, c.today), dt.datetime.now()
+    base = q.holdings(c.conn, p.get("day") or c.today)
+    view = q.holdings_view(base, c.books.ledger, quotes, now)
+    symbols = [r[view.columns.index("symbol")] for r in view.rows]
+    return TxResult({"main": view}, {"basis": q.valuation_basis(c.books.ledger, symbols, quotes, now)})
 
 
 def _cash(c: TxContext, p) -> TxResult:
