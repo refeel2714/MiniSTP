@@ -76,7 +76,11 @@ def test_every_transaction_answers_for_the_account_it_is_asked_about(client, con
         events, _ = rows(client, "STP3100R01", acct)
         mine = {r[0] for r in conn.execute("select seq from ledger_events where account_id = %s", (acct,))}
         assert {e["seq"] for e in events} == mine
-        trial, tb = rows(client, "STP3100R03", acct)
+        journals, _ = rows(client, "STP3200R01", acct)   # 분개 조회의 목록과 분개도 그 계좌 것만
+        assert journals and {e["seq"] for e in journals} <= mine
+        assert client.post("/api/tx/STP3200R02", json={"params": {"seq": journals[0]["seq"]},
+                                                        "account": acct}).json()["meta"]["balanced"]
+        trial, tb = rows(client, "STP3300R01", acct)
         assert tb["meta"]["balanced"] and trial
         days, cal = rows(client, "STP2100R02", acct)     # 대사 달력도 그 계좌의 대사만
         ran = dict(conn.execute(
@@ -97,9 +101,11 @@ def test_every_transaction_answers_for_the_account_it_is_asked_about(client, con
 
 def test_an_event_of_another_account_cannot_be_traced_from_this_one(client, conn):
     seq = conn.execute("select min(seq) from ledger_events where account_id = 'A0002'").fetchone()[0]
-    assert client.post("/api/tx/STP3100R02", json={"params": {"seq": seq}}).status_code == 400
-    ok = client.post("/api/tx/STP3100R02", json={"params": {"seq": seq}, "account": "A0002"})
-    assert ok.status_code == 200 and ok.json()["meta"]["balanced"]
+    for tx in ("STP3100R02", "STP3200R02"):                       # 보유·예수금 변동도, 분개도
+        assert client.post(f"/api/tx/{tx}", json={"params": {"seq": seq}}).status_code == 400
+        assert client.post(f"/api/tx/{tx}", json={"params": {"seq": seq}, "account": "A0002"}).status_code == 200
+    ok = client.post("/api/tx/STP3200R02", json={"params": {"seq": seq}, "account": "A0002"})
+    assert ok.json()["datasets"]["journal"]["rows"] and ok.json()["meta"]["balanced"]
 
 
 @pytest.mark.parametrize("account, message", [("A0009", "등록되지 않은 계좌"), ("A0001'; --", "형식"),
