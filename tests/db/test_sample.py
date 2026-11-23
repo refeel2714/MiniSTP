@@ -148,3 +148,14 @@ def test_every_screen_still_answers_on_the_three_account_sample(conn):
     from ministp.ui.transactions import TxContext, output_problems
     s = build_sample(conn, CAL, FEES, days=8, seed=5, accounts=3)
     assert output_problems(load_screens(), TxContext(conn, CAL, FEES, s.last_day)) == []
+
+
+def test_the_sample_has_money_coming_in_and_going_out(conn):
+    s = build_sample(conn, CAL, FEES, days=15, seed=3)
+    assert conn.execute("select kind, amount from cash_movements_v order by event_seq").fetchall() == [
+        ("DEPOSIT", 100_000_000), ("DEPOSIT", 10_000_000), ("WITHDRAWAL", -3_000_000)]
+    assert s.streak == 15 and s.breaks_resolved == 2      # recorded the day it happened: the recon never saw a gap
+    navs = [row.nav_per_1000 for row in books(conn).ledger.nav_history()]
+    assert all(abs(b / a - 1) < 0.03 for a, b in zip(navs, navs[1:]))   # R-61: money in or out does not move the NAV
+    said = [(r.action, r.actor, r.detail["memo"]) for r in audit.rows(conn, limit=500) if r.action.startswith("CASH")]
+    assert said[::-1] == [("CASH_DEPOSIT", "sample", "샘플: 추가 입금"), ("CASH_WITHDRAW", "sample", "샘플: 일부 출금")]

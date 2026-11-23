@@ -122,7 +122,10 @@ SEED: tuple[CodeGroup, ...] = (
                   ("DayClosedEvent", "일 마감", "이 날짜까지 장부를 마감"),
                   ("DividendAccrualEvent", "배당 인식", "받을 배당을 미수배당금으로 인식"),
                   ("DividendPaymentEvent", "배당 입금", "배당금이 세금을 떼고 예수금으로 들어옴"),
-                  ("DividendCancelEvent", "배당 인식 취소", "취소된 권리의 인식을 되돌림"))),
+                  ("DividendCancelEvent", "배당 인식 취소", "취소된 권리의 인식을 되돌림"),
+                  ("WithdrawalEvent", "출금", "투자원금 출금"),
+                  ("TransferOutEvent", "대체 출금", "같은 고객의 다른 계좌로 보냄"),
+                  ("TransferInEvent", "대체 입금", "같은 고객의 다른 계좌에서 받음"))),
     CodeGroup("JOURNAL_KIND", "전표 유형", "분개 전표가 만들어진 이유.", "journal_entries.kind", (
         ("DEPOSIT", "입금", ""),
         ("OPENING", "시작 보유", ""),
@@ -133,12 +136,18 @@ SEED: tuple[CodeGroup, ...] = (
         ("LATE_EXECUTION", "마감 후 체결", "마감한 날의 체결을 열린 날 전표로 인식 (정정)"),
         ("DIVIDEND_ACCRUAL", "배당 인식", "미수배당금과 배당수익으로 인식"),
         ("DIVIDEND", "배당 입금", "지급일에 예수금과 원천징수세액으로 정리"),
-        ("DIVIDEND_CANCEL", "배당 인식 취소", "취소된 권리의 인식을 되돌림"))),
+        ("DIVIDEND_CANCEL", "배당 인식 취소", "취소된 권리의 인식을 되돌림"),
+        ("WITHDRAWAL", "출금", ""),
+        ("TRANSFER_OUT", "대체 출금", "다른 계좌로 보낸 돈"),
+        ("TRANSFER_IN", "대체 입금", "다른 계좌에서 받은 돈"))),
     CodeGroup("CASH_REASON", "예수금 변동 사유", "예수금이 움직인 이유. 예수금은 결제일에만 변해요 (R-13).",
               "cash_ledger.reason", (
                   ("DEPOSIT", "입금", ""),
                   ("SETTLEMENT", "결제", "매수 대금 지급 또는 매도 대금 수령"),
-                  ("DIVIDEND", "배당 입금", "세금을 뗀 배당금 수령"))),
+                  ("DIVIDEND", "배당 입금", "세금을 뗀 배당금 수령"),
+                  ("WITHDRAWAL", "출금", ""),
+                  ("TRANSFER_OUT", "대체 출금", "다른 계좌로 보낸 돈"),
+                  ("TRANSFER_IN", "대체 입금", "다른 계좌에서 받은 돈"))),
     CodeGroup("NORMAL_SIDE", "정상잔액 방향", "계정과목의 잔액이 늘어나는 쪽.", "accounts_chart.normal_side", (
         ("D", "차변", "자산, 비용"),
         ("C", "대변", "부채, 자본, 수익"))),
@@ -174,7 +183,10 @@ SEED: tuple[CodeGroup, ...] = (
         ("DB_MIGRATE", "스키마 마이그레이션", "ERD 버전을 올림"),
         ("CORPORATE_ACTION_ADD", "권리 등록", "현금배당 일정과 주당 배당금 등록"),
         ("CORPORATE_ACTION_CANCEL", "권리 취소", "잘못 등록했거나 취소된 권리를 무효로"),
-        ("DIVIDEND_PAY", "배당 입금 기록", "증권사가 실제로 준 금액으로 직접 기록"))),
+        ("DIVIDEND_PAY", "배당 입금 기록", "증권사가 실제로 준 금액으로 직접 기록"),
+        ("CASH_DEPOSIT", "입금 기록", "증권사 계좌에 들어온 돈"),
+        ("CASH_WITHDRAW", "출금 기록", "증권사 계좌에서 나간 돈"),
+        ("CASH_TRANSFER", "계좌 간 대체", "같은 고객의 두 계좌 사이로 옮긴 돈"))),
 )
 
 

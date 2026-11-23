@@ -13,6 +13,7 @@
     python -m ministp account list                # 계좌 목록. open/run/order/daily/status는 --account 계좌ID
     python -m ministp code list                   # 공통코드 그룹. code list 그룹ID는 그 그룹의 코드와 코드명
     python -m ministp dividend list               # 현금배당 권리와 계좌별 인식·입금 현황 (등록은 dividend add)
+    python -m ministp cash list                   # 입출금·대체 내역과 출금가능금액 (기록은 cash deposit | withdraw | transfer)
     python -m ministp audit                       # 감사 로그: 누가 언제 무엇을 했고 어떻게 끝났는지 (거부·실패 포함)
 
 Paper (모의투자) only until Phase 4. Keys are asked for and never saved.
@@ -29,7 +30,7 @@ import urllib.parse
 
 import psycopg
 
-from . import audit
+from . import audit, cash
 from .broker import KisClient, KisConfig, KisError, trading_env
 from .calendar import CalendarNotLoadedError
 from .cli import ask_missing, krx_calendar
@@ -86,6 +87,7 @@ def _print_recon(report) -> None:
         print(f"  이상: {a.kind} {a.ref} {a.detail}")
 
 
+CASH_ACTIONS = {"deposit": "CASH_DEPOSIT", "withdraw": "CASH_WITHDRAW", "transfer": "CASH_TRANSFER"}
 CODE_ACTIONS = {"rename": "CODE_RENAME", "group-add": "CODE_GROUP_ADD", "add": "CODE_ADD", "use": "CODE_USE"}
 
 
@@ -121,6 +123,9 @@ def audited(args, today: dt.date):
     if cmd == "dividend" and what == "pay":
         return "DIVIDEND_PAY", args.account, f"CA-{args.action_id}", {"gross": args.gross, "tax": args.tax,
                                                                       "date": args.date or today}
+    if cmd == "cash" and what in CASH_ACTIONS:
+        return CASH_ACTIONS[what], args.account, None, {"date": args.date or today, "amount": args.amount,
+                                                       "to": getattr(args, "to", None), "memo": args.memo or None}
     if cmd == "code" and what in CODE_ACTIONS:
         target = args.group_id + (f".{args.code}" if what != "group-add" else "")
         return CODE_ACTIONS[what], None, target, {"name": getattr(args, "name", None),
@@ -215,6 +220,17 @@ def _run(argv, *, environ=os.environ, client_factory=KisClient, connect=psycopg.
     q.add_argument("action_id", type=int, metavar="권리번호")
     q.add_argument("--gross", type=int, metavar="세전금액"), q.add_argument("--tax", type=int, metavar="세금")
     q.add_argument("--date", type=dt.date.fromisoformat, help="기록할 날짜 (기본: 오늘)")
+    p = sub.add_parser("cash", help="입출금·대체: 증권사에서 넣거나 뺀 돈, 내 계좌끼리 옮긴 돈을 원장에 기록")
+    what = p.add_subparsers(dest="what", required=True)
+    what.add_parser("list", parents=[by_account], help="입출금·대체 내역과 출금가능금액")
+    for name, text in (("deposit", "입금 기록"), ("withdraw", "출금 기록 (출금가능금액 안에서)"),
+                       ("transfer", "같은 고객의 다른 계좌로 대체 (--account가 보내는 계좌)")):
+        q = what.add_parser(name, parents=[by_account], help=text)
+        q.add_argument("amount", type=int, metavar="금액")
+        if name == "transfer":
+            q.add_argument("--to", required=True, metavar="받는계좌")
+        q.add_argument("--date", type=dt.date.fromisoformat, help="돈이 실제로 움직인 날짜 (기본: 오늘)")
+        q.add_argument("--memo", default="", metavar="메모")
     p = sub.add_parser("resolve")
     p.add_argument("result_id", type=int), p.add_argument("cause", choices=[c.value for c in Cause])
     p.add_argument("note")
@@ -288,7 +304,7 @@ def _run(argv, *, environ=os.environ, client_factory=KisClient, connect=psycopg.
                 return 0
 
             if args.cmd in ("open", "order", "daily", "close", "run", "resolve", "customer") or (
-                    args.cmd == "dividend" and args.what != "list") or (
+                    args.cmd in ("dividend", "cash") and args.what != "list") or (
                     args.cmd == "account" and args.what != "list") or (
                     args.cmd == "code" and args.what not in ("list", "check")):
                 acquire_writer(conn)
@@ -318,7 +334,8 @@ def _run(argv, *, environ=os.environ, client_factory=KisClient, connect=psycopg.
 
             if args.cmd == "status":
                 led = books.ledger
-                print(f"예수금 D+0 {led.cash_balance():,}  결제 후 {led.projected_cash():,}")
+                print(f"예수금 D+0 {led.cash_balance():,}  결제 후 {led.projected_cash():,}  "
+                      f"출금가능 {led.withdrawable():,}")
                 for sym, pos in led.positions().items():
                     print(f"  {sym} {books.instruments[sym].name}: {pos.qty}주, 매입금액 {pos.book_cost:,}")
                 navs = led.nav_history()
@@ -333,6 +350,9 @@ def _run(argv, *, environ=os.environ, client_factory=KisClient, connect=psycopg.
                 else:
                     print("장부 마감: 아직 마감한 날이 없어요")
                 return 0
+
+            if args.cmd == "cash":
+                return _cash(conn, args, books, calendar, fees, today)
 
             if args.cmd == "dividend":   # pay: one account's books
                 day = args.date or today
@@ -552,6 +572,45 @@ def _dividends(conn, args, calendar) -> int:
             print(line)
     if not actions:
         print("등록된 권리가 없어요. dividend add 종목코드 --record 기준일 --pay 지급일 --per-share 주당배당금")
+    return 0
+
+
+CASH_KIND_NAMES = {"DEPOSIT": "입금", "WITHDRAWAL": "출금", "TRANSFER_IN": "대체 입금", "TRANSFER_OUT": "대체 출금"}
+
+
+def _cash(conn, args, books, calendar, fees, today: dt.date) -> int:
+    """`cash list | deposit | withdraw | transfer` on the books of `--account`."""
+    led, acct = books.ledger, books.account_id
+
+    def units(m) -> str:
+        return f"좌수 {m.units:+,}좌 (기준가 {m.nav_per_1000} 적용)"
+
+    if args.what == "list":
+        print(f"예수금 D+0 {led.cash_balance():,}  결제 후 {led.projected_cash():,}  "
+              f"출금가능 {led.withdrawable():,}  좌수 {led.units:,}")
+        for m in led.cash_movements():
+            other = ""
+            if m.transfer_id is not None:
+                other = f" TR-{m.transfer_id} " + ("← " if m.amount > 0 else "→ ") + m.counter_account
+            print(f"  {m.date}  {CASH_KIND_NAMES[m.kind]}{other}  {m.amount:+,}원  {units(m)}")
+        if not led.cash_movements():
+            print("입출금 기록이 아직 없어요.")
+        return 0
+    day = args.date or today
+    if args.what == "transfer":
+        to = load_books(conn, calendar, fees, args.to)
+        t, sent, got = cash.transfer(books, to, day, args.amount, args.memo, today)
+        print(f"[{day}] 대체 {t.ref}: {t.from_account} → {t.to_account} {t.amount:,}원")
+        print(f"  {t.from_account}: 예수금 {led.cash_balance():,}원, {units(sent)}")
+        print(f"  {t.to_account}: 예수금 {to.ledger.cash_balance():,}원, {units(got)}")
+    elif args.what == "deposit":
+        m = cash.deposit(books, day, args.amount, args.memo, today)
+        print(f"[{day}] 입금 {args.amount:,}원 ({acct}): 예수금 {led.cash_balance():,}원, {units(m)}")
+    else:
+        m = cash.withdraw(books, day, args.amount, args.memo, today)
+        print(f"[{day}] 출금 {args.amount:,}원 ({acct}): 예수금 {led.cash_balance():,}원, "
+              f"출금가능 {led.withdrawable():,}원, {units(m)}")
+    print("증권사 잔고와는 다음 daily의 대사에서 맞춰 봐요. 오늘 기준가를 이미 산출했다면 daily가 다시 산출해요.")
     return 0
 
 

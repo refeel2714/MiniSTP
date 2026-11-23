@@ -19,3 +19,4 @@
 | 0003_day_close | v2.2 | 일 마감. 마감 기록 `day_closes`, 마감일 잠금 트리거(전표·예수금·마감 행), 뷰 세 개(`last_close_v`, `abor_positions_v`, `unclosed_events_v`)를 만들고 공통코드에 코드 세 개를 더합니다(`changes-data: common_codes`, 기존 행은 그대로). 마감한 날이 아직 없으므로 적용 직후에는 아무것도 잠기지 않습니다. |
 | 0004_audit_log | v2.3 | 감사 로그. `audit_log`와 해시 사슬 트리거(`ministp_audit_chain`, `ministp_audit_hash`)를 만들고 공통코드 그룹 세 개(경로, 결과, 행위)와 그 코드를 넣습니다(`changes-data: code_groups, common_codes`, 기존 행은 그대로). 적용이 끝나면 그 적용이 감사 로그의 첫 줄로 남습니다. |
 | 0005_corporate_actions | v2.4 | 권리처리(현금배당). 권리 원장 `corporate_actions`와 뷰 두 개(`corporate_actions_v`, `dividends_v`)를 만들고 공통코드 그룹 두 개와 코드를 더합니다(`changes-data: code_groups, common_codes`, 기존 행은 그대로). 배당 인식·입금은 원장 이벤트로 남아서 기존 테이블에 행이 늘 뿐, 새 프로젝션 테이블은 없습니다. |
+| 0006_cash_movements | v2.5 | 입출금·대체. 뷰 두 개(`cash_movements_v`, `transfers_v`)와 `ledger_events`의 부분 유일 인덱스(대체 번호)를 만들고 공통코드 12개를 더합니다(`changes-data: common_codes`, 기존 행은 그대로). 테이블은 늘지 않습니다. 출금과 대체는 원장 이벤트로 남고 분개와 예수금 행은 기존 테이블에 들어갑니다. |

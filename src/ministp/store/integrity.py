@@ -20,8 +20,7 @@ import psycopg
 
 from .. import audit
 from ..accounting import Account
-from ..ledger import Ledger
-from ..ledger import DayClosedEvent
+from ..ledger import DayClosedEvent, Ledger, OpeningPositionEvent
 from .postgres import DEFAULT_ACCOUNT, cash_rows, close_row, from_payload, position_row
 
 # Tables no one may UPDATE, DELETE or TRUNCATE (R-04). Same list as the loop in schema.sql;
@@ -113,6 +112,35 @@ def check_rights(conn: psycopg.Connection) -> Check:
     if not actions:
         return Check("rights", "권리", True, "등록된 권리가 아직 없어요")
     return Check("rights", "권리", True, f"권리 {actions:,}건, 계좌별 배당 {booked:,}건이 권리 원장과 맞음")
+
+
+def check_transfers(conn: psycopg.Connection) -> Check:
+    """R-65: every transfer has exactly two halves that name each other: one account sent what the
+    other received, on the same day, and both accounts belong to one customer."""
+    halves: dict[int, list[tuple]] = {}
+    for tid, acct, kind, date, amount, other, customer in conn.execute(
+            "select m.transfer_id, m.account_id, m.kind, m.date, m.amount, m.counter_account, t.customer_id"
+            " from cash_movements_v m join trading_accounts t using (account_id)"
+            " where m.kind in ('TRANSFER_OUT', 'TRANSFER_IN') order by m.transfer_id, m.kind desc, m.event_seq"):
+        halves.setdefault(tid, []).append((acct, kind, date, int(amount), other, customer))
+    bad = []
+    for tid, rows in halves.items():
+        if tid is None or [r[1] for r in rows] != ["TRANSFER_OUT", "TRANSFER_IN"]:
+            bad.append(f"TR-{tid} 보낸 쪽과 받은 쪽이 하나씩이 아님")
+            continue
+        out, got = rows
+        if (out[0], got[0]) != (got[4], out[4]) or out[0] == got[0]:
+            bad.append(f"TR-{tid} 상대 계좌가 서로 맞지 않음")
+        elif out[3] != -got[3] or out[2] != got[2]:
+            bad.append(f"TR-{tid} 보낸 금액·날짜와 받은 금액·날짜가 다름")
+        elif out[5] != got[5]:
+            bad.append(f"TR-{tid} 고객이 다른 계좌 사이의 대체")
+    if bad:
+        return Check("transfers", "대체", False, f"짝이 맞지 않는 대체: {_some(bad)}")
+    if not halves:
+        return Check("transfers", "대체", True, "계좌 간 대체가 아직 없어요")
+    total = sum(rows[1][3] for rows in halves.values())
+    return Check("transfers", "대체", True, f"대체 {len(halves):,}건의 보낸 쪽과 받은 쪽이 맞음 (합계 {total:,}원)")
 
 
 def check_audit(conn: psycopg.Connection) -> Check:
@@ -244,11 +272,32 @@ def check_dividends(conn: psycopg.Connection, ledger: Ledger, account_id: str = 
     return Check("dividends", "배당", True, f"배당 {len(mem):,}건(입금 {paid:,}건) 일치, 미수배당금 {balance:,}원")
 
 
+def check_movements(conn: psycopg.Connection, ledger: Ledger, account_id: str = DEFAULT_ACCOUNT) -> Check:
+    """R-56: the cash movement view says what a replay says, and 투자원금 is exactly what was put in
+    (deposits, transfers in, the opening holdings) less what was taken out."""
+    stored = conn.execute("select date, kind, amount, transfer_id, counter_account from cash_movements_v"
+                          " where account_id = %s", (account_id,)).fetchall()
+    mem = ledger.cash_movements()
+    expected = [(m.date, m.kind, m.amount, m.transfer_id, m.counter_account) for m in mem]
+    diff = _row_diff(stored, expected, lambda r: f"{r[0]} {r[1]} {r[2]:+,}원")
+    opening = sum(e.book_cost for e in ledger.events if isinstance(e, OpeningPositionEvent))
+    capital, put_in = ledger.account_balance(Account.CONTRIBUTED_CAPITAL), opening + sum(m.amount for m in mem)
+    if capital != put_in:
+        diff.append(f"투자원금 {capital:,} / 입출금과 시작 보유의 합계 {put_in:,}")
+    if diff:
+        return Check("movements", "입출금", False, f"다른 행: {_some(diff)}")
+    if not mem:
+        return Check("movements", "입출금", True, "입출금 기록이 아직 없어요")
+    return Check("movements", "입출금", True,
+                 f"입출금·대체 {len(mem):,}건 일치, 투자원금 {capital:,}원, 좌수 {ledger.units:,}")
+
+
 def projection_checks(conn: psycopg.Connection, ledger: Ledger, account_id: str = DEFAULT_ACCOUNT) -> list[Check]:
     """Everything derived from one account's events, against `ledger` (a replay of those events)."""
     checks = [check_journal(conn, ledger, account_id), check_accounts(conn, ledger, account_id),
               check_positions(conn, ledger, account_id), check_cash(conn, ledger, account_id),
-              check_closes(conn, ledger, account_id), check_dividends(conn, ledger, account_id)]
+              check_closes(conn, ledger, account_id), check_dividends(conn, ledger, account_id),
+              check_movements(conn, ledger, account_id)]
     return [replace(c, account=account_id) for c in checks]
 
 
@@ -259,7 +308,8 @@ def integrity_report(conn: psycopg.Connection, calendar, fees, instruments) -> l
         if top:   # one snapshot, so a write in another session cannot split the picture
             conn.execute("set transaction isolation level repeatable read read only")
         stream = check_event_stream(conn)
-        checks = [stream, check_guards(conn), check_balanced(conn), check_audit(conn), check_rights(conn)]
+        checks = [stream, check_guards(conn), check_balanced(conn), check_audit(conn), check_rights(conn),
+                  check_transfers(conn)]
         if not stream.ok:
             return checks + [Check("replay", "이벤트 재생", False, "순번에 빈 곳이 있어 재생하지 않았어요")]
         for (account_id,) in conn.execute("select account_id from trading_accounts order by account_id").fetchall():

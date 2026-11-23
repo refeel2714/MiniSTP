@@ -1,6 +1,6 @@
 # MiniSTP ERD
 
-ERD 버전: v2.4 · 스키마 해시: `678c1c5b4451`
+ERD 버전: v2.5 · 스키마 해시: `e0815f2809ce`
 
 이 문서는 `scripts/gen_erd.py`가 `src/ministp/store/schema.sql`로 만든 DB에서 읽어 생성해요. 직접 고치지 말고 스키마의 한글 주석(COMMENT)을 고친 뒤 다시 생성하세요. 모든 원장 테이블은 append-only(수정·삭제 불가)예요.
 
@@ -555,6 +555,30 @@ erDiagram
 | `canceled_on` | 인식 취소일 | date |  |  |
 | `status` | 상태 (ACCRUED 인식 / PAID 입금 / CANCELED 취소) | text |  |  |
 
+### cash_movements_v — 입출금·대체 내역 (계좌에 넣거나 뺀 돈, 원장 이벤트에서 계산) (뷰)
+
+| 컬럼 | 한글명 | 타입 | 필수 | 키 |
+|---|---|---|---|---|
+| `account_id` | 계좌 ID | text |  |  |
+| `event_seq` | 원장 이벤트 순번 | bigint |  |  |
+| `date` | 기록일 (돈이 움직인 날짜) | date |  |  |
+| `kind` | 구분 (DEPOSIT 입금 / WITHDRAWAL 출금 / TRANSFER_IN 대체 입금 / TRANSFER_OUT 대체 출금) | text |  |  |
+| `amount` | 금액 (들어오면 +, 나가면 -) | bigint |  |  |
+| `transfer_id` | 대체 번호 (대체일 때) | bigint |  |  |
+| `counter_account` | 상대 계좌 ID (대체일 때) | text |  |  |
+
+### transfers_v — 계좌 간 대체 (보낸 쪽과 받은 쪽을 한 행으로) (뷰)
+
+| 컬럼 | 한글명 | 타입 | 필수 | 키 |
+|---|---|---|---|---|
+| `transfer_id` | 대체 번호 | bigint |  |  |
+| `date` | 대체일 | date |  |  |
+| `from_account` | 보낸 계좌 ID | text |  |  |
+| `to_account` | 받은 계좌 ID | text |  |  |
+| `amount` | 금액 | bigint |  |  |
+| `out_seq` | 보낸 쪽 원장 이벤트 순번 | bigint |  |  |
+| `in_seq` | 받은 쪽 원장 이벤트 순번 | bigint |  |  |
+
 ## 변경 이력
 
 | 버전 | 일자 | 변경 내용 |
@@ -566,3 +590,4 @@ erDiagram
 | v2.2 | 2026-11-23 | 일 마감(스펙 D6, R-77~79). 마감 기록 `day_closes` 신설(마감 이벤트마다 한 행, 그날의 확정 순자산·좌수·기준가). 마감일과 그 이전 날짜로는 전표(`journal_entries`)·예수금 행(`cash_ledger`)·마감 행이 더 들어가지 않도록 DB 트리거 `ministp_forbid_closed_day` 추가. 뷰 `last_close_v`(계좌별 마지막 마감), `abor_positions_v`(마감 시점 보유), `unclosed_events_v`(마감 뒤 이벤트) 추가. 공통코드에 이벤트 유형 `LateExecutionEvent`·`DayClosedEvent`, 전표 유형 `LATE_EXECUTION` 추가. 기존 DB는 마이그레이션 `0003_day_close`로 올림(기존 행 변경 없음). |
 | v2.3 | 2026-11-23 | 감사 로그(R-85~87). `audit_log` 신설(마이그레이션 `0004_audit_log`): 밖에서 시스템에 한 일(주문, 일일 마감, 장부 마감, 불일치 판단, 종목·고객·계좌 등록, 계좌 상태와 공통코드 변경, 마이그레이션)마다 한 행, 처리된 것뿐 아니라 규칙이 거부한 요청과 실패한 요청도 남긴다. 번호·시각·해시는 DB 트리거 `ministp_audit_chain`이 채우고, 각 행은 앞 행의 해시를 이어 받아(`ministp_audit_hash`, SHA-256) 가운데 행을 고치거나 지우면 `verify`가 찾아낸다. 수정·삭제·비우기 금지 테이블 15개. 공통코드 그룹 3개(감사 로그 경로·결과·행위) 추가. 기존 데이터는 바뀌지 않는다. |
 | v2.4 | 2026-11-23 | 권리처리: 현금배당(R-57~59). 권리 원장 `corporate_actions` 신설(마이그레이션 `0005_corporate_actions`): 종목별 배당기준일·지급일·주당 배당금을 한 번 등록하고, 잘못된 권리는 고치지 않고 취소 행으로 무효로 한다. 뷰 `corporate_actions_v`(취소 여부 포함), `dividends_v`(계좌별 인식·입금·취소 현황, 원장 이벤트에서 읽음) 추가. 배당 인식·입금·취소는 원장 이벤트로 남고 분개와 예수금 행은 기존 테이블에 들어간다. 수정·삭제·비우기 금지 테이블 16개. 공통코드 그룹 2개(권리 유형, 배당 상태)와 이벤트·전표·예수금 사유·감사 행위 코드 10개 추가. 기존 데이터는 바뀌지 않는다. |
+| v2.5 | 2026-11-23 | 입출금·대체(R-56, R-61, R-64, R-65). 테이블은 그대로다. 뷰 `cash_movements_v`(계좌에 넣거나 뺀 돈: 입금, 출금, 대체 입금, 대체 출금), `transfers_v`(계좌 간 대체의 보낸 쪽과 받은 쪽을 한 행으로) 추가, 둘 다 원장 이벤트에서 읽는다. `ledger_events`에 부분 유일 인덱스 `ledger_events_transfer_key` 추가(대체 번호 하나에 보낸 쪽 이벤트 하나, 받은 쪽 이벤트 하나). 출금과 대체는 원장 이벤트로 남고 분개와 예수금 행은 기존 테이블에 들어간다. 공통코드에 이벤트·전표·예수금 사유·감사 행위 코드 12개 추가(마이그레이션 `0006_cash_movements`). 기존 데이터는 바뀌지 않는다. |

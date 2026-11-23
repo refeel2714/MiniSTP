@@ -145,7 +145,7 @@ MINISTP_TEST_DATABASE_URL=postgresql://postgres:postgres@localhost:5432/ministp_
 |---|---|---|
 | `calendar` | 영업일, T+2 결제일 | R-10~11 |
 | `fees` | 수수료, 증권거래세, 농특세 | R-20~22 |
-| `ledger` | append-only 이벤트 원장, 포지션, 예수금, 결제, 분개, 평가, 기준가 | R-12~14, R-30~36, R-50~63 |
+| `ledger` | append-only 이벤트 원장, 포지션, 예수금, 결제, 분개, 평가, 기준가 | R-12~14, R-30~36, R-50~65 |
 | `accounting` | 계정과목 v1, 차대변 검증 분개 | D4, R-50 |
 | `oms` | 주문 상태 머신, 킬 스위치 | R-40~43 |
 | `recon` | 일일 대사, 원인 후보 | R-70~74 |
@@ -158,6 +158,7 @@ MINISTP_TEST_DATABASE_URL=postgresql://postgres:postgres@localhost:5432/ministp_
 | `ops` | 원장 시작값, 주문 기록, 일일 마감·대사, 무오류 연속일, 장중 IBOR 실행기(체결통보 즉시 반영, 조회 보완, 장중 대사) | R-05, R-44, R-74~75, D6 |
 | `broker.kis_ws` | 실시간 체결통보 수신(접속키, 구독, AES 복호화, PINGPONG, 재연결) | D6 |
 | `rights` | 권리처리: 현금배당 권리 원장(등록·취소 행), `daily`의 인식·입금·취소 반영, 실제 입금액 기록 | R-23, R-57~59 |
+| `cash` | 입출금·대체: 증권사에서 넣거나 뺀 돈과 내 계좌끼리 옮긴 돈의 기록, 출금가능금액, 대체의 두 기록을 한 트랜잭션으로 | R-56, R-61, R-64, R-65 |
 | `audit` | 감사 로그: 요청마다 한 줄(처리·거부·실패), 경로와 실행 계정, DB가 채우는 번호·시각·해시 사슬 | R-85~87 |
 | `store` | PostgreSQL 이벤트 저장, 재생 복원, DB 수준 append-only·차대변 통제 | 03 데이터 모델, R-04, R-50 |
 | `queries` | 조회 서비스 계층: 화면이 호출할 조회 트랜잭션(원장 목록·추적, 시산표, 대사 이력, 주문 블로터, 기준가 추이). DB 읽기만 하고 DB 컬럼명 그대로 Dataset으로 반환 | 화면 기획서 |
@@ -229,6 +230,17 @@ MINISTP_TEST_DATABASE_URL=postgresql://postgres:postgres@localhost:5432/ministp_
 ```
 
 배당기준일, 지급일, 세전 주당 배당금을 한 번 등록하면 각 계좌의 `daily`가 날짜에 맞춰 반영합니다. 기준일 다음 영업일에 기준일까지 결제된 보유분을 미수배당금으로 인식하고(R-57, R-58), 지급일에 배당소득세 15.4%를 떼고 예수금에 넣습니다(R-23). 미수배당금은 그날부터 순자산과 기준가에 들어갑니다. 권리 원장의 행은 고치지 않습니다. 잘못 넣은 권리는 취소하고 다시 등록하면, 이미 인식한 계좌는 다음 `daily`가 되돌립니다(R-59).
+
+입출금·대체 (ERD v2.5부터):
+
+```bat
+.venv\Scripts\python -m ministp cash list                        :: 내역, 예수금, 출금가능금액, 좌수
+.venv\Scripts\python -m ministp cash deposit 5000000 --memo "월 적립"
+.venv\Scripts\python -m ministp cash withdraw 1000000 --date 2027-01-15
+.venv\Scripts\python -m ministp cash transfer 3000000 --to A0002   :: --account가 보내는 계좌 (기본 A0001)
+```
+
+MiniSTP는 돈을 옮기지 않습니다. 증권사 앱에서 넣거나 뺀 돈을 여기에 기록하면 다음 `daily`의 대사가 증권사 잔고와 맞춰 봅니다. 기록하지 않은 입출금은 대사에서 예수금 불일치로 나타납니다. 입금은 전날 기준가로 좌수를 발행하고 출금은 좌수를 줄여서, 돈이 드나들어도 기준가(수익률)는 움직이지 않습니다(R-61). 출금과 대체 출금은 출금가능금액(결제를 기다리는 매수 대금을 뺀 예수금, R-64) 안에서만 기록됩니다. 대체는 같은 고객의 계좌 사이에서만 하고, 보낸 쪽과 받은 쪽 기록이 함께 들어가거나 함께 들어가지 않습니다(R-65).
 
 감사 로그 (ERD v2.3부터):
 
