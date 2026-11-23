@@ -241,3 +241,23 @@ def test_cli_cancel(opened, capsys):
     assert cli.run(["cancel", "1"], environ=env, client_factory=lambda cfg: broker, now=at,
                    sleep=lambda s: None) == 1
     assert "취소할 수 없어요" in capsys.readouterr().out
+def test_settlements_due_today_are_booked_when_the_runner_starts(opened):
+    """Found by the random operations test: on a settlement day the broker's 예수금 D+0 already
+    includes the settlement, but the ledger only settled at `daily`, so every intraday recon broke."""
+    conn, broker = opened
+    r = runner(conn, broker, Clock(), [])
+    r.on_command("buy 069500 2")
+    broker.fill("0000000001", 80_000)
+    r.poll()
+    daily_close(books(conn), broker, DAY)
+    settle_day = D("2026-11-25")                      # T+2
+    broker.set_day(settle_day)
+    broker.orders[settle_day] = {}
+    out = []
+    r2 = IntradayRunner(books(conn), broker, settle_day, queue.Queue(), monotonic=Clock(), out=out.append,
+                        settle_wait=lambda: None, now=lambda: dt.datetime(2026, 11, 25, 9, 1))
+    r2.poll("시작 시 확인")
+    assert any(line.startswith("결제 1건 반영") for line in out)
+    assert all(x.status.value == "MATCH" for x in r2.recon())        # CASH_D0 matches the broker
+    rep = daily_close(books(conn), broker, settle_day)
+    assert rep.settled == [] and rep.clean                            # nothing left for the close
