@@ -40,11 +40,12 @@ def _q(conn: psycopg.Connection, sql: str, params=()) -> Dataset:
 _EVENT_DATE = "coalesce(e.payload->>'trade_date', e.payload->>'date')::date"
 
 
-# ---------- STP-3100 원장·분개 조회 ----------
+# ---------- STP-3100 원장 조회 · STP-3200 분개 조회 · STP-3300 시산표 ----------
 
 def ledger_events(conn: psycopg.Connection, date_from: dt.date | None = None, date_to: dt.date | None = None,
-                  event_type: str | None = None, symbol: str | None = None) -> Dataset:
-    """이벤트 원장 목록, newest first. Dates are business dates, not recording times."""
+                  event_type: str | None = None, symbol: str | None = None, seq: int | None = None) -> Dataset:
+    """이벤트 원장 목록, newest first. Dates are business dates, not recording times.
+    `seq` narrows the list to one event: how another screen opens this one on the event it had picked."""
     return _q(conn, f"""
         select e.seq, e.event_type, {_EVENT_DATE} as date, e.payload->>'symbol' as symbol,
                e.recorded_at, e.payload
@@ -53,7 +54,28 @@ def ledger_events(conn: psycopg.Connection, date_from: dt.date | None = None, da
            and (%(t)s::date is null or {_EVENT_DATE} <= %(t)s)
            and (%(ty)s::text is null or e.event_type = %(ty)s)
            and (%(sym)s::text is null or e.payload->>'symbol' = %(sym)s)
-         order by e.seq desc""", {"f": date_from, "t": date_to, "ty": event_type, "sym": symbol})
+           and (%(seq)s::bigint is null or e.seq = %(seq)s)
+         order by e.seq desc""", {"f": date_from, "t": date_to, "ty": event_type, "sym": symbol, "seq": seq})
+
+
+def journal_events(conn: psycopg.Connection, date_from: dt.date | None = None, date_to: dt.date | None = None,
+                   event_type: str | None = None, symbol: str | None = None, seq: int | None = None) -> Dataset:
+    """The events that wrote a journal, newest first, each with how much it wrote: 전표 수, 분개 줄 수, 차변 합계.
+    An event that books nothing (a NAV strike) is not listed: this is the list a journal is picked from."""
+    return _q(conn, f"""
+        select e.seq, e.event_type, {_EVENT_DATE} as date, e.payload->>'symbol' as symbol,
+               count(distinct j.entry_id)::int as entries, count(l.line_id)::int as lines,
+               sum(l.debit)::bigint as amount
+          from ledger_events e
+          join journal_entries j on j.event_seq = e.seq
+          join journal_lines l using (entry_id)
+         where (%(f)s::date is null or {_EVENT_DATE} >= %(f)s)
+           and (%(t)s::date is null or {_EVENT_DATE} <= %(t)s)
+           and (%(ty)s::text is null or e.event_type = %(ty)s)
+           and (%(sym)s::text is null or e.payload->>'symbol' = %(sym)s)
+           and (%(seq)s::bigint is null or e.seq = %(seq)s)
+         group by e.seq
+         order by e.seq desc""", {"f": date_from, "t": date_to, "ty": event_type, "sym": symbol, "seq": seq})
 
 
 @dataclass(frozen=True)
@@ -65,11 +87,32 @@ class EventTrace:
 
     @property
     def balanced(self) -> bool:
-        """Every entry's debits equal its credits (the DB also enforces this)."""
-        sums: dict[int, int] = {}
-        for r in self.journal.records():
-            sums[r["entry_id"]] = sums.get(r["entry_id"], 0) + r["debit"] - r["credit"]
-        return all(v == 0 for v in sums.values())
+        return _balanced(self.journal)
+
+
+def _balanced(journal: Dataset) -> bool:
+    """Every entry's debits equal its credits (the DB also enforces this)."""
+    sums: dict[int, int] = {}
+    for r in journal.records():
+        sums[r["entry_id"]] = sums.get(r["entry_id"], 0) + r["debit"] - r["credit"]
+    return all(v == 0 for v in sums.values())
+
+
+def _journal_of(conn: psycopg.Connection, seq: int) -> Dataset:
+    return _q(conn, """
+        select j.entry_id, j.date, j.kind, j.source_id, j.reverses_entry_id,
+               l.line_id, l.account_code, a.name as account_name, l.debit, l.credit
+          from journal_entries j join journal_lines l using (entry_id)
+          join accounts_chart a on a.code = l.account_code
+         where j.event_seq = %s order by j.entry_id, l.line_id""", (seq,))
+
+
+def event_journal(conn: psycopg.Connection, seq: int) -> tuple[Dataset, bool]:
+    """이벤트 하나가 만든 분개 전부 (전표와 줄), and whether every 전표 balances."""
+    if not conn.execute("select 1 from ledger_events where seq = %s", (seq,)).fetchone():
+        raise KeyError(f"no ledger event {seq}")
+    journal = _journal_of(conn, seq)
+    return journal, _balanced(journal)
 
 
 def event_trace(conn: psycopg.Connection, seq: int) -> EventTrace:
@@ -78,12 +121,7 @@ def event_trace(conn: psycopg.Connection, seq: int) -> EventTrace:
                      " from ledger_events e where e.seq = %s", (seq,))
     if not event.rows:
         raise KeyError(f"no ledger event {seq}")
-    journal = _q(conn, """
-        select j.entry_id, j.date, j.kind, j.source_id, j.reverses_entry_id,
-               l.line_id, l.account_code, a.name as account_name, l.debit, l.credit
-          from journal_entries j join journal_lines l using (entry_id)
-          join accounts_chart a on a.code = l.account_code
-         where j.event_seq = %s order by j.entry_id, l.line_id""", (seq,))
+    journal = _journal_of(conn, seq)
     positions = _q(conn, "select id, trade_date, symbol, exec_id, qty_delta, cost_delta, realized_pnl"
                          " from position_ledger where event_seq = %s order by id", (seq,))
     cash = _q(conn, "select id, date, reason, amount, ref_id from cash_ledger where event_seq = %s order by id",
@@ -565,7 +603,9 @@ TRANSACTIONS = {
     "STP1300R02": order_check,
     "STP3100R01": ledger_events,
     "STP3100R02": event_trace,
-    "STP3100R03": trial_balance,
+    "STP3200R01": journal_events,
+    "STP3200R02": event_journal,
+    "STP3300R01": trial_balance,
     "STP2100R01": recon_history,
     "STP1200R01": order_blotter,
     "STP2200R01": nav_series,
