@@ -114,9 +114,10 @@ def check_rights(conn: psycopg.Connection) -> Check:
     return Check("rights", "권리", True, f"권리 {actions:,}건, 계좌별 배당 {booked:,}건이 권리 원장과 맞음")
 
 
-def check_transfers(conn: psycopg.Connection) -> Check:
+def transfer_halves(conn: psycopg.Connection) -> tuple[dict, list[str]]:
     """R-65: every transfer has exactly two halves that name each other: one account sent what the
-    other received, on the same day, and both accounts belong to one customer."""
+    other received, on the same day, and both accounts belong to one customer.
+    Returns (transfer id -> its halves, what is wrong with the ones that do not pair)."""
     halves: dict[int, list[tuple]] = {}
     for tid, acct, kind, date, amount, other, customer in conn.execute(
             "select m.transfer_id, m.account_id, m.kind, m.date, m.amount, m.counter_account, t.customer_id"
@@ -135,6 +136,11 @@ def check_transfers(conn: psycopg.Connection) -> Check:
             bad.append(f"TR-{tid} 보낸 금액·날짜와 받은 금액·날짜가 다름")
         elif out[5] != got[5]:
             bad.append(f"TR-{tid} 고객이 다른 계좌 사이의 대체")
+    return halves, bad
+
+
+def check_transfers(conn: psycopg.Connection) -> Check:
+    halves, bad = transfer_halves(conn)
     if bad:
         return Check("transfers", "대체", False, f"짝이 맞지 않는 대체: {_some(bad)}")
     if not halves:
