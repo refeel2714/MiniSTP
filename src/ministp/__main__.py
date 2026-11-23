@@ -31,7 +31,7 @@ from .fees import FeeSchedule
 from .instruments import AssetType, Instrument, Market
 from .ledger import Side
 from .oms import OrderStatus
-from .ops import (GATE_DAYS, IntradayRunner, OpsError, acquire_writer, add_instrument, clean_streak, daily_close, load_books, open_books,
+from .ops import (GATE_DAYS, IntradayRunner, OpsError, acquire_writer, add_instrument, cancel_order, clean_streak, daily_close, load_books, open_books,
                   place_order, resolve_break)
 from .recon import Cause, Status
 from .session import failure_text
@@ -81,6 +81,8 @@ def run(argv, *, environ=os.environ, client_factory=KisClient, connect=psycopg.c
     p = sub.add_parser("order")
     p.add_argument("symbol"), p.add_argument("side", choices=["buy", "sell"])
     p.add_argument("qty", type=int), p.add_argument("--limit", type=int)
+    p = sub.add_parser("cancel", help="오늘 낸 주문의 미체결 잔량 취소 (run이 떠 있으면 run 창에서 cancel)")
+    p.add_argument("order", help="주문 번호: 3, S20261124-0003, 또는 증권사 주문번호")
     p = sub.add_parser("daily")
     p.add_argument("--date", type=dt.date.fromisoformat, help="지난 영업일을 다시 대사할 때")
     sub.add_parser("status")
@@ -144,7 +146,7 @@ def run(argv, *, environ=os.environ, client_factory=KisClient, connect=psycopg.c
                 print(f"등록: {args.symbol} {args.name} ({market.value} {asset.value})")
                 return 0
 
-            if args.cmd in ("open", "order", "daily", "run", "resolve"):
+            if args.cmd in ("open", "order", "cancel", "daily", "run", "resolve"):
                 acquire_writer(conn)
 
             if args.cmd == "resolve":
@@ -208,6 +210,28 @@ def run(argv, *, environ=os.environ, client_factory=KisClient, connect=psycopg.c
                           f"{r.tx_tax + r.rural_tax:,}, 결제일 {r.settle_date}")
                 if o.status is not OrderStatus.FILLED:
                     print("아직 다 체결되지 않았어요. 남은 체결은 장 마감 후 daily가 반영해요.")
+                return 0
+
+            if args.cmd == "cancel":
+                if not (MARKET_OPEN <= started.time() <= MARKET_CLOSE) or not calendar.is_business_day(today):
+                    print("장중(영업일 09:00~15:20)에만 취소해요.")
+                    return 2
+                polls = iter(range(10))  # up to ~20 seconds
+
+                def wait() -> bool:
+                    if next(polls, None) is None:
+                        return False
+                    sleep(2)
+                    return True
+
+                session, cid = cancel_order(books, broker, today, args.order, wait=wait)
+                o = session.oms.orders[cid]
+                if o.status is OrderStatus.CANCELED:
+                    print(f"주문 {cid} 취소 확인: 체결 {o.filled_qty}주, 취소 {o.qty - o.filled_qty}주")
+                elif o.status is OrderStatus.FILLED:
+                    print(f"주문 {cid}는 취소 전에 모두 체결됐어요 ({o.filled_qty}주). 체결을 원장에 반영했어요.")
+                else:
+                    print(f"주문 {cid} 취소 요청을 증권사가 받았어요. 확인은 장중 run이나 장 마감 후 daily가 반영해요.")
                 return 0
 
             if args.cmd == "daily":
