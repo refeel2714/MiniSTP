@@ -16,7 +16,7 @@ from .ledger import ExecutionEvent, Ledger, book_date
 DONE, NONE, WAIT, WARN, BAD, MISSING = "완료", "대상 없음", "대기", "주의", "확인 필요", "누락"
 DAY_DONE, DAY_OPEN, DAY_BAD = "점검 완료", "진행 중", "확인 필요"
 STEPS = ("결제", "주문·체결", "시세", "기준가", "증권사 대사", "일 마감", "원장 내부 대사")
-SCREENS = ("STP-4200", "STP-1200", "STP-2300", "STP-2210", "STP-2100", "STP-2200", "STP-2110")
+SCREENS = ("STP-3400", "STP-1200", "STP-2300", "STP-2210", "STP-2100", "STP-2200", "STP-2110")
 _FINISHED = (DONE, NONE, WARN)
 
 
