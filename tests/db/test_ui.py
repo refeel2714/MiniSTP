@@ -84,7 +84,7 @@ def test_every_page_carries_what_the_jump_box_can_open(client, conn):
         assert [m["id"] for m in data["menu"]] == list(load_screens())
         (jump,) = data["jump"]
         assert jump["name"] == "symbol" and {t["id"]: t["param"] for t in jump["into"]} == {
-            "STP-1300": "symbol", "STP-3100": "symbol"}
+            "STP-1300": "symbol", "STP-3100": "symbol", "STP-3200": "symbol"}
     listed = client.post(f"/api/tx/{jump['tx']}", json={"params": {}}).json()["datasets"]["main"]
     assert {jump["value"], jump["shows"]} <= set(listed["columns"])     # what the box matches on and shows
     at = listed["columns"].index(jump["value"])
@@ -97,9 +97,10 @@ def test_every_page_carries_what_the_jump_box_can_open(client, conn):
 
 
 def test_screen_page_carries_the_resolved_definition(client):
-    r = client.get("/screen/STP-3100")
+    r = client.get("/screen/STP-3200")
     assert r.status_code == 200 and 'id="stpui-data"' in r.text
     assert "차변 금액" in r.text                       # label taken from the DB comment
+    assert "차변 금액" not in client.get("/screen/STP-3100").text   # the journal is not on the ledger screen
     assert r.headers["cache-control"] == "no-store"
     assert client.get("/screen/STP-0000").status_code == 404
     assert client.get("/static/stpui.js").status_code == 200
@@ -107,22 +108,44 @@ def test_screen_page_carries_the_resolved_definition(client):
 
 def test_event_trace_through_the_api_balances(client, conn):
     seq = conn.execute("select min(seq) from ledger_events where event_type = 'ExecutionEvent'").fetchone()[0]
-    body = client.post("/api/tx/STP3100R02", json={"params": {"seq": seq}}).json()
-    assert body["meta"]["balanced"] is True
+    body = client.post("/api/tx/STP3200R02", json={"params": {"seq": seq}}).json()
+    assert body["meta"]["balanced"] is True and set(body["datasets"]) == {"journal"}
     journal = body["datasets"]["journal"]
     rows = [dict(zip(journal["columns"], r)) for r in journal["rows"]]
     assert rows and sum(r["debit"] for r in rows) == sum(r["credit"] for r in rows)
-    assert len(body["datasets"]["positions"]["rows"]) == 1
+    ledger = client.post("/api/tx/STP3100R02", json={"params": {"seq": seq}}).json()["datasets"]
+    assert set(ledger) == {"event", "positions", "cash"} and len(ledger["positions"]["rows"]) == 1
+
+
+def test_the_journal_list_counts_what_each_event_wrote_and_both_screens_open_on_one_event(client, conn):
+    """STP-3200 왼쪽 목록: 분개를 만든 이벤트만, 전표 수와 분개 줄 수와 차변 합계와 함께. seq 조건은 다른 화면이 고른 이벤트로 열 때 써요."""
+    listed = client.post("/api/tx/STP3200R01", json={"params": {}}).json()["datasets"]["main"]
+    rows = [dict(zip(listed["columns"], r)) for r in listed["rows"]]
+    want = conn.execute("select j.event_seq, count(distinct j.entry_id), count(*), sum(l.debit) from journal_entries j"
+                        " join journal_lines l using (entry_id) group by 1 order by 1 desc").fetchall()
+    assert [(r["seq"], r["entries"], r["lines"], r["amount"]) for r in rows] == [tuple(w) for w in want]
+    assert max(r["entries"] for r in rows) == 2 and max(r["lines"] for r in rows) >= 5   # 평가는 전표 둘, 매도는 다섯 줄
+    silent = conn.execute("select count(*) from ledger_events e where not exists"
+                          " (select 1 from journal_entries j where j.event_seq = e.seq)").fetchone()[0]
+    assert silent > 0 and len(rows) + silent == conn.execute("select count(*) from ledger_events").fetchone()[0]
+    big = max(rows, key=lambda r: r["lines"])
+    for tx in ("STP3200R01", "STP3100R01"):
+        one = client.post(f"/api/tx/{tx}", json={"params": {"seq": big["seq"]}}).json()["datasets"]["main"]
+        assert [r[one["columns"].index("seq")] for r in one["rows"]] == [big["seq"]]
+    sells = client.post("/api/tx/STP3200R01", json={"params": {"event_type": "ExecutionEvent", "symbol": "005930"}})
+    assert {r[1] for r in sells.json()["datasets"]["main"]["rows"]} == {"ExecutionEvent"}
+    for sid in ("STP-3100", "STP-3200"):
+        assert client.get(f"/screen/{sid}?seq={big['seq']}").status_code == 200
 
 
 def test_the_t_accounts_of_every_event_balance_entry_by_entry(client, conn):
-    """STP-3100 분개의 T계정 보기: 전표마다 차변 합계와 대변 합계가 같고, T에 놓이는 금액은 분개 줄 그대로예요."""
-    grid = next(g for g in client.get("/api/screen/STP-3100").json()["grids"] if g["id"] == "journal")
+    """STP-3200 분개의 T계정 보기: 전표마다 차변 합계와 대변 합계가 같고, T에 놓이는 금액은 분개 줄 그대로예요."""
+    grid = next(g for g in client.get("/api/screen/STP-3200").json()["grids"] if g["id"] == "journal")
     t = grid["taccount"]
     assert grid["view"] == "taccount" and set(t.values()) <= {c["name"] for c in grid["columns"]}
     seen = 0
     for (seq,) in conn.execute("select seq from ledger_events order by seq").fetchall():
-        ds = client.post("/api/tx/STP3100R02", json={"params": {"seq": seq}}).json()["datasets"]["journal"]
+        ds = client.post("/api/tx/STP3200R02", json={"params": {"seq": seq}}).json()["datasets"]["journal"]
         lines = [dict(zip(ds["columns"], r)) for r in ds["rows"]]
         entries = {}
         for ln in lines:
@@ -145,10 +168,11 @@ def test_values_are_json_ready(client, sample):
 
 
 def test_bad_requests_get_a_plain_message(client):
-    r = client.post("/api/tx/STP3100R03", json={"params": {"x": 1}})
+    r = client.post("/api/tx/STP3300R01", json={"params": {"x": 1}})
     assert r.status_code == 400 and "없는 조회조건" in r.json()["error"]
-    r = client.post("/api/tx/STP3100R02", json={"params": {"seq": 999999}})
-    assert r.status_code == 400 and "999999" in r.json()["error"]
+    for tx in ("STP3100R02", "STP3200R02"):
+        r = client.post(f"/api/tx/{tx}", json={"params": {"seq": 999999}})
+        assert r.status_code == 400 and "999999" in r.json()["error"]
 
 
 def test_only_local_hosts_are_answered(sample):
