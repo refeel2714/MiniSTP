@@ -69,7 +69,7 @@ def test_every_transaction_answers_for_the_account_it_is_asked_about(client, con
         assert body["account"] == acct
         want = conn.execute("select symbol, qty, book_cost from positions_v where account_id = %s", (acct,)).fetchall()
         assert sorted((h["symbol"], h["qty"], h["book_cost"]) for h in held) == sorted(want)
-        summary, _ = rows(client, "STP4200R01", acct)
+        summary, _ = rows(client, "STP3400R01", acct)
         assert summary[0]["account_id"] == acct
         assert summary[0]["cash_d0"] == conn.execute(
             "select balance from cash_balance_v where account_id = %s", (acct,)).fetchone()[0]
@@ -122,9 +122,9 @@ def test_account_list_and_status_history(client, conn, sample):
         ("A0001", "C0001", "OPEN"), ("A0002", "C0001", "OPEN"), ("A0003", "C0002", "OPEN")]
     second = accounts[1]
     assert second["opened_on"] == sample.others[0].opened_on.isoformat() and second["credential_ref"] == "KIS_2"
-    assert second["clean_streak"] == sample.others[0].streak and accounts[0]["clean_streak"] == sample.streak
-    assert accounts[2]["events"] == conn.execute(
-        "select count(*) from ledger_events where account_id = 'A0003'").fetchone()[0]
+    assert (second["broker"], second["env"], second["account_type"]) == ("KIS", "PAPER", "GENERAL")
+    # reference data: nothing of what the account holds (that is STP-3400, STP-1100, STP-1400)
+    assert not {"cash_d0", "book_cost", "holdings", "events", "clean_streak"} & set(second)
     text = json.dumps(body)
     assert "account_no" not in text and "app_key" not in text.lower()
 
@@ -139,22 +139,19 @@ def test_the_account_list_shows_little_and_its_detail_is_on_the_right(client, co
     screen = load_screens()["STP-4400"]
     master, *details = screen.grids
     assert screen.layout == "split" and master.id == "accounts" and master.load == "open"
-    assert [c.name for c in master.columns] == ["account_id", "alias", "customer_alias", "status", "cash_d0", "book_cost"]
+    assert [c.name for c in master.columns] == ["account_id", "alias", "customer_alias", "status", "broker", "env",
+                                                "account_type", "opened_on"]
+    assert not master.totals                                      # 기준정보: no balances to add up
     assert [(g.id, g.load, g.master, g.link) for g in details] == [
-        ("positions", "master", "accounts", {"account_id": "account_id"}),
         ("status_history", "master", "accounts", {"account_id": "account_id"})]
 
     accounts, body = rows(client, "STP4400R01", "A0002")
     assert body["meta"]["selected"] == "A0002"                    # the row the screen opens on
-    for a in accounts:                                            # asked from A0001, answered for the row
-        held, _ = rows(client, "STP4400R03", params={"account_id": a["account_id"]})
-        want = conn.execute("select symbol, qty, book_cost from positions_v where account_id = %s",
-                            (a["account_id"],)).fetchall()
-        assert sorted((h["symbol"], h["qty"], h["book_cost"]) for h in held) == sorted(want)
-        assert len(held) == a["holdings"] and sum(h["book_cost"] for h in held) == a["book_cost"]
-    assert client.post("/api/tx/STP4400R03", json={"params": {}}).status_code == 400
-    nobody, _ = rows(client, "STP4400R03", params={"account_id": "A0009"})
-    assert nobody == []
+    for a in accounts:                                            # asked from A0002, answered for the row
+        history, _ = rows(client, "STP4400R02", params={"account_id": a["account_id"]})
+        assert history and history[0]["status"] == a["status"]
+    from ministp.ui.transactions import TRANSACTIONS
+    assert "STP4400R03" not in TRANSACTIONS                       # 계좌 보유는 이 화면에 없어요
 
 
 def test_customer_holdings_add_up_the_accounts_of_one_customer(client, conn):
@@ -194,6 +191,6 @@ def test_a_drill_that_names_an_account_column_must_have_it(conn):
     catalog = erd.read_catalog(conn, "public")
     assert validate(screens, catalog) == []
     grid = screens["STP-4400"].grids[0]
-    assert grid.drill == {"screen": "STP-4200", "account": "account_id"}
-    grid.drill = {"screen": "STP-4200", "account": "no_such_column"}
+    assert grid.drill == {"screen": "STP-3400", "account": "account_id"}
+    grid.drill = {"screen": "STP-3400", "account": "no_such_column"}
     assert any("이동할 계좌 열 no_such_column" in e for e in validate(screens, catalog))
