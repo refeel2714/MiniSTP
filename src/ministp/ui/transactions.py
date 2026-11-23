@@ -193,6 +193,25 @@ def _price_rows(c: TxContext, p) -> TxResult:
     return TxResult({"main": ds}, meta)
 
 
+def _returns(c: TxContext, p) -> TxResult:
+    ds = q.return_months(c.books.ledger, p.get("date_from"), p.get("date_to"))
+    periods = q.return_periods(c.books.ledger)
+    meta = {k: f"{v:+.2f}%" for k, v in periods.items() if k != "last_date" and v is not None}
+    if periods:
+        meta["last_date"] = periods["last_date"].isoformat()
+    return TxResult({"main": ds}, meta)
+
+
+def _return_days(c: TxContext, p) -> TxResult:
+    if not p.get("month"):
+        raise TxError("월이 필요해요")
+    try:
+        return TxResult({"main": q.return_month_days(c.books.ledger, p["month"], p.get("date_from"),
+                                                     p.get("date_to"))})
+    except ValueError as e:
+        raise TxError(e.args[0]) from e
+
+
 def _close_days(c: TxContext, p) -> TxResult:
     from ..closeboard import DAY_BAD
     ds = q.close_days(c.conn, c.calendar, c.fees, c.today, p.get("date_from"), p.get("date_to"), c.account_id)
@@ -338,6 +357,8 @@ TRANSACTIONS: dict[str, Tx] = {t.tx_id: t for t in [
     Tx("STP2300R02", "종목의 기간별 종가", {"symbol": "text", "date_from": "date", "date_to": "date"}, _price_rows),
     Tx("STP2400R01", "영업일별 마감 점검 요약", {"date_from": "date", "date_to": "date"}, _close_days),
     Tx("STP2400R02", "영업일의 작업 단계별 상태", {"date": "date"}, _close_steps),
+    Tx("STP6100R01", "월별 수익률", {"date_from": "date", "date_to": "date"}, _returns),
+    Tx("STP6100R02", "월의 일별 수익률", {"month": "text", "date_from": "date", "date_to": "date"}, _return_days),
     Tx("STP3100R01", "원장 이벤트 목록", {"date_from": "date", "date_to": "date", "event_type": "text",
                                        "symbol": "text", "seq": "int"}, _events),
     Tx("STP3100R02", "이벤트의 보유·예수금 변동", {"seq": "int"}, _trace),
