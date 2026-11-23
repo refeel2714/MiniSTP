@@ -108,6 +108,10 @@ def test_screen_queries_stay_inside_one_account(conn):
     with pytest.raises(KeyError):
         q.event_trace(conn, other)                                 # another account's event is not found
     assert q.event_trace(conn, other, "A0002").balanced
+    assert {r["seq"] for r in q.journal_events(conn).records()} <= mine    # the journal screen's list and journal too
+    with pytest.raises(KeyError):
+        q.event_journal(conn, other)
+    assert q.event_journal(conn, other, "A0002")[1]
     assert len(q.recon_history(conn).rows) == conn.execute(
         "select count(*) from recon_results where account_id = 'A0001' and status <> 'RESOLVED'").fetchone()[0]
 
