@@ -675,27 +675,52 @@ def close_trends(ledger: Ledger, days: int = 20) -> dict[str, list[int]]:
     return out
 
 
-def holdings_view(base: Dataset, ledger: Ledger) -> Dataset:
-    """보유에 비중(장부금액 ÷ 장부금액 합계), 최근 종가 추세, 평가금액과 평가손익을 붙여요.
+def holdings_view(base: Dataset, ledger: Ledger, quotes=None, now: dt.datetime | None = None) -> Dataset:
+    """보유에 평가 가격, 평가금액, 평가손익, 비중을 붙여요 (IBOR, R-68).
 
-    화면이 막대, 추세선, 구성 지도로 그리는 값이에요. 평가금액은 보유수량 × 원장이 아는 가장 최근 종가
-    (`last_closes`, 계좌정보의 평가금액과 같은 값)이고, 그 종가가 아직 없는 종목은 비워 둬요."""
+    평가 가격은 원장이 아는 가장 최근 종가와 오늘 `run`이 받은 현재가(`quotes`) 가운데 더 늦은 것이에요.
+    가격이 아직 없는 종목은 추측하지 않고 비워 둬요. 비중은 평가금액 ÷ 평가금액 합계예요."""
+    from .quotes import marks
     cost = base.columns.index("book_cost")
     symbol = base.columns.index("symbol")
     qty = base.columns.index("qty")
-    total = sum(r[cost] for r in base.rows)
-    trends = close_trends(ledger)
-    _, closes = last_closes(ledger)
+    prices = marks(*last_closes(ledger), quotes or {}, now or dt.datetime.now())
 
     def valued(r) -> tuple:
-        if r[symbol] not in closes:
-            return None, None
-        value = r[qty] * closes[r[symbol]]
-        return value, value - r[cost]
+        m = prices.get(r[symbol])
+        if m is None:
+            return None, None, None, None, None
+        value = r[qty] * m.price
+        pnl = value - r[cost]
+        return m.price, _mark_time(m), value, pnl, f"{float(pnl) / float(r[cost]) * 100 + 0.0:+.2f}%" if r[cost] else None
 
-    rows = tuple((*r, round(float(r[cost]) / float(total), 4) if total else None, trends.get(r[symbol], []), *valued(r))
-                 for r in base.rows)
-    return Dataset((*base.columns, "weight", "trend", "market_value", "unrealized_pnl"), rows)
+    extra = [valued(r) for r in base.rows]
+    total = sum(x[2] for x in extra if x[2] is not None)
+    rows = tuple((*r, *x, round(x[2] / total, 4) if total and x[2] is not None else None)
+                 for r, x in zip(base.rows, extra))
+    return Dataset((*base.columns, "price", "price_at", "market_value", "unrealized_pnl", "pnl_rate", "weight"),
+                   rows)
+
+
+def _mark_time(m) -> str:
+    """가격 칸 아래에 적는 말: 현재가는 받은 시각, 종가는 그 날짜."""
+    if m.source == "현재가":
+        return f"{m.as_of:%H:%M}" + (" 갱신 멈춤" if m.stale else "")
+    return f"종가 {m.as_of:%m-%d}"
+
+
+def valuation_basis(ledger: Ledger, symbols, quotes=None, now: dt.datetime | None = None) -> str:
+    """그리드 머리의 "평가 기준": 보유 종목에 쓴 가격 가운데 가장 오래된 쪽 (섞이면 칸 아래 시각으로 구분)."""
+    from .quotes import marks
+    prices = marks(*last_closes(ledger), quotes or {}, now or dt.datetime.now())
+    used = [prices[s] for s in symbols if s in prices]
+    if not used:
+        return "가격 없음"
+    closes = [m for m in used if m.source == "종가"]
+    if closes:
+        return f"종가 {min(m.as_of for m in closes):%m-%d}"
+    oldest = min(m.as_of for m in used)
+    return f"현재가 {oldest:%H:%M}" + (" · 갱신 멈춤" if any(m.stale for m in used) else "")
 
 
 def cash_summary(ledger: Ledger, open_orders) -> Dataset:
@@ -714,7 +739,7 @@ def cash_summary(ledger: Ledger, open_orders) -> Dataset:
 
 
 def last_closes(ledger: Ledger) -> tuple[dt.date | None, dict[str, int]]:
-    """The most recent closing prices the ledger knows (NavEvent/RevaluationEvent), until live quotes come."""
+    """The most recent closing prices the ledger knows (NavEvent/RevaluationEvent). Live quotes: quotes.marks."""
     from .ledger import NavEvent, RevaluationEvent
     for ev in reversed(ledger.events):
         if isinstance(ev, (NavEvent, RevaluationEvent)):
