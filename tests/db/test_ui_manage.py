@@ -156,3 +156,21 @@ def test_management_screens_put_their_buttons_on_the_grid_they_act_on(conn):
     for sid in ("STP-4400", "STP-1400", "STP-4600"):                 # nothing secret is ever asked for
         fields = [f["name"] for g in resolve(screens[sid], catalog, lookups)["grids"] for b in g["actions"] for f in b["fields"]]
         assert not {"app_key", "app_secret", "account_no", "password"} & set(fields)
+
+
+def test_the_page_carries_code_names_and_a_renamed_code_shows_on_the_next_open(press, conn):
+    """코드명 표시: screens draw a code by its name. The names come from the table, not from the program."""
+    data = page_data(press.client, "STP-3100")
+    assert data["codes"]["EVENT_TYPE"]["ExecutionEvent"] == "체결" and data["codes"]["RECON_ITEM"]["CASH_D0"] == "예수금"
+    assert data["codes"] == {g: codes.names(conn, g) for g in data["codes"]}
+    assert set(data["codes"]) == {g.group_id for g in codes.SEED}
+    cols = {c["name"]: c for c in next(g for g in data["screen"]["grids"] if g["id"] == "events")["columns"]}
+    assert cols["event_type"]["codes"] == "EVENT_TYPE" and cols["symbol"]["codes"] is None
+    assert next(c for c in data["screen"]["conditions"] if c["name"] == "event_type")["codes"] == "EVENT_TYPE"
+    assert press("STP4600U03", group_id="EVENT_TYPE", code="ExecutionEvent", name="매매 체결")[0] == 200
+    assert page_data(press.client, "STP-3100")["codes"]["EVENT_TYPE"]["ExecutionEvent"] == "매매 체결"
+    # a code switched off keeps its name: rows recorded with it are still read
+    assert press("STP4600U01", group_id="MEMO_KIND", name="메모 종류")[0] == 200
+    assert press("STP4600U02", group_id="MEMO_KIND", code="CALL", name="통화")[0] == 200
+    assert press("STP4600U04", group_id="MEMO_KIND", code="CALL", in_use="사용 안 함")[0] == 200
+    assert page_data(press.client, "STP-3100")["codes"]["MEMO_KIND"] == {"CALL": "통화"}

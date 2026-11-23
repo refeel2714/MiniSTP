@@ -39,7 +39,7 @@ grids:
       - {name: diff, source: recon_results.diff, format: money}
       - {name: status, source: recon_results.status, format: code, color: status, display: pill}
       - {name: cause_code, source: recon_results.cause_code, format: code}
-      - {name: resolved_cause, label: 판단 원인, format: code}
+      - {name: resolved_cause, label: 판단 원인, format: code, codes: RECON_CAUSE}
       - {name: resolved_note, label: 판단 메모}
       - {name: resolved_at, label: 판단 시각, format: datetime}
       - {name: taken_at, source: broker_snapshots.taken_at, format: datetime}

@@ -69,10 +69,22 @@ class Column:
     of: str | None = None
     steps: list[str] = field(default_factory=list)   # steps: the name of each step, in order
     hidden: bool = False        # in the rows (row key, link, button values) but not drawn as a column
+    # 코드명: the 공통코드 group whose names this column is shown with. A column whose source is the column a group
+    # is stored in (code_groups.used_by) gets it by itself; write it only for a value that has no such source.
+    codes: str | None = None
 
     @property
     def align(self) -> str:
         return "right" if self.format in RIGHT and self.display != "meter" else "left"
+
+
+def code_group(x) -> str | None:
+    """The 공통코드 group a column or a 조회조건 is named from: the one it says, or the one stored in its source."""
+    from ..codes import SEED
+    explicit = getattr(x, "codes", None)
+    if explicit:
+        return explicit
+    return next((g.group_id for g in SEED if g.used_by and g.used_by == x.source), None)
 
 
 @dataclass
@@ -325,6 +337,14 @@ def _column_problems(c: Column, where: str, catalog: dict) -> list[str]:
             errs.append(f"{where}.{c.name}: DB 컬럼이 있으면 한글명은 DB 주석을 써요 (label 제거)")
     elif not c.label:
         errs.append(f"{where}.{c.name}: source(DB 컬럼)나 label 중 하나가 필요해요")
+    if c.codes:
+        from ..codes import SEED
+        if c.codes not in {g.group_id for g in SEED}:
+            errs.append(f"{where}.{c.name}: 없는 코드 그룹 {c.codes}")
+        elif c.format not in ("code", "text"):
+            errs.append(f"{where}.{c.name}: 코드명은 코드나 글자 열에만 붙여요 (형식 {c.format})")
+        elif any(g.used_by == c.source for g in SEED if g.group_id == c.codes):
+            errs.append(f"{where}.{c.name}: {c.source}는 {c.codes} 코드가 저장되는 컬럼이라 codes를 적지 않아도 돼요")
     return errs + _display_problems(c, where)
 
 
@@ -617,6 +637,7 @@ def resolve(screen: Screen, catalog: dict, lookups: dict[str, Lookup] | None = N
         for c, cd in zip(g.columns, gd["columns"]):
             cd["label"] = label(c)
             cd["align"] = c.align
+            cd["codes"] = code_group(c)
             cd["inside"] = next((x.name for x in g.columns if c.name in (x.code, x.shape, x.of)), None)
         for b, bd in zip(g.actions, gd["actions"]):
             bd["title"] = ACTIONS[b.tx].title
@@ -625,13 +646,14 @@ def resolve(screen: Screen, catalog: dict, lookups: dict[str, Lookup] | None = N
                 fd["required"] = ACTIONS[b.tx].required(f.name)
     for c, cd in zip(screen.conditions, out["conditions"]):
         cd["label"] = label(c)
+        cd["codes"] = code_group(c)
     used = _used_lookups(screen)
     if used and lookups is None:
         lookups = load_lookups()
     out["lookups"] = {}
     for name in sorted(used):
         lk = lookups[name]
-        out["lookups"][name] = {**asdict(lk), "columns": [{**asdict(c), "label": label(c), "align": c.align}
+        out["lookups"][name] = {**asdict(lk), "columns": [{**asdict(c), "label": label(c), "align": c.align, "codes": code_group(c)}
                                                           for c in lk.columns]}
     return out
 

@@ -39,6 +39,13 @@
   // Every screen looks at one account, picked in the top bar and remembered in this browser.
   // The server gets it with every transaction; it never comes from a screen definition.
   const ACCOUNTS = DATA.accounts || [];
+  // 코드명: a column that holds a 공통코드 is shown by the code's name; the code itself stays in the tooltip
+  // and in the row (colour rules, links and buttons still read the code).
+  const CODES = DATA.codes || {};
+  function codeName(c, v) {
+    const names = c && c.codes ? CODES[c.codes] : null;
+    return names && v !== null && v !== undefined && Object.hasOwn(names, v) ? names[v] : null;
+  }
   const ACCOUNT_KEY = "stpui.account";
   const ACCOUNT_STATUS = { SUSPENDED: "정지", CLOSED: "해지" };
   const knownAccount = id => ACCOUNTS.some(a => a.account_id === id);
@@ -210,12 +217,13 @@
     for (const ch of String(code ?? "")) n = (n * 31 + ch.codePointAt(0)) % 9973;
     return n % HUES;   // the same code is the same colour on every screen
   }
-  function badge(r, c) {
+  function badge(r, c, cols) {
     const name = String(r[c.name] ?? "").trim();
     const code = c.code ? r[c.code] : null, kind = c.shape ? r[c.shape] : null;
+    const kindName = codeName((cols || []).find(x => x.name === c.shape), kind) ?? kind;
     const mark = h("span", { class: `ib h${hue(code ?? name)} ${ROUND.has(kind) ? "round" : ""}`.trim(), "aria-hidden": "true",
       text: (Array.from(name)[0] || "?").toUpperCase() });
-    const sub = [code, kind].filter(v => v !== null && v !== undefined && v !== "").join(" · ");
+    const sub = [code, kindName].filter(v => v !== null && v !== undefined && v !== "").join(" · ");
     return h("div", { class: "ibox" }, mark,
       h("div", { class: "iname" }, h("b", { text: name || "-" }), sub ? h("span", { text: sub }) : null));
   }
@@ -307,7 +315,7 @@
       box.replaceChildren(h("table", { class: "grid", role: "listbox", "aria-label": lk.title },
         h("thead", {}, h("tr", {}, lk.columns.map(c => h("th", { scope: "col", class: c.align === "right" ? "r" : null, text: c.label })))),
         h("tbody", {}, view.map((r, i) => h("tr", { role: "option", onclick: () => { sel = i; mark(); }, ondblclick: () => pick(i) },
-          lk.columns.map(c => h("td", { class: c.align === "right" ? "r" : null, text: fmt(r[c.name], c.format) })))))));
+          lk.columns.map(c => h("td", { class: c.align === "right" ? "r" : null, text: codeName(c, r[c.name]) ?? fmt(r[c.name], c.format) })))))));
       mark();
     }
     filter.addEventListener("input", () => { sel = 0; render(); });
@@ -514,7 +522,7 @@
     }
     const shows = b.shows.length ? h("dl", { class: "fctx" }, b.shows.flatMap(name => {
       const c = g.columns.find(c => c.name === name);
-      return [h("dt", { text: c.label }), h("dd", { class: tone(ctx[name], c.color, ctx) || null, text: fmt(ctx[name], c.format) || "-" })];
+      return [h("dt", { text: c.label }), h("dd", { class: tone(ctx[name], c.color, ctx) || null, text: (codeName(c, ctx[name]) ?? fmt(ctx[name], c.format)) || "-" })];
     })) : null;
     const dlg = h("dialog", { class: "dlg", "aria-labelledby": "dlg-title" },
       h("form", { onsubmit: submit, novalidate: true, oninput: () => { err.textContent = ""; } },
@@ -638,7 +646,7 @@
       let el;
       if (c.type === "select") {
         el = h("select", { id }, c.required ? null : h("option", { value: "", text: "전체" }),
-          c.options.map(o => h("option", { value: o, text: o, selected: o === def0 })));
+          c.options.map(o => h("option", { value: o, text: codeName(c, o) ? `${codeName(c, o)} (${o})` : o, selected: o === def0 })));
       } else if (c.type === "bool") {
         el = h("input", { id, type: "checkbox", checked: def0 === "true" || def0 === true });
       } else if (c.type === "number") {
@@ -719,7 +727,8 @@
       const details = def.grids.filter(g => g.load === "master" && g.master === master.id);
       if (!details.length || !row) return;
       const linked = g => Object.fromEntries(Object.entries(g.link).map(([p, col]) => [p, row[col]]));
-      details.forEach(g => grids[g.id].about([...new Set(Object.values(linked(g)))].join(" · ")));   // whose detail this is
+      const said = col => codeName(master.columns.find(c => c.name === col), row[col]) ?? row[col];   // a code by its name
+      details.forEach(g => grids[g.id].about([...new Set(Object.values(g.link).map(said))].join(" · ")));   // whose detail this is
       load(details, linked);
     }
 
@@ -1078,7 +1087,7 @@
         const cr = lines.reduce((a, r) => a + (Number(r[t.credit]) || 0), 0);
         const shown = facts.filter(c => lines[0][c.name] !== null && lines[0][c.name] !== undefined && lines[0][c.name] !== "");
         return h("section", { class: "tentry", "aria-label": t.entry ? `${col(t.entry).label} ${lines[0][t.entry]}` : g.title },
-          shown.length ? h("div", { class: "tfacts" }, shown.map(c => h("span", {}, c.label, h("b", { text: fmt(lines[0][c.name], c.format) })))) : null,
+          shown.length ? h("div", { class: "tfacts" }, shown.map(c => h("span", {}, c.label, h("b", { text: codeName(c, lines[0][c.name]) ?? fmt(lines[0][c.name], c.format) })))) : null,
           h("div", { class: "taccs" }, [...accounts].map(([code, a]) => h("div", { class: "tacc", role: "group",
             "aria-label": `${a.name || code} 차변 ${a.dr.map(amount).join(", ") || "없음"}, 대변 ${a.cr.map(amount).join(", ") || "없음"}` },
             h("h3", {}, a.name || code, a.name ? h("span", { text: code }) : null),
@@ -1099,7 +1108,8 @@
       if (!r) return body.replaceChildren(h("div", { class: "empty", text: "조회된 내역이 없어요" }));
       const old = previous.get("card");
       const values = g.columns.map(c => h("div", { class: ["cv", tone(r[c.name], c.color, r)].join(" ").trim(),
-        text: fmt(r[c.name], c.format) || "-" }));
+        title: codeName(c, r[c.name]) ? String(r[c.name]) : null,
+        text: codeName(c, r[c.name]) ?? (fmt(r[c.name], c.format) || "-") }));
       body.replaceChildren(h("div", { class: "cards" }, g.columns.map((c, i) =>
         h("div", { class: values[i].textContent.length > 18 ? "card long" : "card" }, h("div", { class: "cl", text: c.label }), values[i]))));
       if (old) g.columns.forEach((c, i) => {
@@ -1124,7 +1134,7 @@
         const r = view[i];
         const lines = [`${d} (${WEEK[dow(d)]}) ${fmt(r[sc.name], sc.format)}`, ...rest
           .filter(c => r[c.name] !== null && r[c.name] !== undefined && r[c.name] !== "")
-          .map(c => `${c.label} ${fmt(r[c.name], c.format)}`)];
+          .map(c => `${c.label} ${codeName(c, r[c.name]) ?? fmt(r[c.name], c.format)}`)];
         return h("button", { type: "button", "data-i": i, "data-k": rowKey(r), tabindex: "-1", "aria-pressed": "false",
           class: ["day", tone(r[sc.name], sc.color, r), d === DATA.today ? "today" : "", flashed(r, sc.name) ? "flash" : ""].filter(Boolean).join(" "),
           title: lines.join("\n"), "aria-label": lines.join(", "), onclick: () => select(i) }, String(n));
@@ -1193,12 +1203,13 @@
         onclick: () => select(i), ondblclick: () => onDrill(view[i]),
       }, h("td", { class: "rn", text: i + 1 }), cols.map(c => {
         const v = r[c.name];
-        const text = fmt(v, c.format);
+        const named = codeName(c, v);
+        const text = named ?? fmt(v, c.format);
         const drawn = c.display && c.display !== "bar";   // the cell holds an element, not just text
         const td = h("td", { class: [c.align === "right" ? "r" : "", drawn ? "" : tone(v, c.color, r), c.format === "json" ? "js" : "",
           c.display ? "d-" + c.display : "", flashed(r, c.name) ? "flash" : ""].filter(Boolean).join(" ") || null,
-          title: c.format === "json" ? text : null, text: drawn ? null : text });
-        if (c.display === "badge") td.append(badge(r, c));
+          title: c.format === "json" ? text : named !== null ? String(v) : null, text: drawn ? null : text });
+        if (c.display === "badge") td.append(badge(r, c, g.columns));
         else if (c.display === "meter") td.append(c.of ? meter(v, r[c.of]) : meter(v));
         else if (c.display === "steps") td.append(steps(v, c.steps));
         else if (c.display === "spark") td.append(spark(v));

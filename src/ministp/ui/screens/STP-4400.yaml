@@ -16,7 +16,7 @@ grids:
       - {name: account_id, source: trading_accounts.account_id, format: code}
       - {name: alias, source: trading_accounts.alias}
       - {name: customer_alias, source: customers.alias}
-      - {name: status, source: account_status_v.status, format: code, color: status}
+      - {name: status, source: account_status_v.status, format: code, codes: ACCOUNT_STATUS, color: status}
       - {name: cash_d0, label: 예수금 D+0, format: money}
       - {name: book_cost, label: 보유 장부금액, format: money}
     actions:

@@ -131,6 +131,8 @@ def screen_markdown(screen: Screen, catalog: dict, lookups=None, menu=None) -> s
                 shown = f"비율 막대(`{c.of}` 대비, 값 / 전체)"
             elif c.steps:
                 shown = "진행 단계(" + " → ".join(c.steps) + "; 끝·진행 중·멈춤·전)"
+            if cd.get("codes"):      # the cell shows the code's name, the code is in the tooltip
+                shown = ", ".join(x for x in (shown, f"코드명(공통코드 `{cd['codes']}`)") if x)
             out.append(f"| `{c.name}` | {_cell(cd['label'])} | {_cell(c.source or '-')} | {_cell(comment)} "
                        f"| {FORMAT_TEXT[c.format]} | {'오른쪽' if c.align == 'right' else '왼쪽'} "
                        f"| {COLOR_TEXT[c.color]} | {shown} |")
