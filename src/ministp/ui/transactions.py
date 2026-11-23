@@ -162,23 +162,29 @@ def _nav_bridge(c: TxContext, p) -> TxResult:
         raise TxError(e.args[0]) from e
 
 
-def _price_days(c: TxContext, p) -> TxResult:
+def _price_symbols(c: TxContext, p) -> TxResult:
     from ..pricecheck import BAD, WARN, PriceRules
-    ds = q.price_check_days(c.books.ledger, c.calendar, c.today, p.get("date_from"), p.get("date_to"))
+    ds = q.price_trend_symbols(c.books.ledger, p.get("date_from"), p.get("date_to"))
     rules = PriceRules()
     meta = {"warn_change": q._pct(rules.warn_change), "limit_change": q._pct(rules.limit_change),
             "warn_exec_gap": q._pct(rules.warn_exec_gap)}
     rows = ds.records()
-    opens = next((r for r in rows if r["result"] == BAD), None) or next((r for r in rows if r["result"] == WARN), None)
+    opens = next((r for r in rows if r["level"] == BAD), None) or next((r for r in rows if r["level"] == WARN), None)
     if opens:
-        meta["selected"] = opens["date"].isoformat()   # the latest day with a close to look at
+        meta["selected"] = opens["symbol"]      # a symbol with a close to look at in the period
     return TxResult({"main": ds}, meta)
 
 
 def _price_rows(c: TxContext, p) -> TxResult:
-    if not p.get("date"):
-        raise TxError("기준일이 필요해요")
-    return TxResult({"main": q.price_check_rows(c.books.ledger, p["date"])})
+    if not p.get("symbol"):
+        raise TxError("종목코드가 필요해요")
+    ds = q.price_trend_rows(c.books.ledger, p["symbol"], p.get("date_from"), p.get("date_to"))
+    closes = [(r["close"], r["date"]) for r in ds.records()]
+    meta = {}
+    if closes:
+        (hi, hi_day), (lo, lo_day) = max(closes), min(closes)
+        meta = {"high": f"{hi:,} ({hi_day:%m-%d})", "low": f"{lo:,} ({lo_day:%m-%d})"}
+    return TxResult({"main": ds}, meta)
 
 
 def _close_days(c: TxContext, p) -> TxResult:
@@ -235,10 +241,13 @@ def _instruments(c: TxContext, p) -> TxResult:
     return TxResult({"main": q.instrument_master(c.books)})
 
 
-def _instrument_events(c: TxContext, p) -> TxResult:
+def _instrument_rules(c: TxContext, p) -> TxResult:
     if not p.get("symbol"):
         raise TxError("종목코드가 필요해요")
-    return TxResult({"main": q.instrument_events(c.conn, p["symbol"])})
+    try:
+        return TxResult({"main": q.instrument_rules(c.books, p["symbol"], c.today)})
+    except KeyError as e:
+        raise TxError(e.args[0]) from e
 
 
 def _account(c: TxContext, p) -> TxResult:
@@ -291,10 +300,10 @@ TRANSACTIONS: dict[str, Tx] = {t.tx_id: t for t in [
     Tx("STP2110R01", "원장 점검 항목", {}, _integrity),
     Tx("STP2110R02", "점검 항목의 판정과 값 비교", {"title": "text"}, _integrity_rows),
     Tx("STP2200R01", "기준가 추이", {"date_from": "date", "date_to": "date"}, _nav),
-    Tx("STP2210R01", "기준일별 순자산 변동", {"date_from": "date", "date_to": "date"}, _nav_changes),
-    Tx("STP2210R02", "기준일의 순자산 변동 원인", {"date": "date"}, _nav_bridge),
-    Tx("STP2300R01", "기준일별 시세 점검 요약", {"date_from": "date", "date_to": "date"}, _price_days),
-    Tx("STP2300R02", "기준일의 종목별 종가 점검", {"date": "date"}, _price_rows),
+    Tx("STP2210R01", "기준가 이력", {"date_from": "date", "date_to": "date"}, _nav_changes),
+    Tx("STP2210R02", "기준일의 변동 상세 내역", {"date": "date"}, _nav_bridge),
+    Tx("STP2300R01", "종목별 기간 시세", {"date_from": "date", "date_to": "date"}, _price_symbols),
+    Tx("STP2300R02", "종목의 기간별 종가", {"symbol": "text", "date_from": "date", "date_to": "date"}, _price_rows),
     Tx("STP2400R01", "영업일별 마감 점검 요약", {"date_from": "date", "date_to": "date"}, _close_days),
     Tx("STP2400R02", "영업일의 작업 단계별 상태", {"date": "date"}, _close_steps),
     Tx("STP3100R01", "원장 이벤트 목록", {"date_from": "date", "date_to": "date", "event_type": "text",
@@ -304,11 +313,11 @@ TRANSACTIONS: dict[str, Tx] = {t.tx_id: t for t in [
                                             "symbol": "text", "seq": "int"}, _journal_events),
     Tx("STP3200R02", "이벤트의 분개", {"seq": "int"}, _journal),
     Tx("STP3300R01", "시산표", {}, _trial),
+    Tx("STP3400R01", "계좌 요약", {}, _account),
+    Tx("STP3400R02", "예수금 D+n", {}, _ladder),
+    Tx("STP3400R03", "결제 예정", {}, _settlements),
     Tx("STP4100R01", "종목정보", {}, _instruments),
-    Tx("STP4100R02", "종목 원장 이벤트", {"symbol": "text"}, _instrument_events),
-    Tx("STP4200R01", "계좌 요약", {}, _account),
-    Tx("STP4200R02", "예수금 D+n", {}, _ladder),
-    Tx("STP4200R03", "결제 예정", {}, _settlements),
+    Tx("STP4100R02", "종목에 적용되는 거래 기준", {"symbol": "text"}, _instrument_rules),
     Tx("STP4300R01", "수수료·세금", {}, _fees),
     Tx("STP4300R02", "결제주기 규칙", {}, _settlement_rules),
     Tx("STP4300R03", "호가단위", {}, _ticks),

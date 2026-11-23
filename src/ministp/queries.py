@@ -372,7 +372,7 @@ def nav_series(ledger: Ledger, date_from: dt.date | None = None, date_to: dt.dat
                     "nav_per_1000"), rows)
 
 
-# ---------- STP-2210 기준가 변동 원인 ----------
+# ---------- STP-2210 기준가 내역 (이력과 변동 상세) ----------
 
 # What an account's movement does to net assets: equity put in or taken out, income, expense.
 # Assets and liabilities are what net assets is made of, so they explain nothing here.
@@ -385,6 +385,14 @@ class NavChange:
     prev_net_assets: int
     net_assets: int
     moves: tuple[tuple[str, str, str, int], ...]   # (구분, 계정코드, 계정명, 순자산에 준 영향)
+    units: int = 0
+    nav_per_1000: object = None                    # Decimal, as the NAV screen shows it
+    prev_nav_per_1000: object = None               # None on the first day
+    struck: int = 1                                # how many times the day's NAV was recorded
+
+    @property
+    def nav_change(self):
+        return None if self.prev_nav_per_1000 is None else self.nav_per_1000 - self.prev_nav_per_1000
 
     @property
     def change(self) -> int:
@@ -406,11 +414,13 @@ def nav_changes(ledger: Ledger) -> list[NavChange]:
     says why it moved (투자원금, 수익, 비용 accounts). The two are worked out separately, so their
     difference is a check: it is 0 when every won of the change has an entry behind it.
     A day struck more than once counts once, at its last NAV."""
-    days: dict[dt.date, tuple[int, list]] = {}
+    days: dict[dt.date, tuple] = {}
     for row, entries in ledger.nav_steps():
-        days[row.date] = (row.net_assets, days.get(row.date, (0, []))[1] + list(entries))
-    out, prev = [], 0
-    for date, (net, entries) in days.items():
+        _, before, struck = days.get(row.date, (None, [], 0))
+        days[row.date] = (row, before + list(entries), struck + 1)
+    out, prev, prev_nav = [], 0, None
+    for date, (row, entries, struck) in days.items():
+        net = row.net_assets
         effect: dict = {}
         for e in entries:
             for ln in e.lines:
@@ -418,17 +428,20 @@ def nav_changes(ledger: Ledger) -> list[NavChange]:
                     effect[ln.account] = effect.get(ln.account, 0) + ln.credit - ln.debit
         moves = tuple((MOVE_KIND[a.code[0]], a.code, a.value[1], v)
                       for a, v in sorted(effect.items(), key=lambda kv: kv[0].code) if v)
-        out.append(NavChange(date, prev, net, moves))
-        prev = net
+        out.append(NavChange(date, prev, net, moves, row.units, row.nav_per_1000, prev_nav, struck))
+        prev, prev_nav = net, row.nav_per_1000
     return out
 
 
 def nav_change_days(ledger: Ledger, date_from: dt.date | None = None, date_to: dt.date | None = None) -> Dataset:
-    """기준일 목록, newest first: 순자산, 전일 대비 변동, 분개로 설명된 변동, 설명되지 않은 차이."""
-    rows = tuple((c.date, c.net_assets, c.change, c.explained, c.unexplained, RESULT_TEXT[c.unexplained == 0])
+    """기준가 이력, newest first: the day's NAV record (기준가, 전일 대비, 순자산, 좌수, 산출 횟수) and whether
+    the journal explains the change in net assets (분개로 설명된 변동, 설명되지 않은 차이)."""
+    rows = tuple((c.date, c.nav_per_1000, c.nav_change, c.net_assets, c.units, c.struck, c.change, c.explained,
+                  c.unexplained, RESULT_TEXT[c.unexplained == 0])
                  for c in reversed(nav_changes(ledger))
                  if (date_from is None or c.date >= date_from) and (date_to is None or c.date <= date_to))
-    return Dataset(("date", "net_assets", "change", "explained", "unexplained", "result"), rows)
+    return Dataset(("date", "nav_per_1000", "nav_change", "net_assets", "units", "struck", "change", "explained",
+                    "unexplained", "result"), rows)
 
 
 def nav_change_bridge(ledger: Ledger, date: dt.date) -> Dataset:
@@ -449,55 +462,53 @@ def nav_change_bridge(ledger: Ledger, date: dt.date) -> Dataset:
     return Dataset(("kind", "code", "name", "amount", "running"), tuple(rows))
 
 
-# ---------- STP-2300 시세 점검 ----------
-
-NOT_VALUED = "평가 전"
-
+# ---------- STP-2300 시세 추이 ----------
 
 def _rate_pct(rate) -> float | None:
     """0.0123 -> 1.23 (a percentage with two places, for a column that is coloured by its sign)."""
     return None if rate is None else float(round(rate * 100, 2))
 
 
-def price_check_days(ledger: Ledger, calendar, today: dt.date, date_from: dt.date | None = None,
-                     date_to: dt.date | None = None) -> Dataset:
-    """기준일 목록, newest first: how many closes the books took that day and how many were flagged.
-    A business day that has holdings but no close yet is listed first as 평가 전 (the day's `daily` has
-    not run): its rows are what will be valued, against the last close the ledger knows."""
-    from .pricecheck import BAD, WARN, price_checks, worst
-    days: dict[dt.date, list] = {}
-    for c in price_checks(ledger):
-        days.setdefault(c.date, []).append(c.level)
-    rows = [(d, len(levels), levels.count(BAD), levels.count(WARN), worst(levels))
-            for d, levels in sorted(days.items(), reverse=True)]
-    held = [s for s, p in ledger.positions().items() if p.qty]
-    if held and today not in days and calendar.is_business_day(today) and (not days or today > max(days)):
-        rows.insert(0, (today, len(held), None, None, NOT_VALUED))
-    return Dataset(("date", "symbols", "flagged", "warned", "result"),
-                   tuple(r for r in rows if (date_from is None or r[0] >= date_from)
-                         and (date_to is None or r[0] <= date_to)))
+def _in_period(checks, date_from: dt.date | None, date_to: dt.date | None) -> list:
+    return [c for c in checks if (date_from is None or c.date >= date_from) and (date_to is None or c.date <= date_to)]
 
 
-def price_check_rows(ledger: Ledger, date: dt.date) -> Dataset:
-    """One day's closes, each against the close before it and the day's executions, worst first.
-    A day the books have not valued yet lists the holdings with the last close the ledger knows."""
-    from .pricecheck import _RANK, price_checks
-    checks = price_checks(ledger)
-    cols = ("symbol", "instrument_name", "asset_type", "close", "prev_date", "prev_close", "change",
-            "exec_gap", "level", "reasons")
+def price_trend_symbols(ledger: Ledger, date_from: dt.date | None = None, date_to: dt.date | None = None) -> Dataset:
+    """종목별 기간 시세: one row for every symbol the books took a close for in the period.
 
-    def named(symbol):
+    기간 등락 is the last close against the close before the period (the first close of the period when
+    there is none before it), so a one-day period reads as that day against the day before. `trend` is the
+    period's closes, oldest first. `level` is the worst result of the period's checks on the closes themselves
+    (pricecheck: tick grid, valuation and NAV at the same close, the price limit): whether a close can be a
+    close, not why the price moved. The period is carried on each row for the detail to use."""
+    from decimal import Decimal
+
+    from .pricecheck import price_checks, worst
+    by_symbol: dict[str, list] = {}
+    for c in _in_period(price_checks(ledger), date_from, date_to):
+        by_symbol.setdefault(c.symbol, []).append(c)
+    rows = []
+    for symbol, mine in sorted(by_symbol.items()):
         inst = ledger.instruments.get(symbol)
-        return (symbol, inst.name if inst else None, inst.asset_type.value if inst else None)
+        base = mine[0].prev_close or mine[0].close
+        closes = [c.close for c in mine]
+        rows.append((symbol, inst.name if inst else None, inst.asset_type.value if inst else None, len(mine), base,
+                     closes[-1], mine[-1].date, _rate_pct(Decimal(closes[-1]) / base - 1) if base > 0 else None,
+                     max(closes), min(closes), closes, worst(c.level for c in mine), date_from, date_to))
+    return Dataset(("symbol", "instrument_name", "asset_type", "days", "base_close", "last_close", "last_date",
+                    "change", "high", "low", "trend", "level", "date_from", "date_to"), tuple(rows))
 
-    mine = sorted((c for c in checks if c.date == date), key=lambda c: (-_RANK[c.level], c.symbol))
-    if mine:
-        return Dataset(cols, tuple((*named(c.symbol), c.close, c.prev_date, c.prev_close, _rate_pct(c.change),
-                                    _rate_pct(c.exec_gap), c.level, " · ".join(c.reasons)) for c in mine))
-    last = {c.symbol: c for c in checks if c.date < date}
-    return Dataset(cols, tuple((*named(s), None, last[s].date if s in last else None,
-                                last[s].close if s in last else None, None, None, NOT_VALUED, "")
-                               for s, p in sorted(ledger.positions().items()) if p.qty))
+
+def price_trend_rows(ledger: Ledger, symbol: str, date_from: dt.date | None = None,
+                     date_to: dt.date | None = None) -> Dataset:
+    """One symbol's closes over the period, newest first: each against the close before it and the day's
+    executions, with what the checks on the close said."""
+    from .pricecheck import price_checks
+    mine = [c for c in _in_period(price_checks(ledger), date_from, date_to) if c.symbol == symbol]
+    return Dataset(("date", "close", "prev_close", "diff", "change", "exec_gap", "level", "reasons"),
+                   tuple((c.date, c.close, c.prev_close, c.close - c.prev_close if c.prev_close else None,
+                          _rate_pct(c.change), _rate_pct(c.exec_gap), c.level, " · ".join(c.reasons))
+                         for c in reversed(mine)))
 
 
 # ---------- STP-2400 마감 점검 ----------
@@ -672,10 +683,12 @@ def order_check(books, day: dt.date, symbol: str, side: str, qty: int, limit_pri
                               cap.max_buy_qty, cap.held_qty, cap.pending_sell_qty, cap.sellable_qty,
                               reason == "", reason, REASON_TEXT.get(reason, reason)),))
 
-# ---------- STP-4100·4200·4300 기준정보 (조회 전용) ----------
+# ---------- STP-4100·4300 기준정보 (조회 전용) ----------
 # Reference data as the system really uses it: instruments from the DB, fee rates,
 # settlement rules, tick sizes and the holiday calendar from the objects the
 # ledger is built with. Nothing here is a second copy that could drift.
+# Reference data is what holds whichever account is looked at: no holdings, no balances and
+# no closes the books happened to take. Those are the account's (STP-1100, STP-2300, STP-3400).
 
 WEEKDAYS = "월화수목금토일"
 
@@ -687,28 +700,41 @@ def _pct(rate) -> str:
 
 
 def instrument_master(books) -> Dataset:
-    """종목정보: 등록 종목, 최근 종가와 그 가격의 호가단위, 매도 세율, 보유."""
-    from .ticks import tick_size
+    """종목정보: 등록 종목과 그 종목을 팔 때의 세율. 계좌와 무관한 값만 있어요."""
     fees = books.ledger.fees
-    close_day, closes = last_closes(books.ledger)
-    held = books.ledger.positions()
     rows = []
     for sym, inst in sorted(books.instruments.items()):
-        price = closes.get(sym)
         tx, rural = fees.sell_tax_rates[(inst.market, inst.asset_type)]
-        pos = held.get(sym)
-        rows.append((sym, inst.name, inst.market.value, inst.asset_type.value, price,
-                     close_day if price is not None else None,
-                     tick_size(price, inst.asset_type) if price is not None else None,
-                     _pct(tx + rural), pos.qty if pos else 0, pos.book_cost if pos else 0))
-    return Dataset(("symbol", "instrument_name", "market", "asset_type", "last_close", "close_date", "tick",
-                    "sell_tax", "qty", "book_cost"), tuple(rows))
+        rows.append((sym, inst.name, inst.market.value, inst.asset_type.value, _pct(tx + rural)))
+    return Dataset(("symbol", "instrument_name", "market", "asset_type", "sell_tax"), tuple(rows))
 
 
-def instrument_events(conn: psycopg.Connection, symbol: str) -> Dataset:
-    """한 종목의 원장 이벤트 (개시 보유, 체결), newest first. 결제 이벤트는 체결ID로만 이어져 여기엔 없어요."""
-    return ledger_events(conn, symbol=symbol)
+def instrument_rules(books, symbol: str, today: dt.date) -> Dataset:
+    """한 종목에 적용되는 거래 기준: 수수료, 매도 세금, 결제주기, 호가단위. The same objects the ledger and the
+    order check calculate with (STP-4300 shows them for every market and asset type).
+    KeyError when the symbol is not registered."""
+    from .ticks import tick_table
+    inst = books.instruments.get(symbol)
+    if inst is None:
+        raise KeyError(f"등록되지 않은 종목이에요: {symbol}")
+    fees, rules = books.ledger.fees, books.ledger.settlement_cycle.rules
+    tx, rural = fees.sell_tax_rates[(inst.market, inst.asset_type)]
+    cycle = max((r for r in rules if r[0] <= today), key=lambda r: r[0], default=None)
+    rows = [("수수료", "위탁수수료율", _pct(fees.commission_rate), "매수·매도 모두, 체결금액 기준"),
+            ("수수료", "수수료 절사 단위", f"{fees.commission_unit:,}원", "이 단위 미만은 버려요"),
+            ("세금", "증권거래세율", _pct(tx), "매도할 때만"),
+            ("세금", "농어촌특별세율", _pct(rural), "매도할 때만"),
+            ("결제", "결제주기", f"T+{cycle[1]}" if cycle else None, "오늘 체결하면 적용되는 규칙")]
+    for asset, lo, hi, tick in tick_table():
+        if asset == inst.asset_type.value:
+            band = "모든 가격" if not lo and hi is None else f"{lo:,}원 이상" if hi is None else f"{hi:,}원 미만"
+            rows.append(("호가단위", band, f"{tick:,}원", ""))
+    return Dataset(("kind", "item", "value", "note"), tuple(rows))
 
+
+# ---------- STP-3400 계좌정보 ----------
+# The account's own state (balances, what is still to settle, the last recon): it is the books' view of one
+# account, so it sits with the ledger screens and not with reference data.
 
 def account_summary(books, calendar, today: dt.date) -> Dataset:
     """계좌 요약 (원장 기준). 계좌번호와 키는 DB에 없고 화면에도 나오지 않아요."""
@@ -820,6 +846,9 @@ TRANSACTIONS = {
     "STP3200R01": journal_events,
     "STP3200R02": event_journal,
     "STP3300R01": trial_balance,
+    "STP3400R01": account_summary,
+    "STP3400R02": cash_ladder,
+    "STP3400R03": pending_settlements,
     "STP2100R01": recon_history,
     "STP2110R01": integrity_checks,
     "STP2110R02": integrity_compared,
@@ -827,15 +856,12 @@ TRANSACTIONS = {
     "STP2200R01": nav_series,
     "STP2210R01": nav_change_days,
     "STP2210R02": nav_change_bridge,
-    "STP2300R01": price_check_days,
-    "STP2300R02": price_check_rows,
+    "STP2300R01": price_trend_symbols,
+    "STP2300R02": price_trend_rows,
     "STP2400R01": close_days,
     "STP2400R02": close_steps,
     "STP4100R01": instrument_master,
-    "STP4100R02": instrument_events,
-    "STP4200R01": account_summary,
-    "STP4200R02": cash_ladder,
-    "STP4200R03": pending_settlements,
+    "STP4100R02": instrument_rules,
     "STP4300R01": fee_rules,
     "STP4300R02": settlement_rules,
     "STP4300R03": tick_rules,

@@ -28,7 +28,7 @@ grids:
     link: {date: date}
     drill:
       by: screen
-      screens: [STP-4200, STP-1200, STP-2300, STP-2210, STP-2100, STP-2110]
+      screens: [STP-3400, STP-1200, STP-2300, STP-2210, STP-2100, STP-2110]
       params: {day: date, date_from: date, date_to: date}
     columns:
       - {name: "no", label: 순서, format: number, hidden: true}
