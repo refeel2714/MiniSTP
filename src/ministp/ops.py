@@ -383,7 +383,19 @@ class IntradayRunner:
             self.stats.feed_drops += 1
             self.out(f"[{at:%H:%M:%S}] 체결통보 연결 끊김: {detail}. 1분마다 조회로 보완해요.")
 
+    def settle(self) -> list[str]:
+        """R-12 in IBOR: book the settlements due today as soon as the runner sees the day, the way the
+        broker's 예수금 D+0 already includes them, instead of waiting for `daily`. Without this the
+        intraday cash recon breaks on every settlement day until the close."""
+        settled = []
+        while (sd := self.books.ledger.next_settlement_date(self.day)) is not None:
+            settled += self.books.ledger.settle_due(sd)
+        if settled:
+            self.out(f"결제 {len(settled)}건 반영, 예수금 D+0 {self.books.ledger.cash_balance():,}")
+        return settled
+
     def poll(self, why: str = "") -> list[str]:
+        self.settle()
         booked = self.session.sync(self.day)
         self._last_poll = self.monotonic()
         if booked:
