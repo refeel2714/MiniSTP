@@ -30,6 +30,8 @@
     "일치": "ok", "판단 완료": "warn", "불일치": "bad", "대사 없음": "miss",   // miss: something owed is not there
     "결제 완료": "ok", "결제 대기": "info", "체결 대기": "info", "부분 체결": "warn",   // info: on its way, nothing to do
     "접수 거부": "bad", "결제 지연": "bad", "접수 기록 없음": "miss",
+    "정상": "ok", "주의": "warn", "확인 필요": "bad", "평가 전": "info",
+    "완료": "ok", "대기": "info", "누락": "miss", "점검 완료": "ok", "진행 중": "info",
   };
 
   function h(tag, attrs, ...kids) {
@@ -678,7 +680,10 @@
 
     function drill(g, row) {
       if (!g.drill || !row) return;
-      if (g.drill.screen === def.id) {
+      // one screen for every row, or the one the row itself names (only a screen the definition lists)
+      const target = g.drill.by ? row[g.drill.by] : g.drill.screen;
+      if (g.drill.by && !(g.drill.screens || []).includes(target)) return;
+      if (target === def.id) {
         for (const [cond, col] of Object.entries(g.drill.params || {})) if (condEls[cond]) condEls[cond].value = row[col] ?? "";
         const first = def.conditions.find(c => c.required && condValues()[c.name] === undefined);
         if (first) condEls[first.name].focus();
@@ -687,7 +692,7 @@
       }
       const q = new URLSearchParams();
       for (const [cond, col] of Object.entries(g.drill.params || {})) if (row[col] != null) q.set(cond, row[col]);
-      location.href = "/screen/" + g.drill.screen + "?" + q.toString();
+      location.href = "/screen/" + target + "?" + q.toString();
     }
 
     // 처리 버튼: the input window starts from the selected row (and what the grid was opened with);

@@ -144,6 +144,58 @@ def _nav(c: TxContext, p) -> TxResult:
     return TxResult({"main": ds}, {"clean_streak": _streak(c), "gate_days": GATE_DAYS})
 
 
+def _nav_changes(c: TxContext, p) -> TxResult:
+    ds = q.nav_change_days(c.books.ledger, p.get("date_from"), p.get("date_to"))
+    off = [r["date"] for r in ds.records() if r["unexplained"]]
+    meta = {"all_explained": not off, "unexplained_days": len(off)}
+    if off:
+        meta["selected"] = off[0].isoformat()   # the latest day with a won no entry explains
+    return TxResult({"main": ds}, meta)
+
+
+def _nav_bridge(c: TxContext, p) -> TxResult:
+    if not p.get("date"):
+        raise TxError("기준일이 필요해요")
+    try:
+        return TxResult({"main": q.nav_change_bridge(c.books.ledger, p["date"])})
+    except KeyError as e:
+        raise TxError(e.args[0]) from e
+
+
+def _price_days(c: TxContext, p) -> TxResult:
+    from ..pricecheck import BAD, WARN, PriceRules
+    ds = q.price_check_days(c.books.ledger, c.calendar, c.today, p.get("date_from"), p.get("date_to"))
+    rules = PriceRules()
+    meta = {"warn_change": q._pct(rules.warn_change), "limit_change": q._pct(rules.limit_change),
+            "warn_exec_gap": q._pct(rules.warn_exec_gap)}
+    rows = ds.records()
+    opens = next((r for r in rows if r["result"] == BAD), None) or next((r for r in rows if r["result"] == WARN), None)
+    if opens:
+        meta["selected"] = opens["date"].isoformat()   # the latest day with a close to look at
+    return TxResult({"main": ds}, meta)
+
+
+def _price_rows(c: TxContext, p) -> TxResult:
+    if not p.get("date"):
+        raise TxError("기준일이 필요해요")
+    return TxResult({"main": q.price_check_rows(c.books.ledger, p["date"])})
+
+
+def _close_days(c: TxContext, p) -> TxResult:
+    from ..closeboard import DAY_BAD
+    ds = q.close_days(c.conn, c.calendar, c.fees, c.today, p.get("date_from"), p.get("date_to"))
+    return TxResult({"main": ds}, {"attention_days": sum(r["state"] == DAY_BAD for r in ds.records())})
+
+
+def _close_steps(c: TxContext, p) -> TxResult:
+    if not p.get("date"):
+        raise TxError("영업일이 필요해요")
+    try:
+        return TxResult({"main": q.close_steps(c.conn, c.calendar, c.fees, c.today, p["date"])})
+    except KeyError as e:
+        raise TxError(e.args[0]) from e
+
+
 def _events(c: TxContext, p) -> TxResult:
     return TxResult({"main": q.ledger_events(c.conn, p.get("date_from"), p.get("date_to"),
                                              p.get("event_type"), p.get("symbol"), p.get("seq"))})
@@ -239,6 +291,12 @@ TRANSACTIONS: dict[str, Tx] = {t.tx_id: t for t in [
     Tx("STP2110R01", "원장 점검 항목", {}, _integrity),
     Tx("STP2110R02", "점검 항목의 판정과 값 비교", {"title": "text"}, _integrity_rows),
     Tx("STP2200R01", "기준가 추이", {"date_from": "date", "date_to": "date"}, _nav),
+    Tx("STP2210R01", "기준일별 순자산 변동", {"date_from": "date", "date_to": "date"}, _nav_changes),
+    Tx("STP2210R02", "기준일의 순자산 변동 원인", {"date": "date"}, _nav_bridge),
+    Tx("STP2300R01", "기준일별 시세 점검 요약", {"date_from": "date", "date_to": "date"}, _price_days),
+    Tx("STP2300R02", "기준일의 종목별 종가 점검", {"date": "date"}, _price_rows),
+    Tx("STP2400R01", "영업일별 마감 점검 요약", {"date_from": "date", "date_to": "date"}, _close_days),
+    Tx("STP2400R02", "영업일의 작업 단계별 상태", {"date": "date"}, _close_steps),
     Tx("STP3100R01", "원장 이벤트 목록", {"date_from": "date", "date_to": "date", "event_type": "text",
                                        "symbol": "text", "seq": "int"}, _events),
     Tx("STP3100R02", "이벤트의 보유·예수금 변동", {"seq": "int"}, _trace),
