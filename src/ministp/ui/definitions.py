@@ -198,6 +198,81 @@ def load_lookups(path=None) -> dict[str, Lookup]:
         raise DefinitionError(f"lookups.yaml: 형식 오류 {e}") from e
 
 
+# ---------- 화면 분류 (menu.yaml) ----------
+# 화면번호 STP-ABCC: A 대분류, AB 중분류, CC 그 안의 순번. The number is the classification, so the
+# menu tree, the breadcrumb and the 화면정의서 cannot disagree about where a screen belongs.
+
+@dataclass(frozen=True)
+class MenuGroup:
+    id: str                     # 중분류: two digits, the first is its 대분류
+    name: str
+
+
+@dataclass(frozen=True)
+class MenuArea:
+    id: str                     # 대분류: one digit
+    name: str
+    note: str
+    groups: tuple[MenuGroup, ...]
+
+
+def load_menu(path=None) -> list[MenuArea]:
+    f = path or files("ministp.ui").joinpath("menu.yaml")
+    raw = yaml.safe_load(f.read_text(encoding="utf-8")) or []
+    try:
+        return [MenuArea(str(a["id"]), a["name"], a.get("note", ""),
+                         tuple(MenuGroup(str(g["id"]), g["name"]) for g in a["groups"])) for a in raw]
+    except (KeyError, TypeError) as e:
+        raise DefinitionError(f"menu.yaml: 형식 오류 {e}") from e
+
+
+def menu_problems(menu: list[MenuArea], screens: dict[str, Screen]) -> list[str]:
+    """Every screen number falls in one 대분류 and one 중분류 of menu.yaml, and nothing there is empty."""
+    errs = []
+    areas = [a.id for a in menu]
+    groups = [g.id for a in menu for g in a.groups]
+    for a in menu:
+        if not re.fullmatch(r"[1-9]", a.id):
+            errs.append(f"menu.yaml: 대분류 번호는 1~9 한 자리 ({a.id} {a.name})")
+        for g in a.groups:
+            if not re.fullmatch(r"[1-9][0-9]", g.id) or g.id[0] != a.id:
+                errs.append(f"menu.yaml: 중분류 {g.id} {g.name}은 대분류 {a.id}로 시작하는 두 자리여야 해요")
+    errs += [f"menu.yaml: 대분류 번호 중복 {x}" for x in sorted({x for x in areas if areas.count(x) > 1})]
+    errs += [f"menu.yaml: 중분류 번호 중복 {x}" for x in sorted({x for x in groups if groups.count(x) > 1})]
+    used = set()
+    for s in screens.values():
+        if not SCREEN_ID.match(s.id):
+            continue                                    # validate() reports the number's format
+        digits = s.id.removeprefix("STP-")
+        if digits[0] not in areas:
+            errs.append(f"{s.id} {s.title}: 대분류 {digits[0]}이 menu.yaml에 없어요")
+        elif digits[:2] not in groups:
+            errs.append(f"{s.id} {s.title}: 중분류 {digits[:2]}가 menu.yaml에 없어요")
+        used.add(digits[:2])
+    errs += [f"menu.yaml: 중분류 {g.id} {g.name}에 화면이 없어요" for a in menu for g in a.groups if g.id not in used]
+    return errs
+
+
+def menu_tree(menu: list[MenuArea], screens: dict[str, Screen]) -> list[dict]:
+    """대분류 → 중분류 → 화면, in number order: what the left menu, the home page and the index doc draw."""
+    by_group: dict[str, list[dict]] = {}
+    for s in sorted(screens.values(), key=lambda s: s.id):
+        by_group.setdefault(s.id.removeprefix("STP-")[:2], []).append({"id": s.id, "title": s.title})
+    return [{"id": a.id, "name": a.name, "note": a.note,
+             "groups": [{"id": g.id, "name": g.name, "screens": by_group.get(g.id, [])} for g in a.groups]}
+            for a in menu]
+
+
+def menu_path(menu: list[MenuArea], screen_id: str) -> list[str]:
+    """[대분류 이름, 중분류 이름] of a screen number; empty when menu.yaml does not hold it."""
+    digits = screen_id.removeprefix("STP-")
+    for a in menu:
+        for g in a.groups:
+            if g.id == digits[:2]:
+                return [a.name, g.name]
+    return []
+
+
 def short(comment: str | None) -> str:
     return (comment or "").split(" (")[0].strip()
 
