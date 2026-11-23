@@ -86,7 +86,12 @@ class SimBroker:
         return OrderAck(no, "00950")
 
     def cancel_order(self, ack):
-        raise AssertionError("not used")
+        o = self.orders[self.today][ack.order_no]
+        if o.filled_qty + o.canceled_qty >= o.qty:
+            raise RuntimeError("APBK0917 정정취소가능수량 없음")
+        self.orders[self.today][ack.order_no] = BrokerOrder(o.order_no, o.symbol, o.side, o.qty, o.filled_qty,
+                                                            o.filled_amount, o.qty - o.filled_qty, 0)
+        self.calls.append(("cancel", ack.order_no))
 
     def daily_orders(self, day):
         return list(self.orders.get(day, {}).values())
@@ -187,6 +192,23 @@ def test_fill_after_order_command_is_booked_by_daily(conn, broker):
     broker.fill("0000000001", 80_000)  # fills later in the day
     rep = daily_close(books(conn), broker, day)
     assert rep.booked == ["20261120-0000000001-1"] and rep.clean
+
+
+def test_an_order_after_a_refused_one_and_a_restart_gets_a_new_number(conn, broker):
+    """Found by the random operations test: the order check refuses #2 (never stored), #3 is placed,
+    and the next process used to count 2 stored rows and hand out #3 again (duplicate order)."""
+    day = D("2026-11-20")
+    broker.set_day(day)
+    open_books(books(conn), broker, day)
+    broker.orders[day] = {}
+    session, first = place_order(books(conn), broker, day, "069500", Side.BUY, 1, limit_price=80_000)
+    assert session.submit(day, "069500", Side.SELL, 99) is None            # refused: short sell
+    third = session.submit(day, "069500", Side.BUY, 1, limit_price=80_000)
+    assert (first, third) == ("S20261120-0001", "S20261120-0003")
+    _, fourth = place_order(books(conn), broker, day, "069500", Side.BUY, 1, limit_price=80_000)
+    assert fourth == "S20261120-0004"
+    assert [r[0] for r in conn.execute("select client_id from oms_orders order by 1")] == [
+        "S20261120-0001", "S20261120-0003", "S20261120-0004"]
 
 
 def test_break_then_owner_resolves(conn, broker):

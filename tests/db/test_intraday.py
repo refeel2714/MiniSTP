@@ -187,6 +187,60 @@ def test_a_failing_quote_does_not_stop_the_runner(opened):
     assert r.quotes["069500"].price == 80_540 and any("현재가 다시 받는 중" in line for line in out)
 
 
+def test_cancel_in_the_runner(opened):
+    """R-45: cancel asks the broker first, then waits for the broker's confirmed quantity."""
+    conn, broker = opened
+    r = runner(conn, broker, Clock(), out := [])
+    r.on_command("buy 069500 5 79000")
+    cid = next(iter(r.session.oms.orders))
+    assert r.on_command("cancel 7") is True and "찾지 못했어요" in out[-1]
+    assert r.on_command("cancel 1") is True
+    assert ("cancel", "0000000001") in broker.calls
+    assert r.session.oms.orders[cid].status.value == "CANCELED"          # the poll right after saw it
+    assert any("취소 요청을 증권사가 받았어요" in line for line in out)
+    assert r.session.open_orders() == []                                 # no cash reserved any more
+    assert r.on_command("cancel 1") is True and "CANCELED 상태라 취소할 수 없어요" in out[-1]
+    kind, = conn.execute("select count(*) from broker_snapshots where kind = 'CANCEL_REQUEST'").fetchone()
+    assert kind == 1
+
+
+def test_a_cancel_refused_by_the_broker_changes_nothing(opened):
+    conn, broker = opened
+    r = runner(conn, broker, Clock(), out := [])
+    r.on_command("buy 069500 2 79000")
+    broker.fill("0000000001", 79_000)                 # filled before the cancel got there
+    r.on_command("cancel 1")
+    assert "취소하지 않았어요" in out[-1] and "FILLED" in out[-1]       # the poll first booked the fill
+    assert r.books.ledger.position("069500").qty == 3
+
+
+def test_a_restarted_process_remembers_a_pending_cancel(opened):
+    conn, broker = opened
+    r = runner(conn, broker, Clock(), [])
+    r.on_command("buy 069500 4 79000")
+    broker.cancel_order = lambda ack: broker.calls.append(("cancel", ack.order_no))   # confirmation comes later
+    r.on_command("cancel 1")
+    assert r.session.oms.orders["S20261123-0001"].status.value == "CANCEL_PENDING"
+    again = runner(conn, broker, Clock(), out := [])
+    assert again.session.oms.orders["S20261123-0001"].status.value == "CANCEL_PENDING"
+    again.print_status()
+    assert any("(취소 요청 중)" in line for line in out)
+
+
+def test_cli_cancel(opened, capsys):
+    conn, broker = opened
+    env = {"MINISTP_DATABASE_URL": URL, "MINISTP_KIS_APP_KEY": "k", "MINISTP_KIS_APP_SECRET": "s",
+           "MINISTP_KIS_ACCOUNT": "12345678-01"}
+    at = lambda: dt.datetime(2026, 11, 23, 10, 0)  # noqa: E731
+    assert cli.run(["order", "069500", "buy", "3", "--limit", "79000"], environ=env,
+                   client_factory=lambda cfg: broker, now=at, sleep=lambda s: None) == 0
+    capsys.readouterr()
+    assert cli.run(["cancel", "1"], environ=env, client_factory=lambda cfg: broker, now=at,
+                   sleep=lambda s: None) == 0
+    assert "취소 확인: 체결 0주, 취소 3주" in capsys.readouterr().out
+    assert cli.run(["cancel", "1"], environ=env, client_factory=lambda cfg: broker, now=at,
+                   sleep=lambda s: None) == 1
+    assert "취소할 수 없어요" in capsys.readouterr().out
 def test_settlements_due_today_are_booked_when_the_runner_starts(opened):
     """Found by the random operations test: on a settlement day the broker's 예수금 D+0 already
     includes the settlement, but the ledger only settled at `daily`, so every intraday recon broke."""
