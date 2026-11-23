@@ -25,7 +25,7 @@ from .capacity import Capacity, OpenOrder, capacity, pending_buy_value
 from .fees import FeeSchedule
 from .instruments import AssetType, Instrument, Market
 from .ledger import ExecutionEvent, Ledger, NavEvent, Side
-from .oms import OrderStatus
+from .oms import InvalidTransition, OrderStatus
 from .quotes import KIND as QUOTE_KIND, Quote, latest_quotes, marks, valid_price
 from .recon import Cause, ReconResult, Status
 from .session import Anomaly, TradingSession, failure_text
@@ -115,18 +115,27 @@ def _stored_orders(conn, day: dt.date):
         " where o.trade_date = %s order by o.client_id", (day,)).fetchall()
 
 
+CANCEL_KIND = "CANCEL_REQUEST"   # R-45: a cancel the broker took, so a restarted process knows it
+
+
 def session_for(books: Books, broker: BrokerGateway, day: dt.date) -> TradingSession:
     """A session that knows every order MiniSTP placed today and persists new ones."""
     session = TradingSession(books.ledger, broker)
     rows = _stored_orders(books.conn, day)
+    cancel_requested = {r[0] for r in books.conn.execute(
+        "select payload ->> 'client_id' from broker_snapshots where kind = %s and date = %s",
+        (CANCEL_KIND, day))}
     for cid, sym, side, qty, limit, outcome, order_no, org_no in rows:
         if outcome == "ACCEPTED":
-            session.restore(day, cid, sym, Side(side), qty, limit, OrderAck(order_no, org_no))
+            session.restore(day, cid, sym, Side(side), qty, limit, OrderAck(order_no, org_no),
+                            cancel_requested=cid in cancel_requested)
         elif outcome is None:
             # intent stored but no answer recorded: the process died around the broker call
             session.anomalies.append(Anomaly(day, "UNACKED_ORDER", cid,
                                              f"{side} {sym} x{qty}: 접수 결과 미기록, 증권사 주문내역 확인 필요"))
-    session._seq = len(rows)
+    # Next number after the highest stored one. Orders refused by the order check never reach the DB,
+    # so counting rows would hand out a number already used today (S…-0003 twice).
+    session._seq = max((int(r[0].rsplit("-", 1)[1]) for r in rows), default=0)
     # fill notices an earlier process of today already took (R-76): a resent one is not booked again
     for (n,) in books.conn.execute("select payload -> 'notice' from broker_snapshots"
                                    " where kind = 'FILL_NOTICE' and date = %s", (day,)):
@@ -145,8 +154,34 @@ def session_for(books: Books, broker: BrokerGateway, day: dt.date) -> TradingSes
             books.conn.execute("insert into oms_order_acks (client_id, outcome, order_no, org_no)"
                                " values (%s, 'ACCEPTED', %s, %s)", (cid, ack.order_no, ack.org_no))
 
-    session.on_submit, session.on_ack = on_submit, on_ack
+    def on_cancel(cid, ack):
+        _snapshot(books.conn, day, CANCEL_KIND, {"client_id": cid, "order_no": ack.order_no,
+                                                 "requested_at": dt.datetime.now().isoformat(timespec="seconds")})
+
+    session.on_submit, session.on_ack, session.on_cancel = on_submit, on_ack, on_cancel
     return session
+
+
+def cancel_order(books: Books, broker: BrokerGateway, day: dt.date, ref: str,
+                 wait=None) -> tuple[TradingSession, str]:
+    """R-45: cancel the unfilled rest of one of today's MiniSTP orders (`ref` as `TradingSession.find`).
+    If `wait` is given (callable returning False to stop), poll until the broker confirms."""
+    session = session_for(books, broker, day)
+    session.sync(day)                     # fills that came in first are booked first (R-42)
+    try:
+        cid = session.find(ref)
+    except KeyError:
+        raise OpsError(f"오늘 MiniSTP가 낸 주문 가운데 {ref}을(를) 찾지 못했어요.") from None
+    try:
+        session.cancel(cid)
+    except InvalidTransition as exc:
+        raise OpsError(str(exc).split(": ", 1)[-1]) from None
+    if wait is not None:
+        while True:
+            session.sync(day)
+            if session.oms.orders[cid].status is not OrderStatus.CANCEL_PENDING or not wait():
+                break
+    return session, cid
 
 
 def stored_open_orders(books: Books, day: dt.date) -> list[OpenOrder]:
@@ -389,9 +424,21 @@ class IntradayRunner:
             self.stats.feed_drops += 1
             self.out(f"[{at:%H:%M:%S}] 체결통보 연결 끊김: {detail}. 1분마다 조회로 보완해요.")
 
+    def settle(self) -> list[str]:
+        """R-12 in IBOR: book the settlements due today as soon as the runner sees the day, the way the
+        broker's 예수금 D+0 already includes them, instead of waiting for `daily`. Without this the
+        intraday cash recon breaks on every settlement day until the close."""
+        settled = []
+        while (sd := self.books.ledger.next_settlement_date(self.day)) is not None:
+            settled += self.books.ledger.settle_due(sd)
+        if settled:
+            self.out(f"결제 {len(settled)}건 반영, 예수금 D+0 {self.books.ledger.cash_balance():,}")
+        return settled
+
     def poll(self, why: str = "", gap: str | None = None) -> list[str]:
         """While the feed is up a fill nobody announced is booked only if it is still unannounced at the
         next poll (its notice may be on the way); without the feed it is booked at once."""
+        self.settle()
         booked = self.session.sync(self.day, gap=gap or ("grace" if self.feed_up else "now"))
         self._last_poll = self.monotonic()
         if booked:
@@ -476,6 +523,9 @@ class IntradayRunner:
                 else:
                     self.out(f"주문 {cid} 접수. 체결되면 바로 원장에 반영해요.")
                 return True
+            if cmd == "cancel" and len(parts) == 2:
+                self.cancel(parts[1])
+                return True
             if cmd == "status":
                 self.print_status()
                 return True
@@ -485,8 +535,27 @@ class IntradayRunner:
         except (ValueError, OpsError) as exc:
             self.out(f"오류: {exc}")
             return True
-        self.out("명령: buy 종목 수량 [지정가] | sell 종목 수량 [지정가] | status | recon | quit")
+        self.out("명령: buy 종목 수량 [지정가] | sell 종목 수량 [지정가] | cancel 주문 | status | recon | quit")
         return True
+
+    def cancel(self, ref: str) -> None:
+        """R-45: `cancel 3` (오늘 세 번째 주문), `cancel S20261124-0003` or the broker's order number."""
+        self.poll("취소 전 확인")          # a fill that arrived first is booked first (R-42)
+        try:
+            cid = self.session.find(ref)
+        except KeyError:
+            self.out(f"오늘 MiniSTP가 낸 주문 가운데 {ref}을(를) 찾지 못했어요. status로 미체결 주문을 확인해 주세요.")
+            return
+        try:
+            self.session.cancel(cid)
+        except InvalidTransition as exc:
+            self.out(f"취소하지 않았어요: {str(exc).split(': ', 1)[-1]}")
+            return
+        except Exception as exc:          # the broker refused or the network failed: nothing changed
+            self.out(f"취소 요청 실패: {exc}. 주문은 그대로예요.")
+            return
+        self.out(f"주문 {cid} 취소 요청을 증권사가 받았어요. 취소 확인은 다음 조회 때 반영해요.")
+        self.poll("취소 확인")
 
     def print_status(self) -> None:
         led = self.books.ledger
@@ -510,7 +579,8 @@ class IntradayRunner:
             self.out(f"  평가금액 합계 {value:,}, 평가손익 합계 {pnl:+,} (IBOR, 기준가에는 쓰지 않아요)")
         open_orders = self.session._open_orders()
         for o in open_orders:
-            self.out(f"  미체결 {o.order_id} {o.side} {o.symbol} {o.filled_qty}/{o.qty}")
+            self.out(f"  미체결 {o.order_id} {o.side} {o.symbol} {o.filled_qty}/{o.qty}"
+                     + (" (취소 요청 중)" if o.status is OrderStatus.CANCEL_PENDING else ""))
         s = self.stats
         lat = f", 반영 지연 중앙값 {sorted(s.latencies_ms)[len(s.latencies_ms) // 2]}ms" if s.latencies_ms else ""
         self.out(f"통보 {s.notices}건, 통보로 반영 {s.fills_booked}건, 조회로 반영 {s.polls_booked}건, "
@@ -552,7 +622,7 @@ class IntradayRunner:
         return keep
 
     def run(self, until: dt.time) -> IntradayStats:
-        self.out(f"[{self.now():%H:%M:%S}] 장중 실행 시작. 명령: buy/sell 종목 수량 [지정가], status, recon, quit")
+        self.out(f"[{self.now():%H:%M:%S}] 장중 실행 시작. 명령: buy/sell 종목 수량 [지정가], cancel 주문, status, recon, quit")
         self.poll("시작 시 확인")
         self.quote()
         while self.now().time() < until and self.step():
