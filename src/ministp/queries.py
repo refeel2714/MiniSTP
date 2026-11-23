@@ -365,7 +365,7 @@ def nav_series(ledger: Ledger, date_from: dt.date | None = None, date_to: dt.dat
                     "nav_per_1000"), rows)
 
 
-# ---------- STP-2210 기준가 변동 원인 ----------
+# ---------- STP-2210 기준가 내역 (이력과 변동 상세) ----------
 
 # What an account's movement does to net assets: equity put in or taken out, income, expense.
 # Assets and liabilities are what net assets is made of, so they explain nothing here.
@@ -378,6 +378,14 @@ class NavChange:
     prev_net_assets: int
     net_assets: int
     moves: tuple[tuple[str, str, str, int], ...]   # (구분, 계정코드, 계정명, 순자산에 준 영향)
+    units: int = 0
+    nav_per_1000: object = None                    # Decimal, as the NAV screen shows it
+    prev_nav_per_1000: object = None               # None on the first day
+    struck: int = 1                                # how many times the day's NAV was recorded
+
+    @property
+    def nav_change(self):
+        return None if self.prev_nav_per_1000 is None else self.nav_per_1000 - self.prev_nav_per_1000
 
     @property
     def change(self) -> int:
@@ -399,11 +407,13 @@ def nav_changes(ledger: Ledger) -> list[NavChange]:
     says why it moved (투자원금, 수익, 비용 accounts). The two are worked out separately, so their
     difference is a check: it is 0 when every won of the change has an entry behind it.
     A day struck more than once counts once, at its last NAV."""
-    days: dict[dt.date, tuple[int, list]] = {}
+    days: dict[dt.date, tuple] = {}
     for row, entries in ledger.nav_steps():
-        days[row.date] = (row.net_assets, days.get(row.date, (0, []))[1] + list(entries))
-    out, prev = [], 0
-    for date, (net, entries) in days.items():
+        _, before, struck = days.get(row.date, (None, [], 0))
+        days[row.date] = (row, before + list(entries), struck + 1)
+    out, prev, prev_nav = [], 0, None
+    for date, (row, entries, struck) in days.items():
+        net = row.net_assets
         effect: dict = {}
         for e in entries:
             for ln in e.lines:
@@ -411,17 +421,20 @@ def nav_changes(ledger: Ledger) -> list[NavChange]:
                     effect[ln.account] = effect.get(ln.account, 0) + ln.credit - ln.debit
         moves = tuple((MOVE_KIND[a.code[0]], a.code, a.value[1], v)
                       for a, v in sorted(effect.items(), key=lambda kv: kv[0].code) if v)
-        out.append(NavChange(date, prev, net, moves))
-        prev = net
+        out.append(NavChange(date, prev, net, moves, row.units, row.nav_per_1000, prev_nav, struck))
+        prev, prev_nav = net, row.nav_per_1000
     return out
 
 
 def nav_change_days(ledger: Ledger, date_from: dt.date | None = None, date_to: dt.date | None = None) -> Dataset:
-    """기준일 목록, newest first: 순자산, 전일 대비 변동, 분개로 설명된 변동, 설명되지 않은 차이."""
-    rows = tuple((c.date, c.net_assets, c.change, c.explained, c.unexplained, RESULT_TEXT[c.unexplained == 0])
+    """기준가 이력, newest first: the day's NAV record (기준가, 전일 대비, 순자산, 좌수, 산출 횟수) and whether
+    the journal explains the change in net assets (분개로 설명된 변동, 설명되지 않은 차이)."""
+    rows = tuple((c.date, c.nav_per_1000, c.nav_change, c.net_assets, c.units, c.struck, c.change, c.explained,
+                  c.unexplained, RESULT_TEXT[c.unexplained == 0])
                  for c in reversed(nav_changes(ledger))
                  if (date_from is None or c.date >= date_from) and (date_to is None or c.date <= date_to))
-    return Dataset(("date", "net_assets", "change", "explained", "unexplained", "result"), rows)
+    return Dataset(("date", "nav_per_1000", "nav_change", "net_assets", "units", "struck", "change", "explained",
+                    "unexplained", "result"), rows)
 
 
 def nav_change_bridge(ledger: Ledger, date: dt.date) -> Dataset:
