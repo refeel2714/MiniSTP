@@ -36,7 +36,7 @@ class Script:
 @pytest.mark.parametrize("price,asset,tick", [
     (1_999, AssetType.STOCK, 1), (2_000, AssetType.STOCK, 5), (19_990, AssetType.STOCK, 10),
     (50_000, AssetType.STOCK, 100), (499_500, AssetType.STOCK, 500), (500_000, AssetType.STOCK, 1_000),
-    (52_345, AssetType.ETF, 5),
+    (52_345, AssetType.ETF, 5), (2_000, AssetType.ETF, 5), (1_999, AssetType.ETF, 1), (95, AssetType.ETF, 1),
 ])
 def test_tick_size(price, asset, tick):
     assert tick_size(price, asset) == tick
