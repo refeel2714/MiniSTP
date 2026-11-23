@@ -251,10 +251,23 @@ def test_badge_draws_its_code_inside_and_the_code_keeps_no_column_of_its_own():
     (badge_columns(code="nope"), "이 그리드의 다른 열이 아니에요"),
     (badge_columns(code="name"), "이 그리드의 다른 열이 아니에요"),
     (badge_columns(shape="asset_type"), "이 그리드의 다른 열이 아니에요"),
+    ([Column("qty", "positions_v.qty", format="number", sub="nope")], "아래에 적을 열 nope"),
+    ([Column("qty", "positions_v.qty", format="number", sub="qty")], "아래에 적을 열 qty"),
+    ([Column("qty", "positions_v.qty", format="number", display="bar", sub="w"),
+      Column("w", label="비중", format="rate")], "표시 유형이 없는 칸에만"),
+    ([Column("qty", "positions_v.qty", format="number", sub="w"),
+      Column("w", label="비중", format="rate", display="meter")], "표시 유형 없는 다른 열이 아니에요"),
 ])
 def test_display_problems(cols, problem):
     errs = validate(screen(cols), CATALOG)
     assert any(problem in e for e in errs), errs
+
+
+def test_a_line_under_a_value_takes_no_column_of_its_own():
+    s = screen([Column("qty", "positions_v.qty", format="number", sub="w"), Column("w", label="비중", format="rate")])
+    assert validate(s, CATALOG) == []
+    cols = {c["name"]: c for c in resolve(s["STP-1100"], CATALOG)["grids"][0]["columns"]}
+    assert cols["w"]["inside"] == "qty" and cols["qty"]["inside"] is None and cols["qty"]["sub"] == "w"
 
 
 def test_pictures_are_for_grid_rows_only():
