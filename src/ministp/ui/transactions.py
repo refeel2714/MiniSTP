@@ -144,6 +144,24 @@ def _nav(c: TxContext, p) -> TxResult:
     return TxResult({"main": ds}, {"clean_streak": _streak(c), "gate_days": GATE_DAYS})
 
 
+def _nav_changes(c: TxContext, p) -> TxResult:
+    ds = q.nav_change_days(c.books.ledger, p.get("date_from"), p.get("date_to"))
+    off = [r["date"] for r in ds.records() if r["unexplained"]]
+    meta = {"all_explained": not off, "unexplained_days": len(off)}
+    if off:
+        meta["selected"] = off[0].isoformat()   # the latest day with a won no entry explains
+    return TxResult({"main": ds}, meta)
+
+
+def _nav_bridge(c: TxContext, p) -> TxResult:
+    if not p.get("date"):
+        raise TxError("기준일이 필요해요")
+    try:
+        return TxResult({"main": q.nav_change_bridge(c.books.ledger, p["date"])})
+    except KeyError as e:
+        raise TxError(e.args[0]) from e
+
+
 def _events(c: TxContext, p) -> TxResult:
     return TxResult({"main": q.ledger_events(c.conn, p.get("date_from"), p.get("date_to"),
                                              p.get("event_type"), p.get("symbol"), p.get("seq"))})
@@ -239,6 +257,8 @@ TRANSACTIONS: dict[str, Tx] = {t.tx_id: t for t in [
     Tx("STP2110R01", "원장 점검 항목", {}, _integrity),
     Tx("STP2110R02", "점검 항목의 판정과 값 비교", {"title": "text"}, _integrity_rows),
     Tx("STP2200R01", "기준가 추이", {"date_from": "date", "date_to": "date"}, _nav),
+    Tx("STP2210R01", "기준일별 순자산 변동", {"date_from": "date", "date_to": "date"}, _nav_changes),
+    Tx("STP2210R02", "기준일의 순자산 변동 원인", {"date": "date"}, _nav_bridge),
     Tx("STP3100R01", "원장 이벤트 목록", {"date_from": "date", "date_to": "date", "event_type": "text",
                                        "symbol": "text", "seq": "int"}, _events),
     Tx("STP3100R02", "이벤트의 보유·예수금 변동", {"seq": "int"}, _trace),

@@ -365,6 +365,83 @@ def nav_series(ledger: Ledger, date_from: dt.date | None = None, date_to: dt.dat
                     "nav_per_1000"), rows)
 
 
+# ---------- STP-2210 기준가 변동 원인 ----------
+
+# What an account's movement does to net assets: equity put in or taken out, income, expense.
+# Assets and liabilities are what net assets is made of, so they explain nothing here.
+MOVE_KIND = {"3": "입출금", "4": "수익", "5": "비용"}
+
+
+@dataclass(frozen=True)
+class NavChange:
+    date: dt.date
+    prev_net_assets: int
+    net_assets: int
+    moves: tuple[tuple[str, str, str, int], ...]   # (구분, 계정코드, 계정명, 순자산에 준 영향)
+
+    @property
+    def change(self) -> int:
+        return self.net_assets - self.prev_net_assets
+
+    @property
+    def explained(self) -> int:
+        return sum(m[3] for m in self.moves)
+
+    @property
+    def unexplained(self) -> int:
+        return self.change - self.explained
+
+
+def nav_changes(ledger: Ledger) -> list[NavChange]:
+    """Each NAV day's change in net assets against what the journal booked since the day before.
+
+    Net assets is counted from what is held (예수금 + 미수 - 미지급 + 보유수량 × 종가, R-60); the journal
+    says why it moved (투자원금, 수익, 비용 accounts). The two are worked out separately, so their
+    difference is a check: it is 0 when every won of the change has an entry behind it.
+    A day struck more than once counts once, at its last NAV."""
+    days: dict[dt.date, tuple[int, list]] = {}
+    for row, entries in ledger.nav_steps():
+        days[row.date] = (row.net_assets, days.get(row.date, (0, []))[1] + list(entries))
+    out, prev = [], 0
+    for date, (net, entries) in days.items():
+        effect: dict = {}
+        for e in entries:
+            for ln in e.lines:
+                if ln.account.code[0] in MOVE_KIND:
+                    effect[ln.account] = effect.get(ln.account, 0) + ln.credit - ln.debit
+        moves = tuple((MOVE_KIND[a.code[0]], a.code, a.value[1], v)
+                      for a, v in sorted(effect.items(), key=lambda kv: kv[0].code) if v)
+        out.append(NavChange(date, prev, net, moves))
+        prev = net
+    return out
+
+
+def nav_change_days(ledger: Ledger, date_from: dt.date | None = None, date_to: dt.date | None = None) -> Dataset:
+    """기준일 목록, newest first: 순자산, 전일 대비 변동, 분개로 설명된 변동, 설명되지 않은 차이."""
+    rows = tuple((c.date, c.net_assets, c.change, c.explained, c.unexplained, RESULT_TEXT[c.unexplained == 0])
+                 for c in reversed(nav_changes(ledger))
+                 if (date_from is None or c.date >= date_from) and (date_to is None or c.date <= date_to))
+    return Dataset(("date", "net_assets", "change", "explained", "unexplained", "result"), rows)
+
+
+def nav_change_bridge(ledger: Ledger, date: dt.date) -> Dataset:
+    """One day's change as a bridge read top to bottom: 전일 순자산, each account that moved it,
+    what no entry explains, 당일 순자산. `running` is net assets so far. It reaches the day's net assets by
+    construction, so the check is the 설명되지 않은 차이 row being 0.
+    KeyError when no NAV was struck that day."""
+    c = next((c for c in nav_changes(ledger) if c.date == date), None)
+    if c is None:
+        raise KeyError(f"{date} 기준가가 없어요")
+    rows, running = [("전일 순자산", None, None, None, c.prev_net_assets)], c.prev_net_assets
+    for kind, code, name, amount in c.moves:
+        running += amount
+        rows.append((kind, code, name, amount, running))
+    running += c.unexplained
+    rows.append(("설명되지 않은 차이", None, None, c.unexplained, running))
+    rows.append(("당일 순자산", None, None, None, c.net_assets))
+    return Dataset(("kind", "code", "name", "amount", "running"), tuple(rows))
+
+
 # ---------- STP-1100 잔고 (IBOR) ----------
 
 def holdings(conn: psycopg.Connection, day: dt.date | None = None) -> Dataset:
@@ -641,6 +718,8 @@ TRANSACTIONS = {
     "STP2110R02": integrity_compared,
     "STP1200R01": order_blotter,
     "STP2200R01": nav_series,
+    "STP2210R01": nav_change_days,
+    "STP2210R02": nav_change_bridge,
     "STP4100R01": instrument_master,
     "STP4100R02": instrument_events,
     "STP4200R01": account_summary,
