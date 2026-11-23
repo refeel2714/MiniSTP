@@ -1,4 +1,4 @@
-"""STP-2210 기준가 변동 원인 on a sample database: the screen's transactions and the API."""
+"""STP-2210 기준가 내역 on a sample database: the screen's transactions and the API."""
 import os
 
 import pytest
@@ -35,8 +35,10 @@ def test_every_day_of_the_sample_is_explained_by_its_journal(ctx):
     listed = res.datasets["main"].records()
     assert len(listed) == 8 and res.meta == {"all_explained": True, "unexplained_days": 0}
     assert {r["result"] for r in listed} == {"일치"}
-    nav = {r["date"]: r["net_assets"] for r in run_tx("STP2200R01", ctx, {}).datasets["main"].records()}
-    assert {r["date"]: r["net_assets"] for r in listed} == nav       # the same net assets as the NAV screen
+    nav = {r["date"]: (r["net_assets"], r["nav_per_1000"], r["units"])
+           for r in run_tx("STP2200R01", ctx, {}).datasets["main"].records()}
+    assert {r["date"]: (r["net_assets"], r["nav_per_1000"], r["units"]) for r in listed} == nav   # as the NAV screen
+    assert all(r["struck"] == 1 for r in listed) and listed[-1]["nav_change"] is None
     for r in listed:
         bridge = run_tx("STP2210R02", ctx, {"date": r["date"]}).datasets["main"].records()
         assert bridge[-1]["running"] == r["net_assets"] and bridge[-2]["amount"] == 0
