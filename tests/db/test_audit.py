@@ -276,11 +276,11 @@ def test_applying_a_migration_is_the_first_row_of_a_migrated_database(capsys):
 # ---------- the screens ----------
 
 def test_a_button_leaves_rows_that_name_the_screen_transaction(press, conn):
-    assert press("STP4500U01", customer_id="C0002", alias="둘째")[0] == 200
+    assert press("STP1400U01", customer_id="C0002", alias="둘째")[0] == 200
     row = last(conn)
     assert (row.channel, row.actor, row.action, row.outcome, row.target) == (
         "UI", getpass.getuser(), "CUSTOMER_ADD", "DONE", "C0002")
-    assert row.detail == {"alias": "둘째", "tx": "STP4500U01"}
+    assert row.detail == {"alias": "둘째", "tx": "STP1400U01"}
 
     status, said = press("STP4600U04", group_id="ACCOUNT_STATUS", code="CLOSED", in_use="사용 안 함")
     row = last(conn)

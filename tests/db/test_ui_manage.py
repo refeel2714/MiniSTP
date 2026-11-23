@@ -1,4 +1,4 @@
-"""관리 화면의 처리 버튼: 코드 관리(STP-4600), 계좌 관리(STP-4400), 고객 등록(STP-4500).
+"""관리 화면의 처리 버튼: 코드 관리(STP-4600), 계좌 관리(STP-4400), 고객 등록(STP-1400).
 
 Each button is the CLI command of the same name, so the rules are tested once in
 test_codes.py and test_accounts.py. Here: the screen reaches them, says their
@@ -91,7 +91,7 @@ def test_code_buttons_refuse_what_the_command_refuses_and_write_nothing(press, c
 
 
 def test_account_buttons_are_the_customer_and_account_commands(press, conn):
-    assert press("STP4500U01", customer_id="C0002", alias="두 번째 고객") == (200, "고객을 등록했어요: C0002 두 번째 고객")
+    assert press("STP1400U01", customer_id="C0002", alias="두 번째 고객") == (200, "고객을 등록했어요: C0002 두 번째 고객")
     status, said = press("STP4400U01", account_id="A0002", customer_id="C0002", alias="연금 계좌", credential_ref="KIS_2")
     assert status == 200 and "환경변수 MINISTP_KIS_2_*" in said and "개설일 2026-11-20" in said   # opened on the screen's day
     a = accounts.get_account(conn, "A0002")
@@ -114,8 +114,8 @@ def test_account_buttons_refuse_what_the_commands_refuse_and_write_nothing(press
     before = rows()
     kis = conn.execute("select credential_ref from trading_accounts where account_id = 'A0001'").fetchone()[0]
     for tx, params, problem in [
-        ("STP4500U01", dict(customer_id="C0001", alias="또"), "이미 있는 고객"),
-        ("STP4500U01", dict(customer_id="고객2", alias="별칭"), "고객 ID는"),
+        ("STP1400U01", dict(customer_id="C0001", alias="또"), "이미 있는 고객"),
+        ("STP1400U01", dict(customer_id="고객2", alias="별칭"), "고객 ID는"),
         ("STP4400U01", dict(account_id="A0002", customer_id="C0009", alias="계좌", credential_ref="KIS_2"),
          "등록되지 않은 고객"),
         ("STP4400U01", dict(account_id="A0002", customer_id="C0001", alias="계좌", credential_ref=kis), "쓰고 있어요"),
@@ -144,7 +144,7 @@ def test_management_screens_put_their_buttons_on_the_grid_they_act_on(conn):
         "groups": [("그룹 추가", "STP4600U01", False)],
         "codes": [("코드 추가", "STP4600U02", False), ("코드명 변경", "STP4600U03", True), ("사용 여부", "STP4600U04", True)]}
     assert buttons("STP-4400") == {"accounts": [("계좌 등록", "STP4400U01", False), ("상태 변경", "STP4400U02", True)]}
-    assert buttons("STP-4500") == {"customers": [("고객 등록", "STP4500U01", False)]}
+    assert buttons("STP-1400") == {"customers": [("고객 등록", "STP1400U01", False)]}
 
     r = resolve(screens["STP-4400"], catalog, lookups)
     status = next(f for b in r["grids"][0]["actions"] if b["id"] == "status" for f in b["fields"] if f["name"] == "status")
@@ -153,6 +153,6 @@ def test_management_screens_put_their_buttons_on_the_grid_they_act_on(conn):
     results = next(g for g in resolve(screens["STP-2100"], catalog, lookups)["grids"] if g["id"] == "results")
     cause = results["actions"][0]["fields"][1]
     assert (cause["lookup"], cause["lookup_params"]) == ("code", {"group_id": "RECON_CAUSE"})   # 공통코드 팝업
-    for sid in ("STP-4400", "STP-4500", "STP-4600"):                 # nothing secret is ever asked for
+    for sid in ("STP-4400", "STP-1400", "STP-4600"):                 # nothing secret is ever asked for
         fields = [f["name"] for g in resolve(screens[sid], catalog, lookups)["grids"] for b in g["actions"] for f in b["fields"]]
         assert not {"app_key", "app_secret", "account_no", "password"} & set(fields)
