@@ -8,7 +8,7 @@ import psycopg
 from .. import queries as q
 from ..calendar import BusinessCalendar
 from ..fees import FeeSchedule
-from ..ops import GATE_DAYS, Books, clean_streak, load_books, stored_open_orders
+from ..ops import GATE_DAYS, Books, clean_streak, load_books, load_instruments, stored_open_orders
 from ..queries import Dataset
 
 
@@ -120,6 +120,25 @@ def _recon_days(c: TxContext, p) -> TxResult:
     return TxResult({"main": ds}, meta)
 
 
+def _integrity(c: TxContext, p) -> TxResult:
+    ds = q.integrity_checks(c.conn, c.calendar, c.fees, load_instruments(c.conn))
+    breaks = [r["key"] for r in ds.records() if r["result"] != q.RESULT_TEXT[True]]
+    meta = {"all_ok": not breaks, "breaks": len(breaks)}
+    if breaks:
+        meta["selected"] = breaks[0]   # open on what is wrong
+    return TxResult({"main": ds}, meta)
+
+
+def _integrity_rows(c: TxContext, p) -> TxResult:
+    if not p.get("title"):
+        raise TxError("점검 항목이 필요해요")
+    try:
+        check, rows = q.integrity_compared(c.conn, p["title"], c.calendar, c.fees, load_instruments(c.conn))
+    except KeyError as e:
+        raise TxError(e.args[0]) from e
+    return TxResult({"check": check, "rows": rows})
+
+
 def _nav(c: TxContext, p) -> TxResult:
     ds = q.nav_series(c.books.ledger, p.get("date_from"), p.get("date_to"))
     return TxResult({"main": ds}, {"clean_streak": _streak(c), "gate_days": GATE_DAYS})
@@ -217,6 +236,8 @@ TRANSACTIONS: dict[str, Tx] = {t.tx_id: t for t in [
     Tx("STP2100R01", "대사 결과", {"date_from": "date", "date_to": "date", "kind": "text", "only_breaks": "bool"},
        _recon),
     Tx("STP2100R02", "날짜별 대사 요약", {"date_from": "date", "date_to": "date", "kind": "text"}, _recon_days),
+    Tx("STP2110R01", "원장 점검 항목", {}, _integrity),
+    Tx("STP2110R02", "점검 항목의 판정과 값 비교", {"title": "text"}, _integrity_rows),
     Tx("STP2200R01", "기준가 추이", {"date_from": "date", "date_to": "date"}, _nav),
     Tx("STP3100R01", "원장 이벤트 목록", {"date_from": "date", "date_to": "date", "event_type": "text",
                                        "symbol": "text", "seq": "int"}, _events),
