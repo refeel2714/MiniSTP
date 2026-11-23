@@ -5,7 +5,8 @@ from db.test_ops import CAL, D, books, broker, conn  # noqa: F401
 from ministp.accounting import Account
 from ministp.ledger import Side
 from ministp.ops import clean_streak, daily_close, open_books, place_order, recon_days, resolve_break
-from ministp.queries import (TRANSACTIONS, blotter_view, event_trace, ledger_events, nav_series, order_blotter,
+from ministp.queries import (TRANSACTIONS, blotter_view, event_journal, event_trace, journal_events, ledger_events,
+                             nav_series, order_blotter,
                              order_detail, order_progress, recon_calendar, recon_history, trial_balance)
 from ministp.recon import Cause
 
@@ -37,6 +38,17 @@ def test_trace_from_an_execution_to_its_journal(conn, broker):
     assert [(r["exec_id"], r["qty_delta"], r["cost_delta"]) for r in t.positions.records()] == [
         ("20261120-0000000001-1", 2, 160_000)]
     assert len(t.cash) == 0          # cash moves on settlement day, not trade day
+    journal, balanced = event_journal(conn, execs[0]["seq"])     # the same lines, for the journal screen
+    assert balanced and journal.rows == t.journal.rows
+    with pytest.raises(KeyError):
+        event_journal(conn, 999_999)
+    listed = {r["seq"]: r for r in journal_events(conn).records()}
+    mine = listed[execs[0]["seq"]]
+    assert (mine["entries"], mine["lines"], mine["amount"]) == (1, len(journal), sum(r["debit"] for r in journal.records()))
+    assert [r["seq"] for r in journal_events(conn, seq=mine["seq"]).records()] == [mine["seq"]]
+    assert [r["seq"] for r in ledger_events(conn, seq=mine["seq"]).records()] == [mine["seq"]]
+    nav = [r["seq"] for r in ledger_events(conn, event_type="NavEvent").records()]
+    assert nav and not set(nav) & set(listed)                     # an event that books nothing is not in the journal list
 
 
 def test_events_newest_first_and_filtered(conn, broker):
@@ -162,4 +174,4 @@ def test_nav_series_keeps_each_day_as_it_was(conn, broker):
 
 def test_every_transaction_is_registered_once():
     assert len(set(TRANSACTIONS.values())) == len(TRANSACTIONS)
-    assert all(k[:7] in {"STP1100", "STP1200", "STP1300", "STP2100", "STP2200", "STP3100", "STP4100", "STP4200", "STP4300"} for k in TRANSACTIONS)
+    assert all(k[:7] in {"STP1100", "STP1200", "STP1300", "STP2100", "STP2200", "STP3100", "STP3200", "STP3300", "STP4100", "STP4200", "STP4300"} for k in TRANSACTIONS)
