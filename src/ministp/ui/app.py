@@ -32,8 +32,8 @@ from ..fees import FeeSchedule
 from ..ops import OpsError, acquire_writer, require_current_schema
 from ..store import erd
 from .actions import ActionContext, ActionError, run_action
-from .definitions import (DefinitionError, jump_targets, load_lookups, load_screens, lookup_problems, resolve,
-                          validate)
+from .definitions import (DefinitionError, jump_targets, load_lookups, load_menu, load_screens,
+                          lookup_problems, menu_path, menu_problems, menu_tree, resolve, validate)
 from .spec import screen_markdown
 from .transactions import TxContext, TxError, run_tx
 
@@ -126,11 +126,13 @@ def create_app(dsn: str, *, calendar: BusinessCalendar, fees: FeeSchedule, today
     with connect_read_only(dsn, connect) as conn:
         catalog = erd.read_catalog(conn, "public")
         db_name = conn.info.dbname
-    problems = validate(screens, catalog, lookups) + lookup_problems(lookups, catalog)
+    classes = load_menu()               # 화면 분류: 화면번호의 첫 자리 대분류, 둘째 자리까지 중분류
+    problems = validate(screens, catalog, lookups) + lookup_problems(lookups, catalog) + menu_problems(classes, screens)
     if problems:
         raise DefinitionError("화면 정의가 DB 스키마와 맞지 않아요:\n  " + "\n  ".join(problems))
     resolved = {sid: resolve(s, catalog, lookups) for sid, s in screens.items()}
     menu = [{"id": s.id, "title": s.title} for s in screens.values()]
+    tree = menu_tree(classes, screens)  # 왼쪽 메뉴트리와 첫 화면이 그리는 것
     jump = jump_targets(screens, catalog, lookups)   # 바로 가기 창: 화면 말고 찾을 수 있는 코드와 그 코드로 열 화면
     business_day = today if callable(today) else (lambda: today or dt.date.today())
 
@@ -150,6 +152,7 @@ def create_app(dsn: str, *, calendar: BusinessCalendar, fees: FeeSchedule, today
 
     def shell_data(screen_id: str | None) -> str:
         data = {"menu": menu, "jump": jump, "today": business_day().isoformat(), "db": db_name, "label": label,
+                "tree": tree, "path": menu_path(classes, screen_id) if screen_id else [],   # 화면 분류
                 "writable": write_dsn is not None, "token": token if write_dsn else "",
                 "screen": resolved.get(screen_id) if screen_id else None}
         data |= {"env": env, "env_name": ENVS[env]}        # 실전 테두리: the page says which environment it shows

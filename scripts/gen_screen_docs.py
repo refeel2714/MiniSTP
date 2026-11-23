@@ -12,7 +12,7 @@ from pathlib import Path
 import psycopg
 
 from ministp.store.erd import build_catalog, schema_sql
-from ministp.ui.definitions import load_screens, validate
+from ministp.ui.definitions import load_menu, load_screens, menu_problems, validate
 from ministp.ui.spec import all_docs
 
 OUT = Path(__file__).resolve().parents[1] / "docs" / "screens"
@@ -26,7 +26,7 @@ def main() -> int:
     with psycopg.connect(url) as conn:
         catalog = build_catalog(conn, schema_sql())
     screens = load_screens()
-    problems = validate(screens, catalog)
+    problems = validate(screens, catalog) + menu_problems(load_menu(), screens)
     if problems:
         print("화면 정의 오류:\n  " + "\n  ".join(problems))
         return 1
