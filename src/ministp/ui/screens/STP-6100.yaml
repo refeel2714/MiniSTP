@@ -1,0 +1,46 @@
+id: STP-6100
+title: 수익률
+purpose: 기준가로 잰 수익률이에요. 입금과 출금은 그 전 기준가로 좌수를 늘리거나 줄이기 때문에 순자산은 움직여도 기준가는 움직이지 않아요. 그래서 기준가의 변화가 곧 투자한 돈의 수익률(시간가중수익률)이에요. 위쪽에 설정 이후, 연초 이후, 최근 1개월 수익률이 마지막 기준일까지로 나오고, 왼쪽은 월별 수익률(그 달 마지막 기준가를 전월 말 기준가와 비교), 누적, 그 달의 손익(순자산 변화에서 입출금을 뺀 원화 금액)이에요. 월을 고르면 오른쪽에 그 달의 기준가 그래프와 날짜별 수익률이 나와요. 기간을 넣으면 그 기간의 날만 세고, 누적이 기간 직전 기준가부터라서 맨 위 달의 누적이 곧 기간 수익률이에요. 벤치마크(지수) 비교는 지수 시세를 저장하게 되면 붙여요.
+layout: split
+left: 54
+conditions:
+  - {name: date_from, type: date, label: 시작일}
+  - {name: date_to, type: date, label: 종료일}
+grids:
+  - id: months
+    title: 월별 수익률
+    live: true
+    key: month
+    tx: STP6100R01
+    load: open
+    meta: {since_start: 설정 이후, year_to_date: 연초 이후, one_month: 최근 1개월, last_date: 기준일}
+    columns:
+      - {name: month, label: 월, format: code}
+      - {name: month_return, label: 월 수익률(%), format: rate, color: sign}
+      - {name: cum_return, label: 누적(%), format: rate, color: sign}
+      - {name: profit, label: 손익, format: money, color: sign}
+      - {name: trend, label: 기준가 추이, format: series, display: spark}
+      - {name: flows, label: 입출금, format: money, hidden: true}
+      - {name: end_nav, label: 월말 기준가, format: rate, hidden: true}
+      - {name: base_nav, label: 전월 말 기준가, format: rate, hidden: true}
+      - {name: net_assets, label: 월말 순자산, format: money, hidden: true}
+      - {name: days, label: 기준일 수, format: number, hidden: true}
+      - {name: first_date, label: 첫 기준일, format: date, hidden: true}
+      - {name: last_date, label: 마지막 기준일, format: date, hidden: true}
+      - {name: date_from, label: 시작일, format: date, hidden: true}
+      - {name: date_to, label: 종료일, format: date, hidden: true}
+  - id: days
+    title: 날짜별 수익률
+    tx: STP6100R02
+    load: master
+    master: months
+    link: {month: month, date_from: date_from, date_to: date_to}
+    chart: {x: date, y: nav_per_1000}
+    columns:
+      - {name: date, label: 기준일, format: date}
+      - {name: nav_per_1000, label: 기준가, format: rate}
+      - {name: day_return, label: 일 수익률(%), format: rate, color: sign}
+      - {name: month_to_date, label: 월초 이후(%), format: rate, color: sign}
+      - {name: profit, label: 손익, format: money, color: sign}
+      - {name: flows, label: 입출금, format: money}
+      - {name: net_assets, label: 순자산, format: money, hidden: true}
