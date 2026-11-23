@@ -290,9 +290,9 @@ TRANSACTIONS: dict[str, Tx] = {t.tx_id: t for t in [
     Tx("STP4400R01", "계좌 목록", {}, _accounts),
     Tx("STP4400R02", "계좌 상태 이력", {"account_id": "text"}, _account_status),
     Tx("STP4400R03", "계좌 보유", {"account_id": "text"}, _account_positions),
-    Tx("STP4500R01", "고객 목록", {}, _customers),
-    Tx("STP4500R02", "고객 보유 합산", {"customer_id": "text"}, _customer_positions),
-    Tx("STP4500R03", "고객의 계좌", {"customer_id": "text"}, _customer_accounts),
+    Tx("STP1400R01", "고객 목록", {}, _customers),
+    Tx("STP1400R02", "고객 보유 합산", {"customer_id": "text"}, _customer_positions),
+    Tx("STP1400R03", "고객의 계좌", {"customer_id": "text"}, _customer_accounts),
     Tx("STP4600R01", "코드 그룹 목록", {}, _code_groups),
     Tx("STP4600R02", "그룹의 코드", {"group_id": "text"}, _codes),
 ]}

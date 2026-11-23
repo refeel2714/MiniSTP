@@ -1,4 +1,4 @@
-id: STP-4500
+id: STP-1400
 title: 고객별 보유
 layout: split
 left: 40
@@ -7,7 +7,7 @@ grids:
   - id: customers
     title: 고객
     live: true
-    tx: STP4500R01
+    tx: STP1400R01
     load: open
     key: customer_id
     totals: [cash_d0, book_cost]
@@ -20,14 +20,14 @@ grids:
     actions:
       - id: add
         label: 고객 등록
-        tx: STP4500U01
+        tx: STP1400U01
         note: 별칭만 넣어요. 실명, 연락처 같은 개인정보는 넣지 않아요.
         fields:
           - {name: customer_id, source: customers.customer_id}
           - {name: alias, source: customers.alias}
   - id: positions
     title: 이 고객의 보유 합산 (계좌를 더한 값)
-    tx: STP4500R02
+    tx: STP1400R02
     load: master
     master: customers
     link: {customer_id: customer_id}
@@ -42,7 +42,7 @@ grids:
       - {name: accounts, label: 보유 계좌 수, format: number}
   - id: accounts
     title: 이 고객의 계좌
-    tx: STP4500R03
+    tx: STP1400R03
     load: master
     master: customers
     link: {customer_id: customer_id}
