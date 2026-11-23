@@ -132,6 +132,7 @@ class Grid:
     map: dict | None = None       # 구성 지도: {label, size[, tone]}. With view: grid it is a second view next to the table
     meta: dict[str, str] = field(default_factory=dict)   # tx meta key -> label
     drill: dict | None = None   # {screen: STP-xxxx, params: {cond: column}, account: column}
+                                # or {by: column, screens: [...], params}: the row names the screen it opens
                                 # account: open the target screen for the account in that column
     chart: dict | None = None   # {x: column, y: column}: a line over the rows
     live: bool = False          # reload when the DB changes (SSE), changed rows highlighted
@@ -562,15 +563,25 @@ def validate(screens: dict[str, Screen], catalog: dict, lookups: dict[str, Looku
                 if t not in {c.name for c in g.columns}:
                     errs.append(f"{gw}: 합계 대상 {t}가 열에 없어요")
             if g.drill:
-                target = screens.get(g.drill.get("screen"))
-                if target is None:
-                    errs.append(f"{gw}: 없는 화면으로 이동 {g.drill.get('screen')}")
-                else:
-                    conds = {c.name for c in target.conditions}
+                # one screen for every row (screen), or the screen a column of the row names (by, one of screens)
+                by, names = g.drill.get("by"), {c.name for c in g.columns}
+                wanted = list(g.drill.get("screens") or []) if by else [g.drill.get("screen")]
+                if by and by not in names:
+                    errs.append(f"{gw}: 이동할 화면을 정하는 열 {by}가 열에 없어요")
+                if by and not wanted:
+                    errs.append(f"{gw}: 행마다 다른 화면으로 이동하려면 갈 수 있는 화면(screens)을 적어요")
+                if by and "screen" in g.drill:
+                    errs.append(f"{gw}: 화면 이동은 screen(한 화면)이나 by(행이 정하는 화면) 가운데 하나만 적어요")
+                for name in wanted:
+                    if name not in screens:
+                        errs.append(f"{gw}: 없는 화면으로 이동 {name}")
+                targets = [screens[name] for name in wanted if name in screens]
+                if targets:
+                    conds = {c.name for t in targets for c in t.conditions}   # a row sends what its target takes
                     for cond, col in g.drill.get("params", {}).items():
                         if cond not in conds:
-                            errs.append(f"{gw}: {target.id}에 없는 조회조건 {cond}로 이동")
-                        if col not in {c.name for c in g.columns}:
+                            errs.append(f"{gw}: {'·'.join(t.id for t in targets)}에 없는 조회조건 {cond}로 이동")
+                        if col not in names:
                             errs.append(f"{gw}: 이동 값 {col}이 열에 없어요")
                 if g.drill.get("account") and g.drill["account"] not in {c.name for c in g.columns}:
                     errs.append(f"{gw}: 이동할 계좌 열 {g.drill['account']}이 열에 없어요")

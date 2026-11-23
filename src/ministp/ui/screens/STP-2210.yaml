@@ -1,0 +1,34 @@
+id: STP-2210
+title: 기준가 변동 원인
+purpose: 하루 사이에 순자산이 왜 그만큼 바뀌었는지를 분개로 설명해요. 왼쪽에서 기준일을 고르면 오른쪽에 전일 순자산에서 당일 순자산까지를 위에서 아래로 읽는 표가 나와요. 순자산은 들고 있는 것(예수금, 미수·미지급, 보유수량 × 종가)에서 세고, 변동 원인은 그 사이에 기록된 분개(평가손익, 매매손익, 수수료, 세금, 입출금)에서 따로 더해요. 둘이 맞으면 설명되지 않은 차이가 0이에요. 0이 아닌 날이 있으면 그날이 먼저 골라져 있어요. 기준일을 두 번 누르면 그날의 분개를 분개 조회(STP-3200)에서 열어요.
+layout: split
+left: 36
+conditions:
+  - {name: date_from, type: date, label: 시작일}
+  - {name: date_to, type: date, label: 종료일}
+grids:
+  - id: days
+    title: 기준일
+    live: true
+    key: date
+    tx: STP2210R01
+    load: open
+    drill: {screen: STP-3200, params: {date_from: date, date_to: date}}
+    meta: {all_explained: 모두 설명됨, unexplained_days: 설명 안 된 날 수}
+    columns:
+      - {name: date, label: 기준일, format: date}
+      - {name: change, label: 순자산 변동, format: money, color: sign}
+      - {name: unexplained, label: 설명되지 않은 차이, format: money, color: sign}
+      - {name: result, label: 결과, color: status, display: pill}
+  - id: bridge
+    title: 변동 원인
+    tx: STP2210R02
+    load: master
+    master: days
+    link: {date: date}
+    columns:
+      - {name: kind, label: 구분}
+      - {name: code, source: accounts_chart.code, format: code}
+      - {name: name, source: accounts_chart.name}
+      - {name: amount, label: 순자산에 준 영향, format: money, color: sign}
+      - {name: running, label: 순자산 누계, format: money}
