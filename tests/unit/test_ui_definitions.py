@@ -131,7 +131,7 @@ def test_split_layout_is_one_list_on_the_left_and_a_few_details_on_the_right():
     shipped = load_screens()
     for sid, on_left, on_right, under in [("STP-3100", ["events"], ["positions", "cash"], []),
                                           ("STP-3200", ["events"], ["journal"], []),   # the journal has the right side to itself
-                                          ("STP-4100", ["instruments"], ["events"], [])]:
+                                          ("STP-4100", ["instruments"], ["rules"], [])]:
         assert shipped[sid].layout == "split"
         left, right, below = split_sides(shipped[sid])
         assert ([g.id for g in left], [g.id for g in right], [g.id for g in below]) == (on_left, on_right, under)
@@ -398,7 +398,7 @@ def test_an_instrument_looks_the_same_on_every_screen():
     """종목명을 보여 주는 표는 어디서나 같은 배지: 색은 종목코드, 모양은 자산 유형."""
     shown = [(s.id, g.id, c) for s in load_screens().values() for g in s.grids if g.view == "grid"
              for c in g.columns if c.source == "instruments.name"]
-    assert len(shown) >= 7                                        # 계좌 보유(STP-4400), 고객별 보유(STP-1400)까지
+    assert len(shown) >= 6                                        # 고객별 보유(STP-1400)까지
     for sid, gid, c in shown:
         assert (c.display, c.code, c.shape) == ("badge", "symbol", "asset_type"), f"{sid} {gid}"
 

@@ -1,8 +1,8 @@
 id: STP-4400
 title: 계좌 관리
 layout: split
-left: 45
-purpose: 왼쪽에서 위탁계좌를 고르면 오른쪽에 그 계좌의 보유와 상태 이력이 나와요. 화면을 열면 위쪽 막대에서 고른 계좌가 먼저 골라져 있고, 더블클릭하면 그 계좌의 계좌정보(STP-4200)로 가요. 계좌번호와 인증키는 DB에 없고 이 화면에도 나오지 않아요. 계좌 등록과 상태 변경은 위탁계좌 그리드 오른쪽 위 버튼으로 해요 (CLI의 account 명령과 같은 처리). 고객 등록은 고객별 보유(STP-1400)에서 해요.
+left: 60
+purpose: 등록된 위탁계좌의 기본정보예요. 기준정보라서 어느 계좌에 무엇이 얼마나 들어 있는지는 여기에 없어요. 예수금과 결제 예정은 계좌정보(STP-3400), 보유는 잔고(STP-1100)와 고객별 보유(STP-1400)에 있어요. 왼쪽에서 계좌를 고르면 오른쪽에 그 계좌의 상태 이력이 나와요. 화면을 열면 위쪽 막대에서 고른 계좌가 먼저 골라져 있고, 더블클릭하면 그 계좌의 계좌정보(STP-3400)로 가요. 계좌번호와 인증키는 DB에 없고 이 화면에도 나오지 않아요. 계좌 등록과 상태 변경은 위탁계좌 그리드 오른쪽 위 버튼으로 해요 (CLI의 account 명령과 같은 처리). 고객 등록은 고객별 보유(STP-1400)에서 해요.
 grids:
   - id: accounts
     title: 위탁계좌
@@ -10,15 +10,16 @@ grids:
     tx: STP4400R01
     load: open
     key: account_id
-    totals: [cash_d0, book_cost]
-    drill: {screen: STP-4200, account: account_id}
+    drill: {screen: STP-3400, account: account_id}
     columns:
       - {name: account_id, source: trading_accounts.account_id, format: code}
       - {name: alias, source: trading_accounts.alias}
       - {name: customer_alias, source: customers.alias}
       - {name: status, source: account_status_v.status, format: code, color: status}
-      - {name: cash_d0, label: 예수금 D+0, format: money}
-      - {name: book_cost, label: 보유 장부금액, format: money}
+      - {name: broker, source: trading_accounts.broker, format: code}
+      - {name: env, source: trading_accounts.env, format: code}
+      - {name: account_type, source: trading_accounts.account_type, format: code}
+      - {name: opened_on, source: trading_accounts.opened_on, format: date}
     actions:
       - id: add
         label: 계좌 등록
@@ -42,20 +43,6 @@ grids:
           - {name: status, source: account_status_history.status, lookup: code, lookup_params: {group_id: ACCOUNT_STATUS}}
           - {name: effective_from, source: account_status_history.effective_from, type: date, default: today}
           - {name: reason, source: account_status_history.reason}
-  - id: positions
-    title: 이 계좌의 보유
-    tx: STP4400R03
-    load: master
-    master: accounts
-    link: {account_id: account_id}
-    weight: 2
-    totals: [book_cost]
-    columns:
-      - {name: instrument_name, source: instruments.name, display: badge, code: symbol, shape: asset_type}
-      - {name: symbol, source: positions_v.symbol, format: code}
-      - {name: asset_type, source: instruments.asset_type, format: code}
-      - {name: qty, source: positions_v.qty, format: number}
-      - {name: book_cost, source: positions_v.book_cost, format: money}
   - id: status_history
     title: 이 계좌의 상태 이력
     tx: STP4400R02
