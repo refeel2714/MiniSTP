@@ -68,6 +68,7 @@ class Column:
     # meter on a quantity: the column that is the whole ("4 / 10"); it is drawn inside this cell too
     of: str | None = None
     steps: list[str] = field(default_factory=list)   # steps: the name of each step, in order
+    sub: str | None = None      # another column written small under this value (its time, its rate); drawn here
     hidden: bool = False        # in the rows (row key, link, button values) but not drawn as a column
 
     @property
@@ -541,11 +542,15 @@ def validate(screens: dict[str, Screen], catalog: dict, lookups: dict[str, Looku
                 for inside in (c.code, c.shape):
                     if inside and (inside == c.name or inside not in {x.name for x in g.columns}):
                         errs.append(f"{gw}.{c.name}: 배지 안에 넣을 열 {inside}가 이 그리드의 다른 열이 아니에요")
+                if c.sub and (c.sub == c.name or c.sub not in {x.name for x in g.columns if not x.display}):
+                    errs.append(f"{gw}.{c.name}: 아래에 적을 열 {c.sub}가 이 그리드의 표시 유형 없는 다른 열이 아니에요")
+                if c.sub and c.display:
+                    errs.append(f"{gw}.{c.name}: 아래에 적는 열(sub)은 표시 유형이 없는 칸에만 써요")
                 if c.of and c.of not in {x.name for x in g.columns if x.format == "number" and x.name != c.name}:
                     errs.append(f"{gw}.{c.name}: 전체가 되는 열 {c.of}가 이 그리드의 다른 수량(number) 열이 아니에요")
                 if c.hidden and g.view != "grid":
                     errs.append(f"{gw}.{c.name}: 숨긴 열은 표 보기에만 써요")
-            if all(c.hidden or any(c.name in (x.code, x.shape, x.of) for x in g.columns) for c in g.columns):
+            if all(c.hidden or any(c.name in (x.code, x.shape, x.of, x.sub) for x in g.columns) for c in g.columns):
                 errs.append(f"{gw}: 보이는 열이 하나도 없어요")
             if g.view not in VIEWS:
                 errs.append(f"{gw}: view는 {sorted(VIEWS)} 중 하나")
@@ -616,7 +621,7 @@ def resolve(screen: Screen, catalog: dict, lookups: dict[str, Lookup] | None = N
         for c, cd in zip(g.columns, gd["columns"]):
             cd["label"] = label(c)
             cd["align"] = c.align
-            cd["inside"] = next((x.name for x in g.columns if c.name in (x.code, x.shape, x.of)), None)
+            cd["inside"] = next((x.name for x in g.columns if c.name in (x.code, x.shape, x.of, x.sub)), None)
         for b, bd in zip(g.actions, gd["actions"]):
             bd["title"] = ACTIONS[b.tx].title
             for f, fd in zip(b.fields, bd["fields"]):
