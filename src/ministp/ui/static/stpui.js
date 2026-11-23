@@ -30,6 +30,7 @@
     "일치": "ok", "판단 완료": "warn", "불일치": "bad", "대사 없음": "miss",   // miss: something owed is not there
     "결제 완료": "ok", "결제 대기": "info", "체결 대기": "info", "부분 체결": "warn",   // info: on its way, nothing to do
     "접수 거부": "bad", "결제 지연": "bad", "접수 기록 없음": "miss",
+    "정상": "ok", "주의": "warn", "확인 필요": "bad", "평가 전": "info",
   };
 
   function h(tag, attrs, ...kids) {

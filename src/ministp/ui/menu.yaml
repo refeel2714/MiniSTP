@@ -20,6 +20,7 @@
   groups:
     - {id: 21, name: 대사}
     - {id: 22, name: 기준가}
+    - {id: 23, name: 시세 점검}
 - id: 3
   name: 원장·회계
   note: 기록된 이벤트와 그 분개 (ABOR)

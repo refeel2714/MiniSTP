@@ -442,6 +442,57 @@ def nav_change_bridge(ledger: Ledger, date: dt.date) -> Dataset:
     return Dataset(("kind", "code", "name", "amount", "running"), tuple(rows))
 
 
+# ---------- STP-2300 시세 점검 ----------
+
+NOT_VALUED = "평가 전"
+
+
+def _rate_pct(rate) -> float | None:
+    """0.0123 -> 1.23 (a percentage with two places, for a column that is coloured by its sign)."""
+    return None if rate is None else float(round(rate * 100, 2))
+
+
+def price_check_days(ledger: Ledger, calendar, today: dt.date, date_from: dt.date | None = None,
+                     date_to: dt.date | None = None) -> Dataset:
+    """기준일 목록, newest first: how many closes the books took that day and how many were flagged.
+    A business day that has holdings but no close yet is listed first as 평가 전 (the day's `daily` has
+    not run): its rows are what will be valued, against the last close the ledger knows."""
+    from .pricecheck import BAD, WARN, price_checks, worst
+    days: dict[dt.date, list] = {}
+    for c in price_checks(ledger):
+        days.setdefault(c.date, []).append(c.level)
+    rows = [(d, len(levels), levels.count(BAD), levels.count(WARN), worst(levels))
+            for d, levels in sorted(days.items(), reverse=True)]
+    held = [s for s, p in ledger.positions().items() if p.qty]
+    if held and today not in days and calendar.is_business_day(today) and (not days or today > max(days)):
+        rows.insert(0, (today, len(held), None, None, NOT_VALUED))
+    return Dataset(("date", "symbols", "flagged", "warned", "result"),
+                   tuple(r for r in rows if (date_from is None or r[0] >= date_from)
+                         and (date_to is None or r[0] <= date_to)))
+
+
+def price_check_rows(ledger: Ledger, date: dt.date) -> Dataset:
+    """One day's closes, each against the close before it and the day's executions, worst first.
+    A day the books have not valued yet lists the holdings with the last close the ledger knows."""
+    from .pricecheck import _RANK, price_checks
+    checks = price_checks(ledger)
+    cols = ("symbol", "instrument_name", "asset_type", "close", "prev_date", "prev_close", "change",
+            "exec_gap", "level", "reasons")
+
+    def named(symbol):
+        inst = ledger.instruments.get(symbol)
+        return (symbol, inst.name if inst else None, inst.asset_type.value if inst else None)
+
+    mine = sorted((c for c in checks if c.date == date), key=lambda c: (-_RANK[c.level], c.symbol))
+    if mine:
+        return Dataset(cols, tuple((*named(c.symbol), c.close, c.prev_date, c.prev_close, _rate_pct(c.change),
+                                    _rate_pct(c.exec_gap), c.level, " · ".join(c.reasons)) for c in mine))
+    last = {c.symbol: c for c in checks if c.date < date}
+    return Dataset(cols, tuple((*named(s), None, last[s].date if s in last else None,
+                                last[s].close if s in last else None, None, None, NOT_VALUED, "")
+                               for s, p in sorted(ledger.positions().items()) if p.qty))
+
+
 # ---------- STP-1100 잔고 (IBOR) ----------
 
 def holdings(conn: psycopg.Connection, day: dt.date | None = None) -> Dataset:
@@ -720,6 +771,8 @@ TRANSACTIONS = {
     "STP2200R01": nav_series,
     "STP2210R01": nav_change_days,
     "STP2210R02": nav_change_bridge,
+    "STP2300R01": price_check_days,
+    "STP2300R02": price_check_rows,
     "STP4100R01": instrument_master,
     "STP4100R02": instrument_events,
     "STP4200R01": account_summary,
