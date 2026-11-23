@@ -40,11 +40,41 @@ a { color: var(--accent); }
 .top { display: flex; align-items: center; gap: 16px; padding: 0 16px; height: 42px; background: var(--top); color: var(--top-ink); position: sticky; top: 0; z-index: 5; }
 .brand { color: var(--top-ink); text-decoration: none; font-weight: 600; white-space: nowrap; }
 .brand b { color: var(--sel-line); }
-.menu { display: flex; gap: 2px; overflow-x: auto; flex: 1; min-width: 0; scrollbar-width: none; }
-.menu a { color: var(--top-muted); text-decoration: none; padding: 6px 10px; border-radius: 4px; white-space: nowrap; }
-.menu a:hover { color: var(--top-ink); background: rgba(255,255,255,.06); }
-.menu a.on { color: var(--top-ink); background: rgba(255,255,255,.12); }
-.menu .sid { opacity: .75; }
+.top .grow { flex: 1; }
+.navbtn { display: flex; align-items: center; gap: 8px; height: 26px; padding: 0 10px; border: 1px solid rgba(255, 255, 255, .16);
+  border-radius: 4px; background: rgba(255, 255, 255, .06); color: var(--top-muted); font: inherit; font-size: 12px; cursor: pointer; white-space: nowrap; }
+.navbtn:hover { color: var(--top-ink); background: rgba(255, 255, 255, .12); }
+.navbtn:focus-visible { outline: 2px solid var(--sel-line); outline-offset: 1px; }
+.navbtn .bars { width: 12px; height: 8px; border-top: 2px solid currentColor; border-bottom: 2px solid currentColor; position: relative; }
+.navbtn .bars::after { content: ""; position: absolute; left: 0; right: 0; top: 1px; border-top: 2px solid currentColor; }
+
+/* 메뉴트리: the screen classification on the left. 대분류 > (중분류) > 화면, in screen-number order. */
+.frame { display: flex; align-items: flex-start; }
+.frame > main { flex: 1 1 0; min-width: 0; }
+.tree { flex: none; width: 212px; position: sticky; top: 42px; height: calc(100vh - 42px); overflow-y: auto; padding: 10px 8px 24px;
+  background: var(--panel); border-right: 1px solid var(--line); }
+body[data-nav="off"] .tree { display: none; }
+.tree ul { list-style: none; margin: 0; padding: 0; }
+.tree .area { margin-bottom: 6px; }
+.tree summary { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: 4px; cursor: pointer; list-style: none;
+  font-weight: 650; color: var(--ink); user-select: none; }
+.tree summary::-webkit-details-marker { display: none; }
+.tree summary::after { content: ""; margin-left: auto; width: 6px; height: 6px; border-right: 1.5px solid var(--muted); border-bottom: 1.5px solid var(--muted);
+  transform: rotate(-45deg); transition: transform var(--t-fast) var(--ease); }
+.tree details[open] > summary::after { transform: rotate(45deg); }
+.tree summary:hover { background: var(--hover); }
+.tree summary:focus-visible, .tree a:focus-visible { outline: 2px solid var(--sel-line); outline-offset: -2px; }
+.tree .an { flex: none; width: 18px; height: 18px; border-radius: 4px; background: var(--head); border: 1px solid var(--line); color: var(--muted);
+  font: 600 11px/16px ui-monospace, "Cascadia Mono", Consolas, monospace; text-align: center; }
+.tree a { display: flex; align-items: baseline; gap: 8px; padding: 5px 8px 5px 12px; margin-left: 16px; border-left: 2px solid var(--line);
+  color: var(--ink); text-decoration: none; }
+.tree a:hover { background: var(--hover); }
+.tree a.on { background: var(--sel); border-left-color: var(--sel-line); font-weight: 600; }
+.tree .sid { flex: none; color: var(--muted); }
+.tree .lt { min-width: 0; overflow-wrap: anywhere; }
+.tree .grp > .gname { display: block; padding: 6px 8px 2px 30px; font-size: 11px; color: var(--muted); }
+.tree .grp a { padding-left: 22px; }
+.crumb { margin: 0 0 2px; font-size: 12px; color: var(--muted); }
 .env { color: var(--top-muted); font-size: 12px; white-space: nowrap; display: flex; align-items: center; gap: 6px; }
 .env .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--ok); }
 
@@ -277,10 +307,19 @@ button.day:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--panel), 0 
 .tile:hover { border-color: var(--sel-line); }
 .tile .sid { color: var(--muted); }
 .tile .tt { font-weight: 600; font-size: 14px; }
+.tile .tg { color: var(--muted); font-size: 11px; }
+.harea { margin-top: 20px; }
+.harea h2 { display: flex; align-items: baseline; gap: 8px; margin: 0; font-size: 14px; font-weight: 650; }
+.harea .an { font: 600 12px/1 ui-monospace, "Cascadia Mono", Consolas, monospace; color: var(--muted); }
+.harea .hnote { font-size: 12px; font-weight: 400; color: var(--muted); }
+.harea .tiles { margin-top: 8px; }
 
+@media (max-width: 900px) {
+  .frame { display: block; }
+  .tree { position: static; width: auto; height: auto; max-height: 46vh; border-right: 0; border-bottom: 1px solid var(--line); }
+}
 @media (max-width: 720px) {
   .top { height: auto; flex-wrap: wrap; padding: 8px 16px; gap: 6px 12px; }
-  .menu { order: 3; flex-basis: 100%; }
   .env { margin-left: auto; }
   main { padding: 12px 16px 20px; }
   .cond input[type=text], .cond input[type=date], .cond input[type=number], .cond select { min-width: 0; width: 140px; }
@@ -303,10 +342,11 @@ button.day:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--panel), 0 
    One curve, short times. Motion says what changed or where something went; it never decorates. */
 :root { --ease: cubic-bezier(.2, .8, .2, 1); --t-fast: 120ms; --t: 200ms; --t-slow: 280ms; }
 
-/* screen to screen: the top bar stays, the active tab slides, the content rises in */
+/* screen to screen: the top bar and the menu tree stay, the mark on the current screen slides, the content rises in */
 @view-transition { navigation: auto; }
 .top { view-transition-name: top; }
-.menu a.on { view-transition-name: menu-on; }
+.tree { view-transition-name: tree; }
+.tree a.on { view-transition-name: menu-on; }
 main { view-transition-name: content; }
 ::view-transition-group(menu-on) { animation-duration: var(--t-slow); animation-timing-function: var(--ease); }
 ::view-transition-old(content) { animation: var(--t-fast) ease-out both stpui-out; }
@@ -339,7 +379,7 @@ main { view-transition-name: content; }
 @keyframes stpui-shimmer { from { background-position: 100% 0; } to { background-position: -100% 0; } }
 
 /* touch feedback */
-button.primary, .tile, .menu a { transition: transform var(--t-fast) var(--ease), background-color var(--t-fast) ease-out, border-color var(--t-fast) ease-out, filter var(--t-fast) ease-out; }
+button.primary, .tile, .tree a { transition: transform var(--t-fast) var(--ease), background-color var(--t-fast) ease-out, border-color var(--t-fast) ease-out, filter var(--t-fast) ease-out; }
 button.primary:active, .tile:active { transform: scale(.97); }
 .tile:hover { transform: translateY(-1px); }
 .cond input, .cond select { transition: border-color var(--t-fast) ease-out, box-shadow var(--t-fast) ease-out; }
@@ -347,7 +387,7 @@ button.primary:active, .tile:active { transform: scale(.97); }
 
 @media (prefers-reduced-motion: reduce) {
   ::view-transition-group(*), ::view-transition-old(*), ::view-transition-new(*) { animation: none !important; }
-  .selbar, .grid tbody tr td, button.primary, .tile, .menu a { transition: none; }
+  .selbar, .grid tbody tr td, button.primary, .tile, .tree a { transition: none; }
   .sk, .panel.busy::after { animation: none; }
   .panel.busy::after { opacity: 1; width: 100%; }
   .tile:hover, button.primary:active, .tile:active { transform: none; }

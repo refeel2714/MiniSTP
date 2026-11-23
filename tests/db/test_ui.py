@@ -96,6 +96,31 @@ def test_every_page_carries_what_the_jump_box_can_open(client, conn):
     assert "openJump" in client.get("/static/stpui.js").text
 
 
+def test_every_page_carries_the_menu_tree_and_a_screen_its_place_in_it(client, conn):
+    """왼쪽 메뉴트리: 분류(대분류 > 중분류 > 화면)가 어느 페이지에나 실리고, 화면은 자기 분류를 알아요."""
+    import json
+    import re
+
+    def data(path):
+        return json.loads(re.search(r'<script id="stpui-data" type="application/json">(.*?)</script>',
+                                    client.get(path).text, re.S).group(1))
+    home, page = data("/"), data("/screen/STP-3200")
+    assert home["tree"] == page["tree"] and home["path"] == [] and page["path"] == ["원장·회계", "분개"]
+    assert [s["id"] for a in home["tree"] for g in a["groups"] for s in g["screens"]] == sorted(load_screens())
+    script, index = client.get("/static/stpui.js").text, all_docs(load_screens(), erd.read_catalog(conn, "public"))
+    assert "DATA.tree" in script and 'class: "tree"' in script
+    assert "| **3 원장·회계**" in index["README.md"] and "| 32 분개 | [STP-3200](STP-3200.md) 분개 조회 |" in index["README.md"]
+    assert "분류: 원장·회계 > 분개" in index["STP-3200.md"]
+
+
+def test_server_refuses_to_start_when_a_screen_has_no_place_in_the_classification(sample, monkeypatch):
+    from ministp.ui.definitions import load_menu
+    menu = [a for a in load_menu() if a.id != "3"]
+    monkeypatch.setattr(ui_app, "load_menu", lambda: menu)
+    with pytest.raises(DefinitionError, match="STP-3100 원장 조회: 대분류 3이 menu.yaml에 없어요"):
+        ui_app.create_app(URL, calendar=CAL, fees=FEES)
+
+
 def test_screen_page_carries_the_resolved_definition(client):
     r = client.get("/screen/STP-3200")
     assert r.status_code == 200 and 'id="stpui-data"' in r.text
