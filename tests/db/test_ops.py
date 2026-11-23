@@ -86,7 +86,12 @@ class SimBroker:
         return OrderAck(no, "00950")
 
     def cancel_order(self, ack):
-        raise AssertionError("not used")
+        o = self.orders[self.today][ack.order_no]
+        if o.filled_qty + o.canceled_qty >= o.qty:
+            raise RuntimeError("APBK0917 정정취소가능수량 없음")
+        self.orders[self.today][ack.order_no] = BrokerOrder(o.order_no, o.symbol, o.side, o.qty, o.filled_qty,
+                                                            o.filled_amount, o.qty - o.filled_qty, 0)
+        self.calls.append(("cancel", ack.order_no))
 
     def daily_orders(self, day):
         return list(self.orders.get(day, {}).values())

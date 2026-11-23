@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 
 from .broker.base import BrokerBalance, BrokerGateway, OrderAck, recon_items
 from .ledger import ExecutionEvent, Ledger, Side
-from .oms import OrderManager, OrderStatus, OverfillError
+from .oms import InvalidTransition, OrderManager, OrderStatus, OverfillError
 from .recon import ReconItem, ReconResult, reconcile
 from .capacity import OpenOrder, capacity, check
 from .risk import RiskLimits, explain
@@ -58,6 +58,7 @@ class TradingSession:
     last_balance: BrokerBalance | None = None
     on_submit: object = None  # callable(cid, day, symbol, side, qty, limit) before the broker call
     on_ack: object = None     # callable(cid, ack | None, detail) after it
+    on_cancel: object = None  # callable(cid, ack) after the broker took a cancel request
 
     def _open_orders(self):
         closed = (OrderStatus.FILLED, OrderStatus.CANCELED, OrderStatus.REJECTED)
@@ -72,8 +73,9 @@ class TradingSession:
         return capacity(self.ledger, self.open_orders(), symbol, ref_price, self.limits, ref_prices)
 
     def restore(self, day: dt.date, client_id: str, symbol: str, side: Side, qty: int, limit_price: int | None,
-                ack: OrderAck) -> None:
-        """Re-track an order placed earlier today by another process, with fills already in the ledger."""
+                ack: OrderAck, cancel_requested: bool = False) -> None:
+        """Re-track an order placed earlier today by another process, with fills already in the ledger.
+        `cancel_requested`: that process asked the broker to cancel it (R-45)."""
         self.oms.create(client_id, symbol=symbol, side=side, qty=qty, limit_price=limit_price or 0)
         self.oms.on_accepted(client_id)
         t = _Tracked(client_id, day, ack)
@@ -84,6 +86,8 @@ class TradingSession:
                 t.booked_qty += e.qty
                 t.booked_amount += e.qty * e.price
                 self.oms.on_fill(client_id, e.qty)
+        if cancel_requested and self.oms.orders[client_id].status is not OrderStatus.FILLED:
+            self.oms.request_cancel(client_id)
         self._by_client[client_id] = t
         self._by_broker_no[ack.order_no] = t
 
@@ -131,9 +135,31 @@ class TradingSession:
         t = self._by_client[client_id]
         return [f"{exec_prefix(t.day, t.ack.order_no)}{i}" for i in range(1, t.fills + 1)]
 
+    def find(self, ref: str) -> str:
+        """An order of this session by client id (`S20261124-0003`), its number (`3`) or the broker's
+        order number (`0000012345`)."""
+        ref = ref.strip()
+        if ref in self._by_client:
+            return ref
+        if ref in self._by_broker_no:
+            return self._by_broker_no[ref].client_id
+        if ref.isdigit():
+            hits = [cid for cid in self._by_client if cid.rsplit("-", 1)[-1].lstrip("0") == ref.lstrip("0")]
+            if len(hits) == 1:
+                return hits[0]
+        raise KeyError(ref)
+
     def cancel(self, client_id: str) -> None:
-        self.oms.request_cancel(client_id)
+        """R-45: cancel the whole unfilled rest. The broker is asked first; the order becomes
+        `CANCEL_PENDING` only once the broker took the request, and `CANCELED` when a sync sees
+        the broker's confirmed quantity. A refused request leaves the order as it was."""
+        o = self.oms.orders[client_id]
+        if o.status not in (OrderStatus.SUBMITTED, OrderStatus.PARTIALLY_FILLED):
+            raise InvalidTransition(f"{client_id}: {o.status} 상태라 취소할 수 없어요")
         self.broker.cancel_order(self._by_client[client_id].ack)
+        self.oms.request_cancel(client_id)
+        if self.on_cancel:
+            self.on_cancel(client_id, self._by_client[client_id].ack)
 
     def sync(self, day: dt.date) -> list[str]:
         """Book fill increases reported by the broker. Returns new execution ids."""
