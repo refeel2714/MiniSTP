@@ -39,7 +39,7 @@ def test_column_problems(col, problem):
 
 def test_transaction_must_exist_and_belong_to_the_screen():
     assert any("없는 트랜잭션" in e for e in validate(screen([], tx="STP1100R99"), CATALOG))
-    assert any("다른 화면 것" in e for e in validate(screen([], tx="STP3100R03"), CATALOG))
+    assert any("다른 화면 것" in e for e in validate(screen([], tx="STP3300R01"), CATALOG))
 
 
 def test_condition_must_be_taken_by_a_transaction():
@@ -63,15 +63,16 @@ def test_drill_needs_a_condition_on_the_target():
 
 def test_shipped_screens_load_and_report_usages():
     screens = load_screens()
-    assert {"STP-1100", "STP-1200", "STP-2100", "STP-2200", "STP-3100"} <= set(screens)
-    assert "STP-3100 journal" in usages(screens)["journal_lines.debit"]
+    assert {"STP-1100", "STP-1200", "STP-2100", "STP-2200", "STP-3100", "STP-3200", "STP-3300"} <= set(screens)
+    assert usages(screens)["journal_lines.debit"] == ["STP-3200 journal"]          # the journal has a screen of its own
+    assert "STP-3100 positions" in usages(screens)["position_ledger.qty_delta"]
 
 
 def test_unknown_transaction_and_parameters_are_refused():
     with pytest.raises(TxError, match="없는 트랜잭션"):
         run_tx("STP0000R01", None, {})
     with pytest.raises(TxError, match="없는 조회조건"):
-        run_tx("STP3100R03", None, {"drop": "table"})
+        run_tx("STP3300R01", None, {"drop": "table"})
     with pytest.raises(TxError, match="올바르지 않아요"):
         run_tx("STP3100R02", None, {"seq": "abc"})
 
@@ -128,12 +129,17 @@ def test_split_layout_is_one_list_on_the_left_and_a_few_details_on_the_right():
     assert any("layout은" in e for e in validate(odd, CATALOG))
 
     shipped = load_screens()
-    for sid, on_left, on_right, under in [("STP-3100", ["events"], ["journal", "positions", "cash"], ["trial"]),
+    for sid, on_left, on_right, under in [("STP-3100", ["events"], ["positions", "cash"], []),
+                                          ("STP-3200", ["events"], ["journal"], []),   # the journal has the right side to itself
                                           ("STP-4100", ["instruments"], ["events"], [])]:
         assert shipped[sid].layout == "split"
         left, right, below = split_sides(shipped[sid])
         assert ([g.id for g in left], [g.id for g in right], [g.id for g in below]) == (on_left, on_right, under)
-    assert shipped["STP-1100"].layout == "stack"
+    assert shipped["STP-1100"].layout == "stack" and shipped["STP-3300"].layout == "stack"
+    # 원장 조회와 분개 조회는 같은 이벤트로 서로를 열어요 (두 번 누르기)
+    events = {sid: next(g for g in shipped[sid].grids if g.id == "events") for sid in ("STP-3100", "STP-3200")}
+    assert events["STP-3100"].drill == {"screen": "STP-3200", "params": {"seq": "seq"}}
+    assert events["STP-3200"].drill == {"screen": "STP-3100", "params": {"seq": "seq"}}
 
 
 def test_a_button_names_a_real_action_and_feeds_every_required_input():
@@ -279,7 +285,7 @@ def test_t_account_view_names_the_account_and_both_sides():
     assert validate(s, CATALOG) == []
     assert resolve(s["STP-1100"], CATALOG)["grids"][0]["taccount"] == T_ROLES
     assert validate(t_grid(taccount={"account": "account", "debit": "debit", "credit": "credit"}), CATALOG) == []   # name, entry: optional
-    shipped = next(g for g in load_screens()["STP-3100"].grids if g.id == "journal")
+    shipped = next(g for g in load_screens()["STP-3200"].grids if g.id == "journal")
     assert shipped.view == "taccount" and shipped.taccount == {
         "entry": "entry_id", "account": "account_code", "name": "account_name", "debit": "debit", "credit": "credit"}
 
@@ -417,4 +423,4 @@ def test_the_jump_box_offers_a_code_for_every_screen_that_takes_it():
     assert jump_targets(screen([], [Condition("day", "date", label="기준일")]), CATALOG, {"symbol": lk}) == []
 
     real = {j["name"]: [t["id"] for t in j["into"]] for j in jump_targets(load_screens(), CATALOG, load_lookups())}
-    assert real == {"symbol": ["STP-1300", "STP-3100"]}                # a 종목 opens 주문가능 조회 and 원장·분개 조회
+    assert real == {"symbol": ["STP-1300", "STP-3100", "STP-3200"]}    # a 종목 opens 주문가능 조회, 원장 조회 and 분개 조회
