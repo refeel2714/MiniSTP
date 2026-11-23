@@ -68,7 +68,7 @@ def _resolve(c: ActionContext, p) -> str:
     return f"불일치 {p['result_id']}번에 판단을 기록했어요 (새 행 {rid}). 원래 행은 그대로예요."
 
 
-# ---------- 계좌 관리 (STP-4400), 고객 (STP-4500): the `customer` and `account` commands ----------
+# ---------- 계좌 관리 (STP-4400), 고객 (STP-1400): the `customer` and `account` commands ----------
 
 def _account_add(c: ActionContext, p) -> str:
     a = accounts.add_account(c.conn, p["account_id"], p["customer_id"], p["alias"],
@@ -129,7 +129,7 @@ ACTIONS: dict[str, Action] = {a.tx_id: a for a in [
     Action("STP4400U02", "계좌 상태 변경", {"account_id": "text", "status": "text", "effective_from": "date",
                                        "reason": "text"}, _account_status, optional=("effective_from",),
            audit="ACCOUNT_STATUS", target=("account_id",), account="account_id"),
-    Action("STP4500U01", "고객 등록", {"customer_id": "text", "alias": "text"}, _customer_add,
+    Action("STP1400U01", "고객 등록", {"customer_id": "text", "alias": "text"}, _customer_add,
            audit="CUSTOMER_ADD", target=("customer_id",)),
     Action("STP4600U01", "코드 그룹 추가", {"group_id": "text", "name": "text", "description": "text"}, _group_add,
            optional=("description",), audit="CODE_GROUP_ADD", target=("group_id",)),

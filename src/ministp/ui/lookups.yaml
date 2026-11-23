@@ -27,7 +27,7 @@ code:
     - {name: in_use, source: common_codes.in_use}
 customer:
   title: 고객 찾기
-  tx: STP4500R01
+  tx: STP1400R01
   value: customer_id
   shows: alias
   columns:
