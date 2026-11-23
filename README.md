@@ -145,7 +145,7 @@ MINISTP_TEST_DATABASE_URL=postgresql://postgres:postgres@localhost:5432/ministp_
 |---|---|---|
 | `calendar` | 영업일, T+2 결제일 | R-10~11 |
 | `fees` | 수수료, 증권거래세, 농특세 | R-20~22 |
-| `ledger` | append-only 이벤트 원장, 포지션, 예수금, 결제, 분개, 평가, 기준가 | R-12~14, R-30~36, R-50~65 |
+| `ledger` | append-only 이벤트 원장, 포지션, 예수금, 결제, 분개, 평가, 기준가 | R-12~14, R-30~36, R-50~66 |
 | `accounting` | 계정과목 v1, 차대변 검증 분개 | D4, R-50 |
 | `oms` | 주문 상태 머신, 킬 스위치 | R-40~43 |
 | `recon` | 일일 대사, 원인 후보 | R-70~74 |
@@ -159,6 +159,7 @@ MINISTP_TEST_DATABASE_URL=postgresql://postgres:postgres@localhost:5432/ministp_
 | `broker.kis_ws` | 실시간 체결통보 수신(접속키, 구독, AES 복호화, PINGPONG, 재연결) | D6 |
 | `rights` | 권리처리: 현금배당 권리 원장(등록·취소 행), `daily`의 인식·입금·취소 반영, 실제 입금액 기록 | R-23, R-57~59 |
 | `cash` | 입출금·대체: 증권사에서 넣거나 뺀 돈과 내 계좌끼리 옮긴 돈의 기록, 출금가능금액, 대체의 두 기록을 한 트랜잭션으로 | R-56, R-61, R-64, R-65 |
+| `adjustments` | 수동 조정: 예탁금 이용료와 증권사와의 수수료·세금·배당 차이를 사유 코드로 기록, 반대 전표로 취소 | R-66 |
 | `audit` | 감사 로그: 요청마다 한 줄(처리·거부·실패), 경로와 실행 계정, DB가 채우는 번호·시각·해시 사슬 | R-85~87 |
 | `store` | PostgreSQL 이벤트 저장, 재생 복원, DB 수준 append-only·차대변 통제 | 03 데이터 모델, R-04, R-50 |
 | `queries` | 조회 서비스 계층: 화면이 호출할 조회 트랜잭션(원장 목록·추적, 시산표, 대사 이력, 주문 블로터, 기준가 추이). DB 읽기만 하고 DB 컬럼명 그대로 Dataset으로 반환 | 화면 기획서 |
@@ -241,6 +242,17 @@ MINISTP_TEST_DATABASE_URL=postgresql://postgres:postgres@localhost:5432/ministp_
 ```
 
 MiniSTP는 돈을 옮기지 않습니다. 증권사 앱에서 넣거나 뺀 돈을 여기에 기록하면 다음 `daily`의 대사가 증권사 잔고와 맞춰 봅니다. 기록하지 않은 입출금은 대사에서 예수금 불일치로 나타납니다. 입금은 전날 기준가로 좌수를 발행하고 출금은 좌수를 줄여서, 돈이 드나들어도 기준가(수익률)는 움직이지 않습니다(R-61). 출금과 대체 출금은 출금가능금액(결제를 기다리는 매수 대금을 뺀 예수금, R-64) 안에서만 기록됩니다. 대체는 같은 고객의 계좌 사이에서만 하고, 보낸 쪽과 받은 쪽 기록이 함께 들어가거나 함께 들어가지 않습니다(R-65).
+
+수동 조정 (ERD v2.6부터):
+
+```bat
+.venv\Scripts\python -m ministp adjust list
+.venv\Scripts\python -m ministp adjust add INTEREST 12340 --tax 1890 --memo "3분기 예탁금 이용료"
+.venv\Scripts\python -m ministp adjust add FEE -30 --memo "11/20 매수 수수료 차이" --break 12
+.venv\Scripts\python -m ministp adjust cancel 2 "증권사가 돌려줌"   :: 지우지 않고 반대 전표를 더해요
+```
+
+원장이 스스로 계산할 수 없는 돈(예탁금 이용료)과, 불일치의 원인을 판단한 뒤에도 증권사와 원장 사이에 남는 차이(수수료, 거래세, 배당금, 원천징수)를 기록합니다. `resolve`는 불일치가 왜 났는지를 남길 뿐 장부를 바꾸지 않아서, 차이를 조정으로 기록하지 않으면 다음 날 대사가 같은 금액으로 다시 깨집니다. 사유는 정해진 목록(`code list ADJUSTMENT_REASON`)에서 고르고 사유가 상대 계정을 정합니다. 금액은 예수금이 늘면 +, 줄면 -로 적고 메모는 반드시 적습니다(R-66).
 
 감사 로그 (ERD v2.3부터):
 

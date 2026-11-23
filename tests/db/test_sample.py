@@ -157,5 +157,9 @@ def test_the_sample_has_money_coming_in_and_going_out(conn):
     assert s.streak == 15 and s.breaks_resolved == 2      # recorded the day it happened: the recon never saw a gap
     navs = [row.nav_per_1000 for row in books(conn).ledger.nav_history()]
     assert all(abs(b / a - 1) < 0.03 for a, b in zip(navs, navs[1:]))   # R-61: money in or out does not move the NAV
-    said = [(r.action, r.actor, r.detail["memo"]) for r in audit.rows(conn, limit=500) if r.action.startswith("CASH")]
-    assert said[::-1] == [("CASH_DEPOSIT", "sample", "샘플: 추가 입금"), ("CASH_WITHDRAW", "sample", "샘플: 일부 출금")]
+    said = [(r.action, r.actor, r.detail["memo"]) for r in audit.rows(conn, limit=500)
+            if r.action.startswith(("CASH", "ADJUSTMENT"))]
+    assert said[::-1] == [("CASH_DEPOSIT", "sample", "샘플: 추가 입금"), ("ADJUSTMENT_ADD", "sample", "샘플: 예탁금 이용료"),
+                          ("CASH_WITHDRAW", "sample", "샘플: 일부 출금")]
+    assert conn.execute("select reason, amount, tax, cash_amount from adjustments_v").fetchall() == [
+        ("INTEREST", 12_340, 1_890, 10_450)]                # R-66: income the ledger could not have computed
