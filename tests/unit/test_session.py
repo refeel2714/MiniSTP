@@ -4,7 +4,7 @@ import pytest
 from conftest import d
 from ministp.broker import BrokerBalance, BrokerOrder, BrokerPosition, OrderAck
 from ministp.ledger import Side
-from ministp.oms import OrderStatus, OverfillError
+from ministp.oms import InvalidTransition, OrderStatus, OverfillError
 from ministp.recon import Status
 from ministp.session import TradingSession, failure_text
 
@@ -14,6 +14,7 @@ DAY = d("11-02")
 class FakeBroker:
     def __init__(self, price=50_000, reject=False):
         self.price, self.reject = price, reject
+        self.reject_cancel = False
         self.orders: dict[str, BrokerOrder] = {}
         self.placed, self.canceled = [], []
         self.cash_d0 = 10_000_000
@@ -32,6 +33,8 @@ class FakeBroker:
         return OrderAck(no, "00950")
 
     def cancel_order(self, ack):
+        if self.reject_cancel:
+            raise RuntimeError("APBK0917 정정취소가능수량 없음")
         self.canceled.append(ack.order_no)
 
     def daily_orders(self, day):
@@ -95,6 +98,33 @@ def test_cancel_after_partial_fill(session):
     session.sync(DAY)
     assert session.oms.orders[cid].status is OrderStatus.CANCELED
     assert session.oms.orders[cid].filled_qty == 3
+
+
+def test_a_refused_cancel_leaves_the_order_as_it_was(session):
+    cid = session.submit(DAY, "A", Side.BUY, 10, limit_price=50_000)
+    session.broker.reject_cancel = True
+    with pytest.raises(RuntimeError, match="APBK0917"):
+        session.cancel(cid)
+    assert session.oms.orders[cid].status is OrderStatus.SUBMITTED      # R-45: still live, still reserved
+    assert [o.client_id for o in session.open_orders()] == [cid]
+
+
+def test_a_finished_order_cannot_be_canceled_and_the_broker_is_not_asked(session):
+    cid = session.submit(DAY, "A", Side.BUY, 2)
+    session.broker.fill("0000000001", 2, 50_000)
+    session.sync(DAY)
+    with pytest.raises(InvalidTransition, match="FILLED"):
+        session.cancel(cid)
+    assert session.broker.canceled == []
+
+
+def test_find_an_order_by_number_client_id_or_broker_number(session):
+    a = session.submit(DAY, "A", Side.BUY, 1)
+    b = session.submit(DAY, "A", Side.BUY, 1)
+    assert session.find("2") == session.find("0002") == session.find(b) == b
+    assert session.find("0000000001") == a
+    with pytest.raises(KeyError):
+        session.find("9")
 
 
 def test_risk_rejects_before_reaching_broker(session):
