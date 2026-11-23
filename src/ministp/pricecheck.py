@@ -7,6 +7,11 @@ prices themselves, using only what the ledger already recorded (the closes in
 RevaluationEvent and NavEvent, the executions of the day). Nothing is fetched
 and nothing is written.
 
+The checks say whether a close can be a close. They do not say why a price
+moved: that needs market and corporate-event data the ledger does not hold.
+STP-2300 shows the closes as a trend over a period with these results beside
+them, and the close board (STP-2400) takes its 시세 step from them.
+
 The thresholds are a first proposal (PriceRules), shown on the screen next to
 the results so nobody has to guess why a row was flagged.
 """

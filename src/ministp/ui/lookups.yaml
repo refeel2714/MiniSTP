@@ -13,7 +13,6 @@ symbol:
     - {name: instrument_name, source: instruments.name}
     - {name: market, source: instruments.market, format: code}
     - {name: asset_type, source: instruments.asset_type, format: code}
-    - {name: last_close, label: 최근 종가, format: money}
 code:
   # 공통코드 팝업: lookup_params로 그룹을 정해요 (예: {group_id: ACCOUNT_STATUS})
   title: 코드 찾기
