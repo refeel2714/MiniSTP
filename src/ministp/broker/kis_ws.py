@@ -1,9 +1,9 @@
 """KIS real-time fill notices (실시간 체결통보, H0STCNI9 paper / H0STCNI0 live).
 
-The feed is a trigger, not the source of truth: a notice tells MiniSTP that an
-order changed, and the session then books the change from the broker's
-cumulative order state (`daily_orders`). Duplicate, late or missing notices
-therefore cannot double-book or lose a fill; a periodic poll covers gaps.
+A notice carries one fill's own quantity and price, which the session books in
+arrival order once the broker's cumulative order state (`daily_orders`) shows the
+fill (R-76, v1.25). Duplicate notices are ignored, late ones wait for the query,
+and fills without a notice are filled in from the query by a periodic poll.
 
 Message format (official samples, koreainvestment/open-trading-api):
 * control frames are JSON (subscribe answer with AES key/iv, PINGPONG);

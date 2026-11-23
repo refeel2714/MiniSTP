@@ -1,9 +1,10 @@
 """Live/paper trading session: risk -> OMS -> broker -> fill sync -> ledger.
 
-Fills are picked up by polling the broker's cumulative per-order state
-(`daily_orders`) and booking only the increase since the last sync, so a sync
-can run any number of times without double booking. A real-time fill feed can
-later call the same `sync` path.
+Fills are booked from real-time fill notices (each fill's own quantity and price,
+in arrival order) once the broker's cumulative per-order state (`daily_orders`)
+shows them, and what the notices miss is filled in from that state. Only the
+increase since the last sync is ever booked, so a sync can run any number of
+times without double booking (R-76).
 """
 import datetime as dt
 from dataclasses import dataclass, field
@@ -56,6 +57,9 @@ class TradingSession:
     _by_client: dict[str, _Tracked] = field(default_factory=dict)
     _seq: int = 0
     last_balance: BrokerBalance | None = None
+    _pending_notices: list = field(default_factory=list)       # fill notices the query has not shown yet
+    _seen_notices: set = field(default_factory=set)            # (order_no, time, qty, price) already taken
+    _gaps: dict = field(default_factory=dict)                  # order_no -> cumulative state at last gap check
     on_submit: object = None  # callable(cid, day, symbol, side, qty, limit) before the broker call
     on_ack: object = None     # callable(cid, ack | None, detail) after it
 
@@ -135,10 +139,49 @@ class TradingSession:
         self.oms.request_cancel(client_id)
         self.broker.cancel_order(self._by_client[client_id].ack)
 
-    def sync(self, day: dt.date) -> list[str]:
-        """Book fill increases reported by the broker. Returns new execution ids."""
+    def sync(self, day: dt.date, notices=(), gap: str = "now") -> list[str]:
+        """Book fills the broker reports. Returns new execution ids.
+
+        R-76 (v1.25): a fill notice carries one fill's own quantity and price, so it is booked as that
+        fill, in the order notices arrive, once the broker's cumulative state (`daily_orders`) shows it.
+        A notice the cumulative state does not show yet waits for the next sync. What the cumulative
+        state shows beyond the notices (a lost notice, or no feed at all) is a gap, booked as one
+        execution at its average price, depending on `gap`:
+        `now` books it, `hold` leaves it (a notice is probably on its way), and `grace` books it only
+        if the same gap was already there at the previous `grace` sync.
+        Running this any number of times never books a fill twice."""
+        for n in notices:
+            key = (n.order_no, n.time, n.qty, n.price)
+            if key not in self._seen_notices:
+                self._seen_notices.add(key)
+                self._pending_notices.append(n)
         booked = []
-        for b in self.broker.daily_orders(day):
+        orders = self.broker.daily_orders(day)
+        by_no = {b.order_no: b for b in orders}
+        # 1. notices, in the order they arrived (moving-average cost depends on it), as far as the
+        #    cumulative state covers them; a notice the query has not caught up with waits, and so do
+        #    later notices of the same order
+        waiting: set[str] = set()
+        for n in list(self._pending_notices):
+            b, t = by_no.get(n.order_no), self._by_broker_no.get(n.order_no)
+            if t is None:                               # not MiniSTP's order: the loop below flags it
+                self._pending_notices.remove(n)
+                continue
+            if b is None or n.order_no in waiting:
+                waiting.add(n.order_no)
+                continue
+            dq, da = b.filled_qty - t.booked_qty, b.filled_amount - t.booked_amount
+            if n.qty > dq:
+                waiting.add(n.order_no)                 # the query has not caught up yet
+                continue
+            self._pending_notices.remove(n)
+            rest_q, rest_a = dq - n.qty, da - n.qty * n.price
+            if n.qty <= 0 or n.price <= 0 or rest_a < 0 or (rest_q == 0) != (rest_a == 0) or rest_a < rest_q:
+                self.anomalies.append(Anomaly(day, "NOTICE_MISMATCH", b.order_no,
+                                              f"notice {n.qty}@{n.price} vs +{dq} shares for {da} won"))
+                continue
+            booked.append(self._book(day, t, b, n.qty, n.price))
+        for b in orders:
             t = self._by_broker_no.get(b.order_no)
             if t is None:
                 if not any(a.kind == "UNKNOWN_ORDER" and a.ref == b.order_no for a in self.anomalies):
@@ -146,23 +189,21 @@ class TradingSession:
                                                   f"{b.side} {b.symbol} x{b.qty} placed outside MiniSTP"))
                 continue
             o = self.oms.orders[t.client_id]
+            # 2. what the notices do not explain
             dq, da = b.filled_qty - t.booked_qty, b.filled_amount - t.booked_amount
-            if dq > 0:
-                if da % dq:
-                    # several prices inside one increase; wait for per-fill data
-                    self.anomalies.append(Anomaly(day, "ODD_FILL_PRICE", b.order_no,
-                                                  f"+{dq} shares for {da} won"))
-                    continue
-                try:
-                    self.oms.on_fill(t.client_id, dq)
-                except OverfillError as exc:
-                    self.anomalies.append(Anomaly(day, "OVERFILL", b.order_no, str(exc)))
-                    raise
-                t.fills += 1
-                exec_id = f"{exec_prefix(day, b.order_no)}{t.fills}"
-                self.ledger.execute(exec_id, day, b.symbol, Side(b.side), dq, da // dq)
-                t.booked_qty, t.booked_amount = b.filled_qty, b.filled_amount
-                booked.append(exec_id)
+            if dq > 0 and not any(n.order_no == b.order_no for n in self._pending_notices):
+                seen = self._gaps.get(b.order_no)
+                if gap == "grace":
+                    self._gaps[b.order_no] = (b.filled_qty, b.filled_amount)
+                if gap == "now" or (gap == "grace" and seen == (b.filled_qty, b.filled_amount)):
+                    if da % dq:
+                        # several prices inside one increase and no notice to split it
+                        if not any(a.kind == "ODD_FILL_PRICE" and a.ref == b.order_no
+                                   and a.detail == f"+{dq} shares for {da} won" for a in self.anomalies):
+                            self.anomalies.append(Anomaly(day, "ODD_FILL_PRICE", b.order_no,
+                                                          f"+{dq} shares for {da} won"))
+                    else:
+                        booked.append(self._book(day, t, b, dq, da // dq))
             done = b.filled_qty + b.canceled_qty + b.rejected_qty
             if b.canceled_qty and done == o.qty and o.status is not OrderStatus.CANCELED \
                     and t.booked_qty == b.filled_qty:
@@ -173,6 +214,19 @@ class TradingSession:
                 self.oms.on_rejected(t.client_id)
                 self.anomalies.append(Anomaly(day, "BROKER_REJECTED", b.order_no, "rejected by exchange"))
         return booked
+
+    def _book(self, day: dt.date, t: "_Tracked", b, qty: int, price: int) -> str:
+        try:
+            self.oms.on_fill(t.client_id, qty)
+        except OverfillError as exc:
+            self.anomalies.append(Anomaly(day, "OVERFILL", b.order_no, str(exc)))
+            raise
+        t.fills += 1
+        exec_id = f"{exec_prefix(day, b.order_no)}{t.fills}"
+        self.ledger.execute(exec_id, day, b.symbol, Side(b.side), qty, price)
+        t.booked_qty += qty
+        t.booked_amount += qty * price
+        return exec_id
 
     def reconcile(self, day: dt.date) -> list[ReconResult]:
         """R-70~71: positions, book cost, cash and today's filled quantity."""

@@ -178,3 +178,92 @@ def test_price_lookup_failure_does_not_crash_or_order(session):
     assert session.submit(DAY, "A", Side.BUY, 1) is None
     assert session.broker.placed == []
     assert "price:" in session.anomalies[-1].detail
+
+
+# ----- R-76 (v1.25): fills booked from the notice's own quantity and price -----
+
+def notice(no, qty, price, time="100000", side="BUY", symbol="A"):
+    from ministp.broker.kis_ws import FillNotice
+    return FillNotice(no, symbol, side, qty, price, time, True, False)
+
+
+def test_two_fills_between_queries_are_booked_as_two_with_their_own_prices(session):
+    session.submit(DAY, "A", Side.BUY, 3)
+    b = session.broker
+    b.fill("0000000001", 1, 50_000)
+    b.fill("0000000001", 2, 50_100)                 # the query now shows +3 for 150,200 (no single price)
+    booked = session.sync(DAY, notices=[notice("0000000001", 1, 50_000, "100001"),
+                                        notice("0000000001", 2, 50_100, "100002")], gap="hold")
+    assert booked == ["20261102-0000000001-1", "20261102-0000000001-2"]
+    assert [session.ledger.execution_result(e).gross for e in booked] == [50_000, 100_200]
+    assert session.anomalies == []
+
+
+def test_commission_is_per_fill_like_the_broker(ledger):
+    from ministp.fees import FeeSchedule
+    from ministp.ledger import Ledger
+    led = Ledger(ledger.calendar, FeeSchedule.kis_paper(), ledger.instruments)
+    led.deposit(DAY, 10_000_000)
+    s = TradingSession(led, FakeBroker())
+    s.submit(DAY, "A", Side.BUY, 2)
+    s.broker.fill("0000000001", 1, 39_000)
+    s.broker.fill("0000000001", 1, 39_000)
+    s.sync(DAY, notices=[notice("0000000001", 1, 39_000, "100001"), notice("0000000001", 1, 39_000, "100002")])
+    assert led.account_balance(__import__("ministp.accounting", fromlist=["Account"]).Account.COMMISSION) == 0
+    # (merged into one 78,000 won execution it would have been 10 won)
+
+
+def test_a_notice_ahead_of_the_query_waits_for_it(session):
+    session.submit(DAY, "A", Side.BUY, 2)
+    assert session.sync(DAY, notices=[notice("0000000001", 2, 50_000)], gap="hold") == []
+    session.broker.fill("0000000001", 2, 50_000)
+    assert session.sync(DAY, gap="hold") == ["20261102-0000000001-1"]
+
+
+def test_fills_of_different_orders_are_booked_in_notice_order(session):
+    """Moving-average cost depends on order: a sell booked before a later buy uses the old average."""
+    session.ledger.execute("OPEN", DAY, "A", Side.BUY, 10, 40_000)
+    buy = session.submit(DAY, "A", Side.BUY, 10, limit_price=60_000)
+    sell = session.submit(DAY, "A", Side.SELL, 5, limit_price=50_000)
+    assert buy and sell
+    b = session.broker
+    b.fill("0000000002", 5, 50_000)                 # the sell fills first ...
+    b.fill("0000000001", 10, 60_000)                # ... then the buy
+    session.sync(DAY, notices=[notice("0000000002", 5, 50_000, "100001", side="SELL"),
+                               notice("0000000001", 10, 60_000, "100002")], gap="hold")
+    sold = session.ledger.execution_result("20261102-0000000002-1")
+    assert sold.cost_of_sale == 200_000             # 5 × 40,000: the average before the buy
+
+
+def test_a_fill_without_a_notice_waits_one_poll_while_the_feed_is_up(session):
+    session.submit(DAY, "A", Side.BUY, 1)
+    session.broker.fill("0000000001", 1, 50_000)    # its notice got lost
+    assert session.sync(DAY, gap="hold") == []
+    assert session.sync(DAY, gap="grace") == []     # first sight: a notice may be on its way
+    assert session.sync(DAY, gap="grace") == ["20261102-0000000001-1"]
+
+
+def test_without_the_feed_a_fill_is_booked_at_once(session):
+    session.submit(DAY, "A", Side.BUY, 1)
+    session.broker.fill("0000000001", 1, 50_000)
+    assert session.sync(DAY) == ["20261102-0000000001-1"]       # default gap="now" (daily)
+
+
+def test_a_resent_notice_is_not_booked_twice(session):
+    session.submit(DAY, "A", Side.BUY, 2)
+    session.broker.fill("0000000001", 1, 50_000)
+    n = notice("0000000001", 1, 50_000, "100001")
+    assert session.sync(DAY, notices=[n], gap="hold") == ["20261102-0000000001-1"]
+    session.broker.fill("0000000001", 1, 50_100)    # a second fill whose notice is still on its way
+    assert session.sync(DAY, notices=[n], gap="hold") == []          # the old notice again: ignored
+    assert session.sync(DAY, notices=[notice("0000000001", 1, 50_100, "100002")], gap="hold") == [
+        "20261102-0000000001-2"]
+    assert session.ledger.position("A").book_cost == 100_100
+
+
+def test_a_notice_that_does_not_fit_the_query_is_flagged_and_the_query_wins(session):
+    session.submit(DAY, "A", Side.BUY, 1)
+    session.broker.fill("0000000001", 1, 50_000)
+    assert session.sync(DAY, notices=[notice("0000000001", 1, 49_000)], gap="now") == ["20261102-0000000001-1"]
+    assert [a.kind for a in session.anomalies] == ["NOTICE_MISMATCH"]
+    assert session.ledger.position("A").book_cost == 50_000

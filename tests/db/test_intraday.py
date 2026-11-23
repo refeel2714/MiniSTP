@@ -185,3 +185,36 @@ def test_a_failing_quote_does_not_stop_the_runner(opened):
     clock.t = 180
     r.step(timeout=0)
     assert r.quotes["069500"].price == 80_540 and any("현재가 다시 받는 중" in line for line in out)
+
+
+def test_while_the_feed_is_up_an_unannounced_fill_waits_one_poll(opened):
+    """R-76 (v1.25): a fill the query shows but no notice announced may have its notice on the way,
+    so the periodic poll books it only if it is still unannounced one poll later."""
+    conn, broker = opened
+    clock, out = Clock(), []
+    r = runner(conn, broker, clock, out)
+    r.events.put(("feed", "up", "ok", dt.datetime(2026, 11, 23, 10, 0)))
+    r.step(timeout=0)
+    r.on_command("buy 069500 1")
+    broker.fill("0000000001", 80_100)                # its notice got lost
+    clock.t = 61
+    r.step(timeout=0)
+    assert r.books.ledger.position("069500").qty == 1
+    clock.t = 122
+    r.step(timeout=0)
+    assert r.books.ledger.position("069500").qty == 2 and r.stats.polls_booked == 1
+
+
+def test_a_restarted_runner_does_not_take_a_resent_notice_again(opened):
+    conn, broker = opened
+    r = runner(conn, broker, Clock(), [])
+    r.on_command("buy 069500 2")
+    broker.fill("0000000001", 80_000)
+    n = notice("0000000001", 2, 80_000)
+    r.events.put(("notice", n, dt.datetime(2026, 11, 23, 10, 0, 1)))
+    r.step(timeout=0)
+    again = runner(conn, broker, Clock(), [])
+    assert (n.order_no, n.time, n.qty, n.price) in again.session._seen_notices
+    again.events.put(("notice", n, dt.datetime(2026, 11, 23, 10, 0, 5)))
+    again.step(timeout=0)
+    assert again.books.ledger.position("069500").qty == 3
