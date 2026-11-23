@@ -33,6 +33,7 @@ OUTCOMES = {"DONE": "처리", "REFUSED": "거부", "FAILED": "실패"}
 ACTIONS = {
     "OPEN": "원장 시작",
     "ORDER": "주문",
+    "ORDER_CANCEL": "주문 취소",
     "DAILY": "일일 마감·대사",
     "CLOSE": "장부 마감",
     "RESOLVE": "불일치 원인 판단",
