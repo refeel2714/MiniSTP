@@ -158,28 +158,28 @@ def test_the_account_list_shows_little_and_its_detail_is_on_the_right(client, co
 
 
 def test_customer_holdings_add_up_the_accounts_of_one_customer(client, conn):
-    """STP-4500 고객별 보유: 고객 → 그 고객의 종목별 합산과 계좌."""
-    screen = load_screens()["STP-4500"]
+    """STP-1400 고객별 보유: 고객 → 그 고객의 종목별 합산과 계좌."""
+    screen = load_screens()["STP-1400"]
     assert screen.layout == "split"
     assert [(g.id, g.load, g.master) for g in screen.grids] == [
         ("customers", "open", None), ("positions", "master", "customers"), ("accounts", "master", "customers")]
 
-    customers, _ = rows(client, "STP4500R01", "A0003")            # the same from any account
+    customers, _ = rows(client, "STP1400R01", "A0003")            # the same from any account
     assert [(c["customer_id"], c["accounts"]) for c in customers] == [("C0001", 2), ("C0002", 1)]
     for c in customers:
-        mine, _ = rows(client, "STP4500R03", params={"customer_id": c["customer_id"]})
+        mine, _ = rows(client, "STP1400R03", params={"customer_id": c["customer_id"]})
         want = [r[0] for r in conn.execute("select account_id from trading_accounts where customer_id = %s"
                                            " order by account_id", (c["customer_id"],))]
         assert [a["account_id"] for a in mine] == want
         assert sum(a["cash_d0"] for a in mine) == c["cash_d0"] and sum(a["book_cost"] for a in mine) == c["book_cost"]
-        totals, _ = rows(client, "STP4500R02", params={"customer_id": c["customer_id"]})
+        totals, _ = rows(client, "STP1400R02", params={"customer_id": c["customer_id"]})
         assert totals and {t["customer_id"] for t in totals} == {c["customer_id"]}
         kinds = dict(conn.execute("select symbol, asset_type from instruments").fetchall())
         assert all(t["asset_type"] == kinds[t["symbol"]] for t in totals)      # 배지 모양이 되는 자산 유형
         assert sum(t["book_cost"] for t in totals) == c["book_cost"]
-    assert client.post("/api/tx/STP4500R03", json={"params": {}}).status_code == 400
+    assert client.post("/api/tx/STP1400R03", json={"params": {}}).status_code == 400
 
-    totals, _ = rows(client, "STP4500R02")                        # no customer named: everyone
+    totals, _ = rows(client, "STP1400R02")                        # no customer named: everyone
     want = conn.execute("select customer_id, symbol, qty, book_cost from customer_positions_v").fetchall()
     assert sorted((t["customer_id"], t["symbol"], t["qty"], t["book_cost"]) for t in totals) == sorted(want)
     both = [t for t in totals if t["customer_id"] == "C0001" and t["accounts"] == 2]

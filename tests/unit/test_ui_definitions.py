@@ -398,7 +398,7 @@ def test_an_instrument_looks_the_same_on_every_screen():
     """종목명을 보여 주는 표는 어디서나 같은 배지: 색은 종목코드, 모양은 자산 유형."""
     shown = [(s.id, g.id, c) for s in load_screens().values() for g in s.grids if g.view == "grid"
              for c in g.columns if c.source == "instruments.name"]
-    assert len(shown) >= 7                                        # 계좌 보유(STP-4400), 고객별 보유(STP-4500)까지
+    assert len(shown) >= 7                                        # 계좌 보유(STP-4400), 고객별 보유(STP-1400)까지
     for sid, gid, c in shown:
         assert (c.display, c.code, c.shape) == ("badge", "symbol", "asset_type"), f"{sid} {gid}"
 
@@ -424,3 +424,45 @@ def test_the_jump_box_offers_a_code_for_every_screen_that_takes_it():
 
     real = {j["name"]: [t["id"] for t in j["into"]] for j in jump_targets(load_screens(), CATALOG, load_lookups())}
     assert real == {"symbol": ["STP-1300", "STP-3100", "STP-3200"]}    # a 종목 opens 주문가능 조회, 원장 조회 and 분개 조회
+
+
+# ---------- 화면 분류 (menu.yaml): 화면번호의 첫 자리 대분류, 둘째 자리까지 중분류 ----------
+
+def named(*ids):
+    return {i: Screen(i, "화면 " + i[4:], "", [], []) for i in ids}
+
+
+def test_every_shipped_screen_has_its_place_in_the_classification():
+    from ministp.ui.definitions import load_menu, menu_path, menu_problems, menu_tree
+    menu, screens = load_menu(), load_screens()
+    assert menu_problems(menu, screens) == []
+    tree = menu_tree(menu, screens)
+    assert [(a["id"], a["name"]) for a in tree] == [("1", "주문·잔고"), ("2", "대사·평가"), ("3", "원장·회계"),
+                                                    ("4", "기준정보")]            # the order a trade flows in
+    placed = [s["id"] for a in tree for g in a["groups"] for s in g["screens"]]
+    assert placed == sorted(screens)                                             # every screen once, in number order
+    for a in tree:
+        for g in a["groups"]:                                                    # the number says where a screen is
+            assert g["id"].startswith(a["id"]) and all(s["id"][4:6] == g["id"] for s in g["screens"])
+    assert menu_path(menu, "STP-3200") == ["원장·회계", "분개"]
+    assert menu_path(menu, "STP-9900") == []
+
+
+def test_a_screen_number_outside_the_classification_is_a_problem():
+    from ministp.ui.definitions import MenuArea, MenuGroup, menu_problems, menu_tree
+    menu = [MenuArea("1", "주문·잔고", "", (MenuGroup("11", "잔고"), MenuGroup("12", "주문·체결")))]
+    assert menu_problems(menu, named("STP-1100", "STP-1200", "STP-1210")) == []
+    tree = menu_tree(menu, named("STP-1210", "STP-1100", "STP-1200"))
+    assert [[s["id"] for s in g["screens"]] for g in tree[0]["groups"]] == [["STP-1100"], ["STP-1200", "STP-1210"]]
+
+    def one(problems):
+        (p,) = problems
+        return p
+    assert "대분류 5이 menu.yaml에 없어요" in one(menu_problems(menu, named("STP-1100", "STP-1200", "STP-5100")))
+    assert "중분류 13가 menu.yaml에 없어요" in one(menu_problems(menu, named("STP-1100", "STP-1200", "STP-1300")))
+    assert "중분류 12 주문·체결에 화면이 없어요" in one(menu_problems(menu, named("STP-1100")))    # no empty branches
+    astray = [MenuArea("1", "주문·잔고", "", (MenuGroup("11", "잔고"), MenuGroup("21", "대사")))]
+    assert any("대분류 1로 시작하는 두 자리" in p for p in menu_problems(astray, named("STP-1100", "STP-2100")))
+    twice = [MenuArea("1", "주문·잔고", "", (MenuGroup("11", "잔고"), MenuGroup("11", "보유")))]
+    assert "중분류 번호 중복 11" in one(menu_problems(twice, named("STP-1100")))
+    assert "대분류 번호는 1~9 한 자리" in menu_problems([MenuArea("10", "기타", "", ())], {})[0]
