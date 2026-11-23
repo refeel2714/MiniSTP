@@ -493,6 +493,50 @@ def price_check_rows(ledger: Ledger, date: dt.date) -> Dataset:
                                for s, p in sorted(ledger.positions().items()) if p.qty))
 
 
+# ---------- STP-2400 마감 점검 ----------
+
+def _close_board(conn: psycopg.Connection, calendar, fees, today: dt.date) -> dict:
+    """Every business day's steps (closeboard.board). The books are replayed here and not taken from
+    `load_books`, which refuses books that fail verification: the board is where that failure has to show."""
+    from . import closeboard as cb
+    from .ops import load_instruments, recon_days
+    from .store.integrity import integrity_report
+    from .store.integrity_view import replay
+    instruments = load_instruments(conn)
+    checks = integrity_report(conn, calendar, fees, instruments)
+    orders: dict[dt.date, list] = {}
+    for day, qty, outcome, order_no in conn.execute(
+            "select o.trade_date, o.qty, a.outcome, a.order_no from oms_orders o"
+            " left join oms_order_acks a using (client_id) order by o.created_at"):
+        orders.setdefault(day, []).append((qty, outcome, order_no))
+    outside = cb.Outside(orders, recon_days(conn), len(checks), sum(not c.ok for c in checks))
+    try:
+        ledger = replay(conn, calendar, fees, instruments)
+    except Exception:       # events the rules reject: no day can be read, the one thing to show is that
+        return {today: [cb.integrity_step(outside)]}
+    return cb.board(ledger, calendar, today, outside)
+
+
+def close_days(conn: psycopg.Connection, calendar, fees, today: dt.date, date_from: dt.date | None = None,
+               date_to: dt.date | None = None) -> Dataset:
+    """영업일 목록, newest first: how many of the day's steps are finished and whether anything needs a decision."""
+    from . import closeboard as cb
+    rows = [(day, cb.finished(steps), len(steps), cb.needing(steps), cb.day_state(steps))
+            for day, steps in _close_board(conn, calendar, fees, today).items()
+            if (date_from is None or day >= date_from) and (date_to is None or day <= date_to)]
+    return Dataset(("date", "done", "steps", "attention", "state"), tuple(rows))
+
+
+def close_steps(conn: psycopg.Connection, calendar, fees, today: dt.date, date: dt.date) -> Dataset:
+    """One day's steps in the order `daily` does them, each with its state, what it found and the screen
+    that shows the detail."""
+    days = _close_board(conn, calendar, fees, today)
+    if date not in days:
+        raise KeyError(f"{date}은 영업일이 아니거나 원장을 시작하기 전이에요")
+    return Dataset(("no", "step", "state", "detail", "screen", "date"),
+                   tuple((s.no, s.name, s.state, s.detail, s.screen, date) for s in days[date]))
+
+
 # ---------- STP-1100 잔고 (IBOR) ----------
 
 def holdings(conn: psycopg.Connection, day: dt.date | None = None) -> Dataset:
@@ -773,6 +817,8 @@ TRANSACTIONS = {
     "STP2210R02": nav_change_bridge,
     "STP2300R01": price_check_days,
     "STP2300R02": price_check_rows,
+    "STP2400R01": close_days,
+    "STP2400R02": close_steps,
     "STP4100R01": instrument_master,
     "STP4100R02": instrument_events,
     "STP4200R01": account_summary,
