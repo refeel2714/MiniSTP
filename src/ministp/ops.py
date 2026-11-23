@@ -126,7 +126,9 @@ def session_for(books: Books, broker: BrokerGateway, day: dt.date) -> TradingSes
             # intent stored but no answer recorded: the process died around the broker call
             session.anomalies.append(Anomaly(day, "UNACKED_ORDER", cid,
                                              f"{side} {sym} x{qty}: 접수 결과 미기록, 증권사 주문내역 확인 필요"))
-    session._seq = len(rows)
+    # Next number after the highest stored one. Orders refused by the order check never reach the DB,
+    # so counting rows would hand out a number already used today (S…-0003 twice).
+    session._seq = max((int(r[0].rsplit("-", 1)[1]) for r in rows), default=0)
 
     def on_submit(cid, d, symbol, side, qty, limit_price):
         books.conn.execute("insert into oms_orders (client_id, trade_date, symbol, side, qty, limit_price)"
