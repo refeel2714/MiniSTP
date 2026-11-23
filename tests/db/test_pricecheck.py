@@ -1,4 +1,4 @@
-"""STP-2300 시세 점검 on a sample database: the screen's transactions and the API."""
+"""STP-2300 시세 추이 on a sample database: the screen's transactions and the API."""
 import os
 
 import pytest
@@ -28,41 +28,55 @@ def context(sample, today=None):
     return TxContext(psycopg.connect(URL, autocommit=True), CAL, FEES, today or sample.last_day)
 
 
-def test_every_close_the_sample_took_is_checked_and_shown_with_the_rules(sample):
+def test_every_symbol_the_sample_valued_has_its_closes_over_the_period(sample):
     ctx = context(sample)
     with ctx.conn:
         res = run_tx("STP2300R01", ctx, {})
-        days = res.datasets["main"].records()
-        assert len(days) == 8 and days[0]["date"] == sample.last_day
+        symbols = res.datasets["main"].records()
+        assert symbols and all(r["instrument_name"] and r["last_date"] == sample.last_day for r in symbols)
         assert {k: res.meta[k] for k in ("warn_change", "limit_change", "warn_exec_gap")} == {
             "warn_change": "15%", "limit_change": "30%", "warn_exec_gap": "10%"}
-        assert all(r["result"] in ("정상", "주의") and r["flagged"] == 0 for r in days)   # sample prices sit on the grid
-        if any(r["result"] == "주의" for r in days):
-            assert res.meta["selected"] == next(r["date"] for r in days if r["result"] == "주의").isoformat()
-        else:
-            assert "selected" not in res.meta
-        for r in days:
-            rows = run_tx("STP2300R02", ctx, {"date": r["date"]}).datasets["main"].records()
-            assert len(rows) == r["symbols"] and all(x["close"] > 0 and x["instrument_name"] for x in rows)
-            assert sum(x["level"] == "주의" for x in rows) == r["warned"]
+        assert all(r["level"] in ("정상", "주의") for r in symbols)             # sample prices sit on the grid
+        flagged = [r["symbol"] for r in symbols if r["level"] == "주의"]
+        assert res.meta.get("selected") == (flagged[0] if flagged else None)
+        nav_days = len(run_tx("STP2200R01", ctx, {}).datasets["main"].records())
+        for r in symbols:
+            detail = run_tx("STP2300R02", ctx, {"symbol": r["symbol"]})
+            rows = detail.datasets["main"].records()
+            assert len(rows) == r["days"] <= nav_days and rows[0]["date"] == r["last_date"]
+            assert [x["close"] for x in reversed(rows)] == r["trend"] and rows[0]["close"] == r["last_close"]
+            assert detail.meta["high"].startswith(f"{r['high']:,} (") and detail.meta["low"].startswith(f"{r['low']:,} (")
+            assert all(x["diff"] == x["close"] - x["prev_close"] for x in rows if x["prev_close"])
 
 
-def test_the_next_business_day_waits_as_not_valued(sample):
-    tomorrow = CAL.add_business_days(sample.last_day, 1)
-    ctx = context(sample, today=tomorrow)
+def test_the_period_narrows_both_sides_and_one_day_reads_against_the_day_before(sample):
+    ctx = context(sample)
     with ctx.conn:
-        days = run_tx("STP2300R01", ctx, {}).datasets["main"].records()
-        assert (days[0]["date"], days[0]["result"], days[0]["flagged"]) == (tomorrow, "평가 전", None)
-        rows = run_tx("STP2300R02", ctx, {"date": tomorrow}).datasets["main"].records()
-        assert len(rows) == days[0]["symbols"]
-        assert all(r["close"] is None and r["prev_close"] and r["level"] == "평가 전" for r in rows)
-        with pytest.raises(TxError, match="기준일이 필요"):
+        day = {"date_from": sample.last_day, "date_to": sample.last_day}
+        symbols = run_tx("STP2300R01", ctx, day).datasets["main"].records()
+        assert symbols and all(r["days"] == 1 and r["date_from"] == sample.last_day for r in symbols)
+        for r in symbols:
+            [row] = run_tx("STP2300R02", ctx, {"symbol": r["symbol"], **day}).datasets["main"].records()
+            assert (row["date"], row["close"]) == (sample.last_day, r["last_close"])
+            assert r["base_close"] == (row["prev_close"] or row["close"]) and r["change"] == (row["change"] or 0.0)
+        assert run_tx("STP2300R01", ctx, {"date_from": "2020-01-01", "date_to": "2020-01-31"}).datasets["main"].records() == []
+        empty = run_tx("STP2300R02", ctx, {"symbol": symbols[0]["symbol"], "date_to": "2020-01-31"})
+        assert empty.datasets["main"].records() == [] and empty.meta == {}
+        with pytest.raises(TxError, match="종목코드가 필요"):
             run_tx("STP2300R02", ctx, {})
 
 
-def test_the_api_serves_the_screen(sample):
+def test_the_api_serves_the_screen_and_the_detail_takes_the_period_from_the_row(sample):
     client = TestClient(ui_app.create_app(URL, calendar=CAL, fees=FEES, today=sample.last_day,
                                           allowed_hosts=["testserver"]))
     assert client.get("/screen/STP-2300").status_code == 200
     body = client.post("/api/tx/STP2300R01", json={"params": {}}).json()
-    assert body["meta"]["limit_change"] == "30%" and len(body["datasets"]["main"]["rows"]) == 8
+    ds = body["datasets"]["main"]
+    first = dict(zip(ds["columns"], ds["rows"][0]))
+    assert body["meta"]["limit_change"] == "30%" and first["date_from"] is None
+    # the screen sends the row's own period, empty when the whole history was asked for
+    sent = {"symbol": first["symbol"], "date_from": first["date_from"], "date_to": first["date_to"]}
+    rows = client.post("/api/tx/STP2300R02", json={"params": sent}).json()["datasets"]["main"]["rows"]
+    assert len(rows) == first["days"]
+    grid = next(g for g in client.get("/api/screen/STP-2300").json()["grids"] if g["id"] == "closes")
+    assert grid["chart"] == {"x": "date", "y": "close"} and grid["link"]["date_from"] == "date_from"
