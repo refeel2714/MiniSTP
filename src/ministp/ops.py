@@ -26,6 +26,7 @@ from .fees import FeeSchedule
 from .instruments import AssetType, Instrument, Market
 from .ledger import ExecutionEvent, Ledger, NavEvent, Side
 from .oms import OrderStatus
+from .quotes import KIND as QUOTE_KIND, Quote, latest_quotes, marks, valid_price
 from .recon import Cause, ReconResult, Status
 from .session import Anomaly, TradingSession, failure_text
 from .store import DEFAULT_ACCOUNT, PostgresLedgerStore, migrate
@@ -331,6 +332,8 @@ class IntradayStats:
     recon_breaks: int = 0
     latencies_ms: list[int] = field(default_factory=list)
     feed_drops: int = 0
+    quotes: int = 0            # 현재가를 받은 횟수 (R-68)
+    quote_failures: int = 0
 
 
 class IntradayRunner:
@@ -342,17 +345,20 @@ class IntradayRunner:
 
     def __init__(self, books: Books, broker: BrokerGateway, day: dt.date, events, *,
                  now=dt.datetime.now, monotonic=None, out=print,
-                 poll_every: float = 60.0, recon_every: float = 300.0, settle_wait=None):
+                 poll_every: float = 60.0, recon_every: float = 300.0, quote_every: float = 60.0,
+                 settle_wait=None):
         import time as _time
         self.books, self.broker, self.day, self.events = books, broker, day, events
         self.now, self.out = now, out
         self.monotonic = monotonic or _time.monotonic
-        self.poll_every, self.recon_every = poll_every, recon_every
+        self.poll_every, self.recon_every, self.quote_every = poll_every, recon_every, quote_every
         self.settle_wait = settle_wait or (lambda: _time.sleep(3))
         self.session = session_for(books, broker, day)
         self.stats = IntradayStats()
         self.feed_up = False
-        self._last_poll = self._last_recon = self.monotonic()
+        self.quotes: dict[str, Quote] = latest_quotes(books.conn, day)   # 다시 띄워도 오늘 받은 가격부터
+        self._quote_failing: set[str] = set()
+        self._last_poll = self._last_recon = self._last_quote = self.monotonic()
 
     # --- handlers ---
 
@@ -416,6 +422,39 @@ class IntradayRunner:
             self.out("장중 대사 일치")
         return results
 
+    def quote(self) -> dict[str, Quote]:
+        """현재가 (R-68): 보유 종목과 미체결 주문 종목의 현재가를 받아 증권사 기록에 남겨요.
+
+        IBOR 평가에만 쓰고 원장에는 넣지 않아요. 한 종목이 실패해도 원장 기록자는 멈추지 않고,
+        그 종목은 마지막으로 받은 가격(없으면 종가)으로 평가해요."""
+        self._last_quote = self.monotonic()
+        symbols = sorted(set(self.books.ledger.positions()) | {o.symbol for o in self.session._open_orders()})
+        if not symbols:
+            return {}
+        at = self.now().replace(microsecond=0)
+        prices, failed = {}, {}
+        for sym in symbols:
+            try:
+                price = self.broker.get_price(sym)
+            except Exception as exc:    # a quote must never stop the only ledger writer
+                failed[sym] = str(exc) or type(exc).__name__
+                continue
+            if valid_price(price):
+                prices[sym] = price
+            else:
+                failed[sym] = f"잘못된 가격 {price!r}"
+        _snapshot(self.books.conn, self.day, QUOTE_KIND,
+                  {"at": at.isoformat(), "prices": prices, "failed": failed})
+        self.quotes.update({sym: Quote(sym, p, at) for sym, p in prices.items()})
+        self.stats.quotes += 1
+        self.stats.quote_failures += len(failed)
+        for sym in sorted(set(failed) - self._quote_failing):
+            self.out(f"[{at:%H:%M:%S}] 현재가를 받지 못했어요: {sym} ({failed[sym]}). 마지막 가격으로 평가해요.")
+        for sym in sorted(self._quote_failing & set(prices)):
+            self.out(f"[{at:%H:%M:%S}] 현재가 다시 받는 중: {sym}")
+        self._quote_failing = set(failed)
+        return prices
+
     def on_command(self, line: str) -> bool:
         """Returns False to stop."""
         parts = line.strip().split()
@@ -455,15 +494,28 @@ class IntradayRunner:
         self.out(f"IBOR  예수금 D+0 {led.cash_balance():,}  결제 후 {led.projected_cash():,}  "
                  f"미체결 매수 예약 {reserved:,}  주문가능 {led.projected_cash() - reserved:,}"
                  + (f"  (시장가 매수 {unpriced}건은 가격 미정이라 예약에서 빠짐)" if unpriced else ""))
+        from .queries import last_closes
+        prices = marks(*last_closes(led), self.quotes, self.now())
+        value = pnl = 0
         for sym, pos in led.positions().items():
-            self.out(f"  {sym}: {pos.qty}주, 매입금액 {pos.book_cost:,}")
+            m = prices.get(sym)
+            if m is None:
+                self.out(f"  {sym}: {pos.qty}주, 매입금액 {pos.book_cost:,}, 평가 가격 없음")
+                continue
+            v = pos.qty * m.price
+            value, pnl = value + v, pnl + v - pos.book_cost
+            self.out(f"  {sym}: {pos.qty}주, 매입금액 {pos.book_cost:,}, {m.label} {m.price:,}, "
+                     f"평가금액 {v:,}, 평가손익 {v - pos.book_cost:+,}")
+        if led.positions():
+            self.out(f"  평가금액 합계 {value:,}, 평가손익 합계 {pnl:+,} (IBOR, 기준가에는 쓰지 않아요)")
         open_orders = self.session._open_orders()
         for o in open_orders:
             self.out(f"  미체결 {o.order_id} {o.side} {o.symbol} {o.filled_qty}/{o.qty}")
         s = self.stats
         lat = f", 반영 지연 중앙값 {sorted(s.latencies_ms)[len(s.latencies_ms) // 2]}ms" if s.latencies_ms else ""
         self.out(f"통보 {s.notices}건, 통보로 반영 {s.fills_booked}건, 조회로 반영 {s.polls_booked}건, "
-                 f"장중 대사 {s.recons}회(불일치 {s.recon_breaks}){lat}, 연결 끊김 {s.feed_drops}회")
+                 f"장중 대사 {s.recons}회(불일치 {s.recon_breaks}){lat}, 연결 끊김 {s.feed_drops}회, "
+                 f"현재가 {s.quotes}회(실패 {s.quote_failures}종목)")
 
     def _report_anomalies(self) -> None:
         seen = getattr(self, "_seen_anomalies", 0)
@@ -495,11 +547,14 @@ class IntradayRunner:
             self.poll("주기 조회")
         if t - self._last_recon >= self.recon_every:
             self.recon()
+        if t - self._last_quote >= self.quote_every:
+            self.quote()
         return keep
 
     def run(self, until: dt.time) -> IntradayStats:
         self.out(f"[{self.now():%H:%M:%S}] 장중 실행 시작. 명령: buy/sell 종목 수량 [지정가], status, recon, quit")
         self.poll("시작 시 확인")
+        self.quote()
         while self.now().time() < until and self.step():
             pass
         self.recon(verbose=True)
