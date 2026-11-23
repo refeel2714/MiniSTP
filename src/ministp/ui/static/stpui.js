@@ -9,6 +9,7 @@
  * Keys: Enter in a condition = 조회, ↑/↓ moves the row (in a calendar ←/→ a day, ↑/↓ a week), Enter or double-click on
  * a row = move to the linked screen, Ctrl+Enter anywhere = 조회, F2 in an input
  * with a 찾기 button = open the list, Ctrl+K anywhere = 바로 가기 창 (a screen, or a code and the screen to open for it).
+ * The left 메뉴트리 is the screen classification (대분류 > 중분류 > 화면) the server read from menu.yaml.
  */
 (function () {
   "use strict";
@@ -491,15 +492,25 @@
     paper: "모의투자 환경 (MINISTP_KIS_ENV=paper)",
     live: "실전 환경 (MINISTP_KIS_ENV=live): 이 화면의 숫자와 처리는 실전 원장의 것이에요",
   };
-  function topbar(screen) {
-    const nav = h("nav", { class: "menu", "aria-label": "화면 목록" },
-      DATA.menu.map(m => h("a", {
-        href: "/screen/" + m.id, class: screen && m.id === screen.id ? "on" : null,
-        "aria-current": screen && m.id === screen.id ? "page" : null,
-      }, h("span", { class: "sid", text: m.id }), " " + m.title)));
+  // What a viewer set on this browser (menu shut, a 대분류 folded). A convenience only: the page works without it.
+  const prefs = {
+    get(k) { try { return window.localStorage.getItem("stpui." + k); } catch (e) { return null; } },
+    set(k, v) { try { window.localStorage.setItem("stpui." + k, v); } catch (e) { /* private window: not kept */ } },
+  };
+  function topbar() {
+    const shut = () => document.body.dataset.nav === "off";
+    const toggle = h("button", { type: "button", class: "navbtn", "aria-controls": "nav-tree", title: "메뉴 접기·펴기",
+      onclick: () => {
+        document.body.dataset.nav = shut() ? "on" : "off";
+        prefs.set("nav", document.body.dataset.nav);
+        toggle.setAttribute("aria-expanded", String(!shut()));
+        window.dispatchEvent(new Event("resize"));      // a split screen fits itself to the room it has
+      } }, h("span", { class: "bars", "aria-hidden": "true" }), "메뉴");
+    toggle.setAttribute("aria-expanded", String(!shut()));
     return h("header", { class: "top" },
+      toggle,
       h("a", { class: "brand", href: "/" }, "MiniSTP ", h("b", { text: "STP-UI" })),
-      nav,
+      h("span", { class: "grow" }),
       h("button", { type: "button", class: "jumpbtn", title: "화면이나 종목으로 바로 가기 (Ctrl+K)", onclick: openJump },
         "바로 가기", h("kbd", { text: "Ctrl K" })),
       h("span", { class: "env", title: DATA.writable
@@ -510,20 +521,51 @@
         h("b", { class: "envchip " + DATA.env, title: ENV_TITLES[DATA.env], text: DATA.env_name }),
         `${DATA.env === "sample" ? "" : DATA.db + " · "}기준일 ${DATA.today} · ${DATA.writable ? "처리 가능" : "조회 전용"}`));
   }
-  // Keep the current screen's tab in view when the menu is wider than the bar.
-  function revealTab() {
-    const nav = document.querySelector(".menu"), on = nav && nav.querySelector(".on");
-    if (on && (on.offsetLeft + on.offsetWidth > nav.scrollLeft + nav.clientWidth || on.offsetLeft < nav.scrollLeft)) {
-      nav.scrollLeft = on.offsetLeft - (nav.clientWidth - on.offsetWidth) / 2;
-    }
+
+  // 메뉴트리: 대분류 > (중분류) > 화면. A 중분류 holding one screen is not drawn as a branch of its own:
+  // the screen sits right under the 대분류, and the branch appears when a second screen joins it.
+  function leaf(m, screen) {
+    const on = screen && m.id === screen.id;
+    return h("li", {}, h("a", { href: "/screen/" + m.id, class: on ? "on" : null, "aria-current": on ? "page" : null, title: m.id + " " + m.title },
+      h("span", { class: "sid", text: m.id.slice(4) }), h("span", { class: "lt", text: m.title })));
+  }
+  function sidebar(screen) {
+    const folded = new Set((prefs.get("folded") || "").split(",").filter(Boolean));
+    const here = screen ? screen.id.slice(4, 5) : null;
+    const areas = DATA.tree.map(a => {
+      const kids = a.groups.flatMap(g => g.screens.length > 1
+        ? [h("li", { class: "grp" }, h("span", { class: "gname", text: g.name }), h("ul", {}, g.screens.map(m => leaf(m, screen))))]
+        : g.screens.map(m => leaf(m, screen)));
+      const d = h("details", { class: "area", open: a.id === here || !folded.has(a.id) },   // the branch you are in is never shut
+        h("summary", { title: a.note }, h("span", { class: "an", text: a.id }), h("span", { class: "lt", text: a.name })),
+        h("ul", {}, kids));
+      d.addEventListener("toggle", () => {
+        if (d.open) folded.delete(a.id); else folded.add(a.id);
+        prefs.set("folded", [...folded].join(","));
+      });
+      return d;
+    });
+    return h("nav", { class: "tree", id: "nav-tree", "aria-label": "화면 메뉴" }, areas);
+  }
+  // header on top, then the menu tree on the left and the page on the right
+  function frame(screen, main) {
+    app.append(topbar(), h("div", { class: "frame" }, sidebar(screen), main));
+  }
+  // Keep the current screen's line in view when the tree is taller than the window.
+  function revealLeaf() {
+    const on = document.querySelector(".tree a.on");
+    if (on && on.scrollIntoView) on.scrollIntoView({ block: "nearest" });
   }
 
   function home() {
-    app.append(topbar(null), h("main", { class: "home" },
+    frame(null, h("main", { class: "home" },
       h("h1", { text: "업무 화면" }),
-      h("p", { class: "lead", text: "화면은 정의 파일(YAML)에서 만들어지고, 열 이름은 DB 주석에서 가져와요. 서버는 시작할 때 모든 화면 정의를 DB 스키마와 대조해요." }),
-      h("div", { class: "tiles" }, DATA.menu.map(m => h("a", { class: "tile", href: "/screen/" + m.id },
-        h("span", { class: "sid", text: m.id }), h("span", { class: "tt", text: m.title }))))));
+      h("p", { class: "lead", text: "화면은 거래가 흘러가는 순서로 나눠요. 화면번호의 첫 자리가 대분류, 둘째 자리까지가 중분류예요. 화면은 정의 파일(YAML)에서 만들어지고, 열 이름은 DB 주석에서 가져와요." }),
+      DATA.tree.map(a => h("section", { class: "harea" },
+        h("h2", {}, h("span", { class: "an", text: a.id }), " " + a.name, h("span", { class: "hnote", text: a.note })),
+        h("div", { class: "tiles" }, a.groups.flatMap(g => g.screens.map(m => h("a", { class: "tile", href: "/screen/" + m.id },
+          h("span", { class: "sid", text: m.id }), h("span", { class: "tt", text: m.title }),
+          h("span", { class: "tg", text: g.name })))))))));
   }
 
   // ---------- screen ----------
@@ -699,7 +741,8 @@
       split.style.setProperty("--fit", Math.max(380, Math.round(room)) + "px");
     }
 
-    app.append(topbar(def), h("main", { class: "screen" },
+    frame(def, h("main", { class: "screen" },
+      DATA.path.length ? h("p", { class: "crumb", "aria-label": "화면 분류", text: DATA.path.join(" › ") }) : null,
       h("div", { class: "title" },
         h("h1", {}, h("span", { class: "sid", text: def.id }), " " + def.title),
         h("a", { class: "spec", href: "/spec/" + def.id, title: "정의 파일과 DB 주석에서 생성한 화면정의서" }, "화면정의서")),
@@ -1217,6 +1260,9 @@
     return { el, fill, clear, busy, fail, skeleton, about };
   }
 
+  // The tree starts shut where the viewer shut it, and on a narrow window (it would push the screen down).
+  const narrow = window.matchMedia && window.matchMedia("(max-width: 900px)").matches;
+  if ((prefs.get("nav") || (narrow ? "off" : "on")) === "off") document.body.dataset.nav = "off";
   if (DATA.screen) Screen(DATA.screen); else home();
-  revealTab();
+  revealLeaf();
 })();

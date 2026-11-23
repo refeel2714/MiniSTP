@@ -6,7 +6,8 @@ index adds 영향도 (which screens show a DB column), so a schema change shows
 at once which screens it touches.
 """
 from .actions import ACTIONS
-from .definitions import Screen, column_comment, jump_targets, load_lookups, resolve, short, split_sides, usages
+from .definitions import (Screen, column_comment, jump_targets, load_lookups, load_menu, menu_path, menu_tree,
+                          resolve, short, split_sides, usages)
 from .transactions import TRANSACTIONS
 
 LOAD_TEXT = {"search": "조회 버튼", "open": "화면 열 때 + 조회 버튼", "master": "목록(마스터)에서 행 선택",
@@ -35,12 +36,15 @@ def _lookup_text(x) -> str:
     return f"`{x.lookup}`" + (f" ({fixed})" if fixed else "")
 
 
-def screen_markdown(screen: Screen, catalog: dict, lookups=None) -> str:
+def screen_markdown(screen: Screen, catalog: dict, lookups=None, menu=None) -> str:
     lookups = load_lookups() if lookups is None else lookups
     r = resolve(screen, catalog, lookups)
+    path = menu_path(load_menu() if menu is None else menu, screen.id)
     out = [f"# {screen.id} {screen.title}", "", f"> 이 문서는 `src/ministp/ui/screens/{screen.file}`에서 생성돼요."
-           " 직접 고치지 말고 화면 정의를 고친 뒤 `python scripts/gen_screen_docs.py`를 실행하세요.", "",
-           "## 목적", "", screen.purpose, ""]
+           " 직접 고치지 말고 화면 정의를 고친 뒤 `python scripts/gen_screen_docs.py`를 실행하세요.", ""]
+    if path:
+        out += [f"분류: {' > '.join(path)}", ""]
+    out += ["## 목적", "", screen.purpose, ""]
     if screen.layout == "split":
         left, right, below = split_sides(screen)
         out += ["## 화면 구성", "", "좌우 구성이에요. 왼쪽 목록에서 행을 고르면 오른쪽이 그 행의 상세로 바뀌어요.", "",
@@ -157,10 +161,22 @@ def screen_markdown(screen: Screen, catalog: dict, lookups=None) -> str:
     return "\n".join(out)
 
 
-def index_markdown(screens: dict[str, Screen], catalog: dict) -> str:
+def index_markdown(screens: dict[str, Screen], catalog: dict, menu=None) -> str:
+    menu = load_menu() if menu is None else menu
     out = ["# STP-UI 화면 목록과 영향도", "",
            "> `python scripts/gen_screen_docs.py`로 생성돼요. 화면 정의(YAML)와 DB 주석에서 만들어지니 직접 고치지 마세요.",
-           "", "## 화면", "", "| 화면번호 | 화면명 | 그리드 | 트랜잭션 |", "|---|---|---|---|"]
+           "", "## 화면 분류", "",
+           "화면번호 `STP-ABCC`가 곧 분류예요. 첫 자리 A는 대분류(거래가 흘러가는 순서), 둘째 자리까지 AB는 중분류(그 단계에서 다루는 대상), "
+           "뒤 두 자리 CC는 같은 대상을 다루는 화면의 순번이에요. 조회와 처리는 번호가 아니라 트랜잭션 ID로 갈라요(R 조회, U 처리). "
+           "분류는 [menu.yaml](../../src/ministp/ui/menu.yaml) 한 곳에 적고, 서버는 시작할 때 모든 화면번호가 분류에 들어가는지, "
+           "화면이 없는 분류가 없는지 확인해요. 왼쪽 메뉴트리와 첫 화면도 이 표를 그대로 그려요.",
+           "", "| 대분류 | 중분류 | 화면 |", "|---|---|---|"]
+    for area in menu_tree(menu, screens):
+        for n, group in enumerate(area["groups"]):
+            head = f"**{area['id']} {area['name']}**<br>{_cell(area['note'])}" if n == 0 else ""
+            shown = ", ".join(f"[{x['id']}]({x['id']}.md) {x['title']}" for x in group["screens"])
+            out.append(f"| {head} | {group['id']} {group['name']} | {shown} |")
+    out += ["", "## 화면", "", "| 화면번호 | 화면명 | 그리드 | 트랜잭션 |", "|---|---|---|---|"]
     for s in screens.values():
         txs = ", ".join(dict.fromkeys([*(f"`{g.tx}`" for g in s.grids),
                                        *(f"`{b.tx}`" for g in s.grids for b in g.actions)]))
@@ -181,8 +197,8 @@ def index_markdown(screens: dict[str, Screen], catalog: dict) -> str:
     return "\n".join(out) + "\n"
 
 
-def all_docs(screens: dict[str, Screen], catalog: dict) -> dict[str, str]:
+def all_docs(screens: dict[str, Screen], catalog: dict, menu=None) -> dict[str, str]:
     """File name -> content for docs/screens/."""
-    docs = {f"{s.id}.md": screen_markdown(s, catalog) + "\n" for s in screens.values()}
-    docs["README.md"] = index_markdown(screens, catalog)
+    docs = {f"{s.id}.md": screen_markdown(s, catalog, menu=menu) + "\n" for s in screens.values()}
+    docs["README.md"] = index_markdown(screens, catalog, menu)
     return docs
