@@ -2,11 +2,14 @@
 -- erd: 2.6
 -- changes-data: accounts_chart, code_groups, common_codes
 --
--- ERD v2.5 -> v2.6 (R-66). 뷰 하나, 인덱스 하나, 계정과목 세 개, 코드 그룹 하나와 코드를 더한다.
+-- ERD v2.5 -> v2.6 (R-66). 뷰 하나, 인덱스 하나, 계정과목 세 개와 계정코드 형식 제약, 코드 그룹 하나와 코드를 더한다.
 -- 기존 테이블의 기존 행은 건드리지 않는다. 위에 적은 세 테이블은 새 행이 늘어난다.
 -- 조정과 그 취소는 원장 이벤트로 남고, 분개와 예수금 행은 기존 테이블에 들어간다.
 
--- 1. 조정이 쓰는 계정과목 (ministp.accounting.Account와 같다) ------------------------------
+-- 1. 계정과목: 채번 규칙(스펙 D4)을 제약으로, 그리고 조정이 쓰는 계정 세 개 -------------------
+--    계정코드는 첫째 자리(대분류)가 1~5인 숫자 4자리다. 지금 있는 15개 계정은 모두 이 형식이다.
+alter table accounts_chart add constraint accounts_chart_code_check check (code ~ '^[1-5][0-9]{3}$');
+
 insert into accounts_chart (code, name, normal_side) values
     ('4040', '이자수익', 'C'),
     ('4090', '잡이익', 'C'),

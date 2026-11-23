@@ -187,12 +187,12 @@ Phase 2 구현(v1.4)은 위 설계를 단순화했다. 주문 생성 정보는 `
 | adjustments_v | account_id, adjustment_id, event_seq, date, reason, amount, tax, cash_amount, memo, recon_result_id, canceled_on, cancel_reason | 조정과 그 취소를 한 행으로. 원장 이벤트에서 바로 읽음 |
 
 1. **테이블은 늘지 않았다**: 조정은 `AdjustmentEvent`, 취소는 `AdjustmentCancelEvent`다. 분개와 예수금 행은 기존 테이블에 들어간다(전표 유형과 예수금 사유 `ADJUSTMENT`, `ADJUSTMENT_CANCEL`, 원천 참조 `ADJ-번호`). 취소 전표는 `reverses_entry_id`로 조정 전표를 가리킨다.
-2. **계정과목 세 개 추가**: 이자수익(4040), 잡이익(4090), 잡손실(5090). `accounts_chart`에 행이 늘어난다(마이그레이션 `0007_adjustments`의 `changes-data`에 적음). 기존 계정은 그대로다.
+2. **계정과목 세 개 추가, 계정코드 형식 제약**: 이자수익(4040), 잡이익(4090), 잡손실(5090). `accounts_chart`에 행이 늘어난다(마이그레이션 `0007_adjustments`의 `changes-data`에 적음). 기존 계정은 그대로다. 채번 규칙(스펙 D4)을 제약으로 걸었다: `accounts_chart.code`는 첫째 자리가 1~5인 숫자 4자리(`accounts_chart_code_check`).
 3. **사유가 계정을 정한다**: 사유 코드와 상대 계정의 짝은 프로그램에 있고(`ledger.ADJUSTMENT_ACCOUNTS`), 공통코드 그룹 `ADJUSTMENT_REASON`이 코드명을 준다. 계정을 직접 고르는 입력은 없다.
 4. **번호와 유일성**: 조정 번호는 DB 전체에서 하나의 순번이고, 부분 유일 인덱스 `ledger_events_adjustment_key`가 번호 하나에 조정 이벤트 하나, 취소 이벤트 하나만 허용한다. 취소는 조정이 있는 계좌의 원장에서만 할 수 있다.
-5. **불일치 행과의 연결**: `recon_result_id`는 이 조정이 정리하는 대사 불일치 행이다(없어도 된다). FK는 걸지 않았고(이벤트 payload 안의 값이다), 무결성 점검이 그 행이 같은 계좌의 불일치인지 확인한다.
-6. **명령**: `adjust list [--account 계좌]`, `adjust add 사유 금액 --memo 메모 [--tax 세금] [--break 불일치행] [--date 날짜]`, `adjust cancel 조정번호 사유 [--date 날짜]`. 모두 감사 로그에 남는다(`ADJUSTMENT_ADD`, `ADJUSTMENT_CANCEL`, 거부된 요청 포함).
-7. **한계**: 화면은 다음 PR. 조정 금액에 상한은 두지 않았다(사유 목록, 메모, 감사 로그, 취소 전표로 통제한다). 증권사 거래내역 조회로 자동 기록하지 않는다.
+5. **불일치 행과의 연결**: `recon_result_id`는 이 조정이 정리하는 대사 불일치 행이다(없어도 된다). 판단(`resolve`)과 반영(`adjust`)은 독립이라, 조정이 그 행의 상태를 바꾸지 않는다. FK는 걸지 않았고(이벤트 payload 안의 값이다), 무결성 점검이 그 행이 같은 계좌의 불일치인지 확인한다.
+6. **명령**: `adjust list [--account 계좌]`, `adjust add 사유 금액 --memo 메모 [--tax 세금] [--break 불일치행] [--confirm] [--date 날짜]`, `adjust cancel 조정번호 사유 [--date 날짜]`. 모두 감사 로그에 남는다(`ADJUSTMENT_ADD`, `ADJUSTMENT_CANCEL`, 거부된 요청 포함).
+7. **한계**: 화면은 다음 PR. 조정 금액에 상한은 두지 않았다(사유 목록, 메모, 감사 로그, 취소 전표로 통제하고, 차이 사유의 1,000원 초과는 `--confirm`을 요구한다). 증권사 거래내역 조회로 자동 기록하지 않는다.
 
 ## 원장 무결성 점검 (v1.11)
 

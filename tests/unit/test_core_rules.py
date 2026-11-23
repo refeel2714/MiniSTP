@@ -42,6 +42,17 @@ def test_unbalanced_entry_rejected():
         entry(d("11-02"), "BAD", "", Dr(Account.CASH, 10), Cr(Account.CONTRIBUTED_CAPITAL, 9))
 
 
+def test_account_codes_follow_the_numbering_rule():
+    """스펙 D4 채번 규칙: 대분류(1 자산, 2 부채, 3 자본, 4 수익, 5 비용), 중분류, 순번, 세목. 숫자 4자리."""
+    codes = [a.code for a in Account]
+    assert len(set(codes)) == len(codes) == 18 and all(len(c) == 4 and c.isdigit() for c in codes)
+    side = {"1": "D", "2": "C", "3": "C", "4": "C", "5": "D"}     # no contra account yet: the class gives the side
+    assert all(side[a.code[0]] == a.normal_side for a in Account)
+    assert all(c[3] == "0" for c in codes)                         # no sub-account (세목) is in use
+    assert {c[:2] for c in codes} == {"10", "11", "20", "30", "40", "50"}
+    assert [a.value[1] for a in Account if a.code[2] == "9"] == ["잡이익", "잡손실"]   # 9 is "the rest"
+
+
 def test_replay_rebuilds_identical_state(ledger, calendar, instruments):
     ledger.deposit(d("11-02"), 5_000_000)
     ledger.execute("R1", d("11-02"), "A", Side.BUY, 10, 50_000)

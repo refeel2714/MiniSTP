@@ -110,9 +110,48 @@ def test_an_adjustment_is_refused_unless_it_says_what_and_why(conn, broker):
     assert adjustments.list_adjustments(conn) == [] and _check(conn, "adjustments").detail == "수동 조정이 아직 없어요"
 
 
+def test_a_difference_past_the_line_is_booked_only_when_confirmed(conn, broker):
+    """Nothing is tolerated (R-71: 0). The line makes the owner look again before a large "difference" is booked."""
+    _opened(conn, broker)
+    for reason, amount in (("FEE", -1_001), ("TAX", -1_001), ("DIVIDEND", 1_001), ("WITHHOLDING", -1_001), ("OTHER", 1_001)):
+        with pytest.raises(OpsError, match="큰 금액이에요.*--confirm"):
+            adjustments.add(books(conn), FRI, reason, amount, memo="x", today=FRI)
+    assert adjustments.list_adjustments(conn) == []
+    adjustments.add(books(conn), FRI, "FEE", -1_000, memo="기준과 같은 금액", today=FRI)             # at the line: as before
+    said = audit.rows(conn, limit=1)[0]
+    assert "confirmed" not in said.detail
+    a = adjustments.add(books(conn), FRI, "FEE", -1_001, memo="거래내역 확인함", today=FRI, confirmed=True)
+    said = audit.rows(conn, limit=1)[0]
+    assert (a.ref, said.target, said.detail["confirmed"]) == ("ADJ-2", "ADJ-2", True)
+    adjustments.add(books(conn), FRI, "INTEREST", 500_000, tax=77_000, memo="이자는 실제로 받은 돈", today=FRI)
+    assert [r[4] for r in adjustments.list_adjustments(conn)] == [-1_000, -1_001, 500_000]
+
+
+def test_the_break_row_is_a_reference_and_its_judgement_stays_apart(conn, broker):
+    """판단과 반영은 독립 (R-66): an adjustment does not judge the break, a judgement does not book."""
+    _opened(conn, broker)
+    assert _daily(conn, broker, FRI).closed
+    broker.cash -= 30
+    assert not _daily(conn, broker, MON).closed
+    row = conn.execute("select id from recon_results where date = %s and item = 'CASH_D0' and status = 'BREAK'",
+                       (MON,)).fetchone()[0]
+    before = conn.execute("select count(*), max(id) from recon_results").fetchone()
+    adjustments.add(books(conn), MON, "FEE", -30, memo="수수료 차이", recon_result_id=row, today=MON)
+    assert conn.execute("select count(*), max(id) from recon_results").fetchone() == before   # no RESOLVED row was added
+    assert conn.execute("select status from recon_results where id = %s", (row,)).fetchone()[0] == "BREAK"
+    assert conn.execute("select count(*) from recon_results where supersedes_id = %s", (row,)).fetchone()[0] == 0
+
+
+def test_account_codes_outside_the_numbering_rule_are_refused(conn):
+    for code in ("6010", "101", "10100", "A010", "0010"):
+        with pytest.raises(psycopg.errors.CheckViolation):
+            conn.execute("insert into accounts_chart (code, name, normal_side) values (%s, '규칙 밖', 'D')", (code,))
+    conn.execute("insert into accounts_chart (code, name, normal_side) values ('5041', '증권거래세', 'D')")   # a 세목 fits
+
+
 def test_a_cancel_adds_the_opposite_entry_and_links_it(conn, broker):
     _opened(conn, broker)
-    a = adjustments.add(books(conn), FRI, "OTHER", 5_000, memo="잘못 들어온 돈으로 보임", today=FRI)
+    a = adjustments.add(books(conn), FRI, "OTHER", 5_000, memo="잘못 들어온 돈으로 보임", today=FRI, confirmed=True)
     with pytest.raises(OpsError, match="ADJ-9 조정이 없어요"):
         adjustments.cancel(books(conn), 9, FRI, "없는 번호", today=FRI)
     with pytest.raises(OpsError, match="취소 사유"):
@@ -169,6 +208,11 @@ def test_adjust_commands(conn, broker, capsys):
     assert cli.run(["adjust", "add", "FEE", "-30", "--memo", " "], now=at(FRI, 9), **kw) == 1
     assert "메모가 있어야" in capsys.readouterr().out
     assert cli.run(["adjust", "add", "FEE", "-30", "--memo", "x", "--break", "77"], now=at(FRI, 9), **kw) == 1
+    capsys.readouterr()
+    assert cli.run(["adjust", "add", "OTHER", "5000", "--memo", "출처 모르는 입금"], now=at(FRI, 9), **kw) == 1
+    assert "OTHER 조정으로는 큰 금액이에요 (+5,000원, 확인 기준 1,000원)" in capsys.readouterr().out
+    assert cli.run(["adjust", "add", "OTHER", "5000", "--memo", "출처 모르는 입금", "--confirm"], now=at(FRI, 9), **kw) == 0
+    assert cli.run(["adjust", "cancel", "3", "증권사가 회수함"], now=at(FRI, 10), **kw) == 0
     assert cli.run(["adjust", "cancel", "2", "증권사가 돌려줌"], now=at(FRI, 10), **kw) == 0
     assert "[2026-11-20] 조정 취소 ADJ-2 (A0001): 예수금 +30원" in capsys.readouterr().out
     assert cli.run(["adjust", "cancel", "2", "두 번"], now=at(FRI, 10), **kw) == 1
@@ -177,11 +221,13 @@ def test_adjust_commands(conn, broker, capsys):
     out = capsys.readouterr().out
     assert "  2026-11-20  ADJ-1 예탁금 이용료: 세전 +12,340원, 세금 1,890원, 예수금 +10,450원  (3분기 예탁금 이용료)" in out
     assert "  2026-11-20  ADJ-2 수수료 차이: 예수금 -30원  (수수료 차이)  [취소 2026-11-20: 증권사가 돌려줌]" in out
-    said = [(r.action, r.outcome, r.target) for r in audit.rows(conn, limit=20) if r.action.startswith("ADJUSTMENT")]
+    said = [(r.action, r.outcome, r.target) for r in audit.rows(conn, limit=40) if r.action.startswith("ADJUSTMENT")]
     assert said[::-1] == [("ADJUSTMENT_ADD", "DONE", "ADJ-1"), ("ADJUSTMENT_ADD", "DONE", "ADJ-2"),
                           ("ADJUSTMENT_ADD", "REFUSED", None), ("ADJUSTMENT_ADD", "REFUSED", None),
+                          ("ADJUSTMENT_ADD", "REFUSED", None), ("ADJUSTMENT_ADD", "DONE", "ADJ-3"),
+                          ("ADJUSTMENT_CANCEL", "DONE", "ADJ-3"),
                           ("ADJUSTMENT_CANCEL", "DONE", "ADJ-2"), ("ADJUSTMENT_CANCEL", "REFUSED", "ADJ-2")]
     assert cli.run(["verify"], **kw) == 0
-    assert "조정: 수동 조정 2건(취소 1건) 일치, 예수금 반영 합계 +10,450원" in capsys.readouterr().out
+    assert "조정: 수동 조정 3건(취소 2건) 일치, 예수금 반영 합계 +10,450원" in capsys.readouterr().out
     assert cli.run(["code", "list", "ADJUSTMENT_REASON"], **kw) == 0
     assert "INTEREST" in capsys.readouterr().out

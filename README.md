@@ -249,6 +249,7 @@ MiniSTP는 돈을 옮기지 않습니다. 증권사 앱에서 넣거나 뺀 돈�
 .venv\Scripts\python -m ministp adjust list
 .venv\Scripts\python -m ministp adjust add INTEREST 12340 --tax 1890 --memo "3분기 예탁금 이용료"
 .venv\Scripts\python -m ministp adjust add FEE -30 --memo "11/20 매수 수수료 차이" --break 12
+:: 차이 사유로 1,000원을 넘으면 증권사 거래내역과 같은 금액인지 확인한 뒤 --confirm을 붙여요
 .venv\Scripts\python -m ministp adjust cancel 2 "증권사가 돌려줌"   :: 지우지 않고 반대 전표를 더해요
 ```
 

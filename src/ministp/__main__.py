@@ -130,7 +130,8 @@ def audited(args, today: dt.date):
     if cmd == "adjust" and what == "add":
         return "ADJUSTMENT_ADD", args.account, None, {"date": args.date or today, "reason": args.reason,
                                                       "amount": args.amount, "tax": args.tax or None,
-                                                      "recon_result_id": args.result_id, "memo": args.memo}
+                                                      "recon_result_id": args.result_id, "memo": args.memo,
+                                                      "confirmed": args.confirm or None}
     if cmd == "adjust" and what == "cancel":
         return "ADJUSTMENT_CANCEL", args.account, f"ADJ-{args.adjustment_id}", {"date": args.date or today,
                                                                                 "why": args.reason}
@@ -248,6 +249,8 @@ def _run(argv, *, environ=os.environ, client_factory=KisClient, connect=psycopg.
     q.add_argument("--tax", type=int, default=0, metavar="세금", help="INTEREST에서 뗀 세금")
     q.add_argument("--memo", required=True, metavar="메모", help="왜 조정하는지")
     q.add_argument("--break", dest="result_id", type=int, metavar="불일치행", help="이 조정으로 정리하는 대사 불일치 행")
+    q.add_argument("--confirm", action="store_true",
+                   help=f"차이 사유로 {adjustments.CONFIRM_ABOVE:,}원을 넘는 금액일 때: 증권사 거래내역과 같은 금액임을 확인했다는 뜻")
     q.add_argument("--date", type=dt.date.fromisoformat, help="기록할 날짜 (기본: 오늘)")
     q = what.add_parser("cancel", parents=[by_account], help="조정을 반대 전표로 되돌림 (지우지 않아요)")
     q.add_argument("adjustment_id", type=int, metavar="조정번호"), q.add_argument("reason", metavar="사유")
@@ -658,7 +661,8 @@ def _adjust(conn, args, books, today: dt.date) -> int:
         return 0
     day = args.date or today
     if args.what == "add":
-        a = adjustments.add(books, day, args.reason, args.amount, args.tax, args.memo, args.result_id, today)
+        a = adjustments.add(books, day, args.reason, args.amount, args.tax, args.memo, args.result_id, today,
+                            confirmed=args.confirm)
         print(f"[{day}] 조정 {said(a)} ({books.account_id})")
     else:
         a = adjustments.cancel(books, args.adjustment_id, day, args.reason, today)

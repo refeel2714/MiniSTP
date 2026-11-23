@@ -19,6 +19,11 @@ from .ledger import ADJUSTMENT_ACCOUNTS, Adjustment, adjustment_ref
 from .ops import Books, OpsError
 
 REASONS = tuple(ADJUSTMENT_ACCOUNTS)
+# A "difference" reason settles what rounding leaves between the broker and the books: a few won.
+# Past this it is more likely a missing fill, right or cash movement, or a wrong fee rate, than a difference.
+# Nothing is tolerated either way (R-71: 0): the line only makes the owner look again before booking.
+CONFIRM_ABOVE = 1_000
+NO_CONFIRM = ("INTEREST",)     # cash the broker really paid, entered from its statement
 
 
 def list_adjustments(conn: psycopg.Connection, account_id: str | None = None) -> list[tuple]:
@@ -41,7 +46,7 @@ def _detail(a: Adjustment, day: dt.date, **more) -> dict:
 
 
 def add(books: Books, day: dt.date, reason: str, amount: int, tax: int = 0, memo: str = "",
-        recon_result_id: int | None = None, today: dt.date | None = None) -> Adjustment:
+        recon_result_id: int | None = None, today: dt.date | None = None, confirmed: bool = False) -> Adjustment:
     """`adjust add`: book the cash and the account its reason names, in one transaction with the audit row."""
     conn = books.conn
     if reason not in ADJUSTMENT_ACCOUNTS:
@@ -63,13 +68,18 @@ def add(books: Books, day: dt.date, reason: str, amount: int, tax: int = 0, memo
             raise OpsError(f"불일치 행이 아니에요: {recon_result_id}")
         if row[0] != books.account_id:
             raise OpsError(f"불일치 행 {recon_result_id}은 계좌 {row[0]}의 것이에요. 이 조정은 계좌 {books.account_id}에 기록돼요.")
+    big = reason not in NO_CONFIRM and abs(amount) > CONFIRM_ABOVE
+    if big and not confirmed:
+        raise OpsError(f"{reason} 조정으로는 큰 금액이에요 ({amount:+,}원, 확인 기준 {CONFIRM_ABOVE:,}원). 차이 사유는 끝전 차이를"
+                       " 정리하는 용도라, 빠진 체결·권리·입출금이나 수수료율 설정이 아닌지 먼저 봐 주세요."
+                       " 증권사 거래내역의 금액과 같다면 --confirm을 붙여 다시 실행해요.")
     with conn.transaction():   # the event and its audit row together
         new_id = conn.execute("select coalesce(max((payload ->> 'adjustment_id')::bigint), 0) + 1 from ledger_events"
                               " where event_type = 'AdjustmentEvent'").fetchone()[0]
         a = books.ledger.adjust(day, new_id, reason, amount, tax, memo, recon_result_id)
         _verified(books)
         audit.record(conn, "ADJUSTMENT_ADD", account_id=books.account_id, target=a.ref,
-                     detail=_detail(a, day, memo=a.memo))
+                     detail=_detail(a, day, memo=a.memo, **({"confirmed": True} if big else {})))
     return a
 
 

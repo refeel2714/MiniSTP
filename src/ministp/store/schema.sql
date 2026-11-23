@@ -3,7 +3,7 @@
 -- not just in application code.
 
 create table if not exists accounts_chart (
-    code        text primary key,
+    code        text primary key check (code ~ '^[1-5][0-9]{3}$'),   -- 채번 규칙 (스펙 D4): 대분류, 중분류, 순번, 세목
     name        text not null,
     normal_side char(1) not null check (normal_side in ('D', 'C'))
 );
