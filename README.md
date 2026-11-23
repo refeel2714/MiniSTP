@@ -130,7 +130,7 @@ grant select on all tables in schema public to ministp_ui;
 ## 개발
 
 ```bash
-uv venv && uv pip install -e . pytest httpx
+uv venv && uv pip install -e . pytest httpx hypothesis
 .venv/bin/pytest -q            # 전체
 .venv/bin/pytest -q -m gate    # 스펙 04 게이트 테스트만
 ```
@@ -140,6 +140,13 @@ DB 테스트는 PostgreSQL 16이 필요합니다. `MINISTP_TEST_DATABASE_URL`이
 ```bash
 MINISTP_TEST_DATABASE_URL=postgresql://postgres:postgres@localhost:5432/ministp_test .venv/bin/pytest -q -m db
 ```
+
+**원장 불변식 무작위 시험**: 예제 몇 개로는 못 보는 순서 문제를 찾으려고, 거래 흐름을 무작위로 만들어 매 단계마다 원장 규칙을 확인합니다([hypothesis](https://hypothesis.readthedocs.io/) 상태 기계). 실패하면 가장 짧은 재현 순서로 줄여서 보여 줍니다.
+
+- `tests/unit/test_ledger_properties.py` (원장 단독): 입금, 매수, 일부·전량 매도, 날짜 넘김(휴장일을 건너뛰는 결제 포함), 일 마감을 섞고, 매 단계마다 시산표 차대 일치, 원가 보존(들어간 원가 = 매도원가 + 남은 원가), 이동평균 매도원가(R-32·33), 예수금·미지급금·미수금이 미결제 체결과 맞는지, 손익·수수료·세금 계정이 체결 결과의 합과 맞는지, 순자산 = 자본 계정 합(R-60), 이벤트를 다시 재생하면 같은 원장이 되는지(R-04)를 시험이 따로 센 장부와 맞춥니다.
+- `tests/db/test_operations_properties.py` (운영 경로, DB 필요): 모의 증권사를 상대로 실제 운영 함수(`run`의 장중 실행기, `daily`)를 써서 시장가·지정가 주문, 주문 검증 거절, 일부 체결, 시스템 취소와 증권사 화면 취소, 체결 동기화, 프로그램 재시작, 시세 변동, 일 마감과 날짜 넘김을 섞습니다. 매 조회 뒤 장중 대사가 모두 일치하는지, 같은 체결이 두 번 들어가지 않는지, 주문 상태가 증권사 누적 상태와 맞는지, 일 마감 대사가 무오류이고 원장 내부 대사(`verify`)가 모두 맞는지, DB에서 다시 읽은 원장이 메모리와 같은지 봅니다. 이 시험이 재시작 뒤 주문번호 중복(#64)과 결제일 장중 예수금 어긋남(#65)을 찾았습니다.
+
+평소에는 각각 150가지·25가지 흐름을 돌리고, 깊게 볼 때는 `MINISTP_PROPERTY_EXAMPLES=5000`처럼 늘립니다.
 
 | 모듈 | 역할 | 스펙 |
 |---|---|---|
