@@ -719,7 +719,7 @@
       const details = def.grids.filter(g => g.load === "master" && g.master === master.id);
       if (!details.length || !row) return;
       const linked = g => Object.fromEntries(Object.entries(g.link).map(([p, col]) => [p, row[col]]));
-      details.forEach(g => grids[g.id].about([...new Set(Object.values(linked(g)))].join(" · ")));   // whose detail this is
+      details.forEach(g => grids[g.id].about([...new Set(Object.values(linked(g)).filter(v => v != null && v !== ""))].join(" · ")));   // whose detail this is
       load(details, linked);
     }
 
@@ -1284,6 +1284,8 @@
 
     function renderChart() {
       const { x, y } = g.chart;
+      const money = g.columns.find(c => c.name === y).format === "money";   // won has no decimals
+      const yf = v => money ? fmt(Math.round(v), "money") : rf.format(v);
       const pts = rows.filter(r => r[y] != null).map(r => [String(r[x]), Number(r[y])]).sort((a, b) => a[0] < b[0] ? -1 : 1);
       if (pts.length < 2) return chartBox.replaceChildren();
       const W = Math.max(320, Math.round(chartBox.clientWidth - 16)), H = 160, L = 64, R = 12, T = 12, B = 24;
@@ -1298,7 +1300,7 @@
       for (let k = 0; k <= 3; k++) {
         const v = lo + (hi - lo) * k / 3;
         s.append(svg("line", { x1: L, x2: W - R, y1: py(v), y2: py(v), class: "gl" }));
-        const t = svg("text", { x: L - 8, y: py(v) + 4, class: "ax", "text-anchor": "end" }); t.textContent = rf.format(v); s.append(t);
+        const t = svg("text", { x: L - 8, y: py(v) + 4, class: "ax", "text-anchor": "end" }); t.textContent = yf(v); s.append(t);
       }
       [0, Math.floor((pts.length - 1) / 2), pts.length - 1].forEach(i => {
         const t = svg("text", { x: px(i), y: H - 6, class: "ax", "text-anchor": i === 0 ? "start" : i === pts.length - 1 ? "end" : "middle" });
@@ -1308,7 +1310,7 @@
       const last = pts[pts.length - 1];
       s.append(svg("circle", { cx: px(pts.length - 1), cy: py(last[1]), r: 3.5, class: "pt" }));
       const lt = svg("text", { x: px(pts.length - 1) - 6, y: py(last[1]) - 8, class: "lv", "text-anchor": "end" });
-      lt.textContent = rf.format(last[1]); s.append(lt);
+      lt.textContent = yf(last[1]); s.append(lt);
       chartBox.replaceChildren(s);
     }
 
