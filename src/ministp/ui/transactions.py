@@ -127,7 +127,7 @@ def _nav(c: TxContext, p) -> TxResult:
 
 def _events(c: TxContext, p) -> TxResult:
     return TxResult({"main": q.ledger_events(c.conn, p.get("date_from"), p.get("date_to"),
-                                             p.get("event_type"), p.get("symbol"))})
+                                             p.get("event_type"), p.get("symbol"), p.get("seq"))})
 
 
 def _trace(c: TxContext, p) -> TxResult:
@@ -137,8 +137,22 @@ def _trace(c: TxContext, p) -> TxResult:
         t = q.event_trace(c.conn, p["seq"])
     except KeyError as e:
         raise TxError(str(e)) from e
-    return TxResult({"event": t.event, "journal": t.journal, "positions": t.positions, "cash": t.cash},
-                    {"balanced": t.balanced})
+    return TxResult({"event": t.event, "positions": t.positions, "cash": t.cash})   # its journal: STP3200R02
+
+
+def _journal_events(c: TxContext, p) -> TxResult:
+    return TxResult({"main": q.journal_events(c.conn, p.get("date_from"), p.get("date_to"),
+                                              p.get("event_type"), p.get("symbol"), p.get("seq"))})
+
+
+def _journal(c: TxContext, p) -> TxResult:
+    if p.get("seq") is None:
+        raise TxError("seq가 필요해요")
+    try:
+        journal, balanced = q.event_journal(c.conn, p["seq"])
+    except KeyError as e:
+        raise TxError(str(e)) from e
+    return TxResult({"journal": journal}, {"balanced": balanced})
 
 
 def _trial(c: TxContext, p) -> TxResult:
@@ -205,9 +219,12 @@ TRANSACTIONS: dict[str, Tx] = {t.tx_id: t for t in [
     Tx("STP2100R02", "날짜별 대사 요약", {"date_from": "date", "date_to": "date", "kind": "text"}, _recon_days),
     Tx("STP2200R01", "기준가 추이", {"date_from": "date", "date_to": "date"}, _nav),
     Tx("STP3100R01", "원장 이벤트 목록", {"date_from": "date", "date_to": "date", "event_type": "text",
-                                       "symbol": "text"}, _events),
-    Tx("STP3100R02", "이벤트 추적", {"seq": "int"}, _trace),
-    Tx("STP3100R03", "시산표", {}, _trial),
+                                       "symbol": "text", "seq": "int"}, _events),
+    Tx("STP3100R02", "이벤트의 보유·예수금 변동", {"seq": "int"}, _trace),
+    Tx("STP3200R01", "분개를 만든 이벤트 목록", {"date_from": "date", "date_to": "date", "event_type": "text",
+                                            "symbol": "text", "seq": "int"}, _journal_events),
+    Tx("STP3200R02", "이벤트의 분개", {"seq": "int"}, _journal),
+    Tx("STP3300R01", "시산표", {}, _trial),
     Tx("STP4100R01", "종목정보", {}, _instruments),
     Tx("STP4100R02", "종목 원장 이벤트", {"symbol": "text"}, _instrument_events),
     Tx("STP4200R01", "계좌 요약", {}, _account),
