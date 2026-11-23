@@ -13,14 +13,14 @@
 |  | 13 주문가능 | [STP-1300](STP-1300.md) 주문가능 조회 |
 |  | 14 고객별 보유 | [STP-1400](STP-1400.md) 고객별 보유 |
 | **2 대사·평가**<br>증권사와 맞는지, 하루의 값이 얼마인지 | 21 대사 | [STP-2100](STP-2100.md) 일일 대사 결과, [STP-2110](STP-2110.md) 원장 내부 대사 |
-|  | 22 기준가 | [STP-2200](STP-2200.md) 기준가·무오류 현황, [STP-2210](STP-2210.md) 기준가 변동 원인 |
-|  | 23 시세 점검 | [STP-2300](STP-2300.md) 시세 점검 |
+|  | 22 기준가 | [STP-2200](STP-2200.md) 기준가·무오류 현황, [STP-2210](STP-2210.md) 기준가 내역 |
+|  | 23 시세 | [STP-2300](STP-2300.md) 시세 추이 |
 |  | 24 마감 점검 | [STP-2400](STP-2400.md) 마감 점검 |
-| **3 원장·회계**<br>기록된 이벤트와 그 분개 (ABOR) | 31 원장 | [STP-3100](STP-3100.md) 원장 조회 |
+| **3 원장·회계**<br>기록된 이벤트와 그 분개, 거기서 나온 계좌 현황 (ABOR) | 31 원장 | [STP-3100](STP-3100.md) 원장 조회 |
 |  | 32 분개 | [STP-3200](STP-3200.md) 분개 조회 |
 |  | 33 시산표 | [STP-3300](STP-3300.md) 시산표 |
-| **4 기준정보**<br>위 세 단계가 함께 쓰는 종목, 계좌, 거래 기준, 공통코드 | 41 종목 | [STP-4100](STP-4100.md) 종목정보 |
-|  | 42 계좌 현황 | [STP-4200](STP-4200.md) 계좌정보 |
+|  | 34 계좌 현황 | [STP-3400](STP-3400.md) 계좌정보 |
+| **4 기준정보**<br>위 세 단계가 함께 쓰는 종목, 거래 기준, 계좌 등록 정보, 공통코드 (보유와 잔액은 1~3에 있어요) | 41 종목 | [STP-4100](STP-4100.md) 종목정보 |
 |  | 43 거래 기준 | [STP-4300](STP-4300.md) 기준정보 |
 |  | 44 계좌 관리 | [STP-4400](STP-4400.md) 계좌 관리 |
 |  | 46 공통코드 | [STP-4600](STP-4600.md) 코드 관리 |
@@ -36,16 +36,16 @@
 | [STP-2100](STP-2100.md) | 일일 대사 결과 | 2 | `STP2100R02`, `STP2100R01`, `STP2100U01` |
 | [STP-2110](STP-2110.md) | 원장 내부 대사 | 3 | `STP2110R01`, `STP2110R02` |
 | [STP-2200](STP-2200.md) | 기준가·무오류 현황 | 1 | `STP2200R01` |
-| [STP-2210](STP-2210.md) | 기준가 변동 원인 | 2 | `STP2210R01`, `STP2210R02` |
-| [STP-2300](STP-2300.md) | 시세 점검 | 2 | `STP2300R01`, `STP2300R02` |
+| [STP-2210](STP-2210.md) | 기준가 내역 | 2 | `STP2210R01`, `STP2210R02` |
+| [STP-2300](STP-2300.md) | 시세 추이 | 2 | `STP2300R01`, `STP2300R02` |
 | [STP-2400](STP-2400.md) | 마감 점검 | 2 | `STP2400R01`, `STP2400R02` |
 | [STP-3100](STP-3100.md) | 원장 조회 | 3 | `STP3100R01`, `STP3100R02` |
 | [STP-3200](STP-3200.md) | 분개 조회 | 2 | `STP3200R01`, `STP3200R02` |
 | [STP-3300](STP-3300.md) | 시산표 | 1 | `STP3300R01` |
+| [STP-3400](STP-3400.md) | 계좌정보 | 3 | `STP3400R01`, `STP3400R02`, `STP3400R03` |
 | [STP-4100](STP-4100.md) | 종목정보 | 2 | `STP4100R01`, `STP4100R02` |
-| [STP-4200](STP-4200.md) | 계좌정보 | 3 | `STP4200R01`, `STP4200R02`, `STP4200R03` |
 | [STP-4300](STP-4300.md) | 기준정보 | 5 | `STP4300R01`, `STP4300R02`, `STP4300R03`, `STP4300R04`, `STP4300R05` |
-| [STP-4400](STP-4400.md) | 계좌 관리 | 3 | `STP4400R01`, `STP4400R03`, `STP4400R02`, `STP4400U01`, `STP4400U02` |
+| [STP-4400](STP-4400.md) | 계좌 관리 | 2 | `STP4400R01`, `STP4400R02`, `STP4400U01`, `STP4400U02` |
 | [STP-4600](STP-4600.md) | 코드 관리 | 2 | `STP4600R01`, `STP4600R02`, `STP4600U01`, `STP4600U02`, `STP4600U03`, `STP4600U04` |
 
 ## 바로 가기 창 (Ctrl+K)
@@ -67,7 +67,7 @@
 | `account_status_history.effective_from` | 적용 시작일 | STP-4400 accounts 버튼 status, STP-4400 status_history |
 | `account_status_history.reason` | 사유 | STP-4400 accounts 버튼 status, STP-4400 status_history |
 | `account_status_history.status` | 상태 | STP-4400 accounts 버튼 status, STP-4400 status_history |
-| `account_status_v.status` | 현재 상태 | STP-1400 accounts, STP-4200 account, STP-4400 accounts |
+| `account_status_v.status` | 현재 상태 | STP-1400 accounts, STP-3400 account, STP-4400 accounts |
 | `accounts_chart.code` | 계정코드 | STP-2210 bridge, STP-3300 trial |
 | `accounts_chart.name` | 계정명 | STP-2210 bridge, STP-3200 journal, STP-3300 trial |
 | `accounts_chart.normal_side` | 정상잔액 방향 | STP-3300 trial |
@@ -91,10 +91,10 @@
 | `customer_positions_v.symbol` | 종목코드 | STP-1400 positions |
 | `customers.alias` | 고객 별칭 | STP-1400 customers, STP-1400 customers 버튼 add, STP-4400 accounts |
 | `customers.customer_id` | 고객 ID | STP-1400 customers, STP-1400 customers 버튼 add |
-| `instruments.asset_type` | 자산 유형 | STP-1100 holdings, STP-1200 orders, STP-1300 symbols, STP-1400 positions, STP-2300 prices, STP-4100 instruments, STP-4200 settlements, STP-4300 fees, STP-4300 ticks, STP-4400 positions |
+| `instruments.asset_type` | 자산 유형 | STP-1100 holdings, STP-1200 orders, STP-1300 symbols, STP-1400 positions, STP-2300 symbols, STP-3400 settlements, STP-4100 instruments, STP-4300 fees, STP-4300 ticks |
 | `instruments.market` | 시장 | STP-4100 instruments, STP-4300 fees |
-| `instruments.name` | 종목명 | STP-1100 holdings, STP-1200 orders, STP-1300 symbols, STP-1400 positions, STP-2300 prices, STP-4100 instruments, STP-4200 settlements, STP-4400 positions |
-| `instruments.symbol` | 종목코드 | STP-1100 holdings, STP-1300 symbols, STP-1300 조회조건, STP-2300 prices, STP-3100 events, STP-3100 조회조건, STP-3200 events, STP-3200 조회조건, STP-4100 instruments, STP-4200 settlements |
+| `instruments.name` | 종목명 | STP-1100 holdings, STP-1200 orders, STP-1300 symbols, STP-1400 positions, STP-2300 symbols, STP-3400 settlements, STP-4100 instruments |
+| `instruments.symbol` | 종목코드 | STP-1100 holdings, STP-1300 symbols, STP-1300 조회조건, STP-2300 symbols, STP-3100 events, STP-3100 조회조건, STP-3200 events, STP-3200 조회조건, STP-3400 settlements, STP-4100 instruments |
 | `journal_entries.date` | 회계일 | STP-3200 journal |
 | `journal_entries.entry_id` | 전표 번호 | STP-3200 journal |
 | `journal_entries.kind` | 전표 유형 | STP-3200 journal |
@@ -103,10 +103,10 @@
 | `journal_lines.account_code` | 계정코드 | STP-3200 journal |
 | `journal_lines.credit` | 대변 금액 | STP-3200 journal |
 | `journal_lines.debit` | 차변 금액 | STP-3200 journal |
-| `ledger_events.event_type` | 이벤트 유형 | STP-3100 events, STP-3100 조회조건, STP-3200 events, STP-3200 조회조건, STP-4100 events |
-| `ledger_events.payload` | 이벤트 내용 | STP-3100 events, STP-4100 events |
-| `ledger_events.recorded_at` | 기록 시각 | STP-3100 events, STP-4100 events |
-| `ledger_events.seq` | 이벤트 순번 | STP-3100 events, STP-3100 조회조건, STP-3200 events, STP-3200 조회조건, STP-4100 events |
+| `ledger_events.event_type` | 이벤트 유형 | STP-3100 events, STP-3100 조회조건, STP-3200 events, STP-3200 조회조건 |
+| `ledger_events.payload` | 이벤트 내용 | STP-3100 events |
+| `ledger_events.recorded_at` | 기록 시각 | STP-3100 events |
+| `ledger_events.seq` | 이벤트 순번 | STP-3100 events, STP-3100 조회조건, STP-3200 events, STP-3200 조회조건 |
 | `oms_order_acks.detail` | 거부 사유 | STP-1200 order |
 | `oms_order_acks.order_no` | 증권사 주문번호 | STP-1200 order |
 | `oms_order_acks.outcome` | 결과 | STP-1200 order |
@@ -114,7 +114,7 @@
 | `oms_orders.created_at` | 생성 시각 | STP-1200 orders |
 | `oms_orders.limit_price` | 지정가 | STP-1200 order, STP-1300 조회조건 |
 | `oms_orders.qty` | 주문수량 | STP-1200 orders, STP-1300 조회조건 |
-| `oms_orders.side` | 매매구분 | STP-1200 orders, STP-1300 조회조건, STP-4200 settlements |
+| `oms_orders.side` | 매매구분 | STP-1200 orders, STP-1300 조회조건, STP-3400 settlements |
 | `oms_orders.symbol` | 종목코드 | STP-1200 orders |
 | `oms_orders.trade_date` | 주문일 | STP-1200 조회조건 |
 | `position_ledger.cost_delta` | 장부금액 증감 | STP-3100 positions |
@@ -123,9 +123,8 @@
 | `position_ledger.realized_pnl` | 실현손익 | STP-3100 positions |
 | `position_ledger.symbol` | 종목코드 | STP-3100 positions |
 | `position_ledger.trade_date` | 매매일 | STP-3100 positions |
-| `positions_v.book_cost` | 장부금액 | STP-1100 holdings, STP-4100 instruments, STP-4400 positions |
-| `positions_v.qty` | 보유수량 | STP-1100 holdings, STP-1300 symbols, STP-4100 instruments, STP-4400 positions |
-| `positions_v.symbol` | 종목코드 | STP-4400 positions |
+| `positions_v.book_cost` | 장부금액 | STP-1100 holdings |
+| `positions_v.qty` | 보유수량 | STP-1100 holdings, STP-1300 symbols |
 | `recon_results.broker_value` | 증권사 값 | STP-2100 results |
 | `recon_results.cause_code` | 원인 코드 | STP-2100 results, STP-2100 results 버튼 resolve |
 | `recon_results.date` | 기준일 | STP-2100 days |
@@ -136,7 +135,11 @@
 | `recon_results.key` | 항목 키 | STP-2100 results |
 | `recon_results.note` | 판단 메모 | STP-2100 results 버튼 resolve |
 | `recon_results.status` | 상태 | STP-2100 results |
-| `trading_accounts.account_id` | 계좌 ID | STP-1400 accounts, STP-4200 account, STP-4400 accounts, STP-4400 accounts 버튼 add, STP-4400 accounts 버튼 status |
-| `trading_accounts.alias` | 계좌 별칭 | STP-1400 accounts, STP-4200 account, STP-4400 accounts, STP-4400 accounts 버튼 add |
+| `trading_accounts.account_id` | 계좌 ID | STP-1400 accounts, STP-3400 account, STP-4400 accounts, STP-4400 accounts 버튼 add, STP-4400 accounts 버튼 status |
+| `trading_accounts.account_type` | 계좌 유형 | STP-4400 accounts |
+| `trading_accounts.alias` | 계좌 별칭 | STP-1400 accounts, STP-3400 account, STP-4400 accounts, STP-4400 accounts 버튼 add |
+| `trading_accounts.broker` | 증권사 | STP-4400 accounts |
 | `trading_accounts.credential_ref` | 인증정보 참조 | STP-4400 accounts 버튼 add |
 | `trading_accounts.customer_id` | 고객 ID | STP-4400 accounts 버튼 add |
+| `trading_accounts.env` | 환경 | STP-4400 accounts |
+| `trading_accounts.opened_on` | 개설일 | STP-4400 accounts |
