@@ -287,7 +287,7 @@ def test_live_endpoint_is_an_event_stream(client):
     assert "GET" in route.methods
 
 
-# ---------- STP-4100·4300 기준정보, STP-3400 계좌정보 ----------
+# ---------- STP-4100 종목정보·STP-4300 거래 기준, STP-3400 계좌정보 ----------
 
 def _rows(client, tx, params=None, dataset="main"):
     body = client.post(f"/api/tx/{tx}", json={"params": params or {}}).json()
