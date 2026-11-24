@@ -1,14 +1,18 @@
-"""바스켓 주문 시뮬레이션 (spec D9 더할 것 6, R-97): 목표 편입비와 총 주문금액으로 종목별 수량을 계산해요.
+"""바스켓 주문 시뮬레이션 (spec D9 더할 것 6, R-97): 배분 비율과 총 주문금액으로 종목별 수량을 계산해요.
+
+배분 비율은 이번 주문금액을 종목에 나누는 비율이에요(합계 100%). 목표 편입비(계좌 전체 비중)는 한 번의 주문으로
+맞추기 어려워서(주문금액과 계좌 평가금액의 차이가 클수록 더) 여기서는 받지 않아요. 목표 편입비에서 배분 비율을 거꾸로
+구하는 계산은 따로 해요.
 
 계산만 하고 DB에 쓰지 않아요. 주문은 내지 않아요(결재와 전송은 게이트 뒤).
 
-- 목표 금액 = 총 주문금액 × 편입비, 수량 = 목표 금액 ÷ 주문가 (1주 단위 내림).
+- 배분 금액 = 총 주문금액 × 배분 비율, 수량 = 목표 금액 ÷ 주문가 (1주 단위 내림).
 - 주문가: 현재가를 호가단위에 맞춘 값(매수는 올림, 매도는 내림), +1호가, 또는 시장가(현재가로 어림).
 - 검사는 묶음 검증(`precheck.check_set`, R-98)이 해요: 종목마다 주문 검증 함수(`risk.check_order`, R-36~38)로
   영업일, 수량, 호가단위, 1회 주문 금액 한도, 매도가능수량(공매도 금지), 주문가능금액을 보고, 앞 줄을 보냈다고
   친 채로 다음 줄을 검사해요(보낼 때와 같은 순서, 같은 결과). 여기에 주문 후 종목 비중 한도(투자 지침이 생기기
   전까지 예시값, 매수에만, 미체결 매수 포함)를 더해요.
-- 화면을 처음 열 때 목표 편입비는 현재 편입비(보유 종목의 평가금액 비중, 예수금 제외)예요.
+- 화면을 처음 열 때 배분 비율은 현재 편입비(보유 종목의 평가금액 비중, 예수금 제외)예요. 그대로 사면 비중이 유지돼요.
 """
 import csv
 import datetime as dt
@@ -43,7 +47,7 @@ class PriceBasis(StrEnum):
 BASIS_TEXT = {PriceBasis.CURRENT: "현재가 지정가", PriceBasis.TICK1: "현재가 +1호가", PriceBasis.MARKET: "시장가"}
 
 # 행 검사 결과. BLOCK이면 이 바스켓은 결재로 넘길 수 없어요. WARN은 보여 주기만 해요.
-ISSUE_TEXT = {**CHECK_TEXT, "ZERO_QTY": "편입비가 작아 1주도 살 수 없어요"}   # 묶음 검증(R-98)의 사유 그대로
+ISSUE_TEXT = {**CHECK_TEXT, "ZERO_QTY": "배분 비율이 작아 1주도 살 수 없어요"}   # 묶음 검증(R-98)의 사유 그대로
 WARN = {"ZERO_QTY"}
 
 
@@ -90,7 +94,7 @@ class Portfolio:
 @dataclass(frozen=True)
 class Target:
     symbol: str
-    weight: Decimal                 # 목표 편입비(%)
+    weight: Decimal                 # 배분 비율(%): 이번 주문금액 중 이 종목 몫
     price: int | None = None        # 현재가 대신 쓸 가격 (보유하지 않은 종목처럼 현재가가 없을 때)
 
 
@@ -100,15 +104,15 @@ class Line:
     name: str
     asset_type: str
     current_weight: Decimal         # 현재 편입비(%)
-    weight: Decimal                 # 목표 편입비(%)
+    weight: Decimal                 # 배분 비율(%)
     current_price: int | None
     order_price: int | None         # 계산에 쓴 단가 (시장가는 현재가)
     limit_price: int | None         # 주문으로 나갈 지정가 (시장가는 없음)
     tick: int | None
-    target_amount: int
+    target_amount: int              # 배분 금액 = 총 주문금액 × 배분 비율
     qty: int
     amount: int
-    actual_weight: Decimal          # 주문금액 ÷ 총 주문금액(%)
+    actual_weight: Decimal          # 실제 배분 비율(%) = 주문금액 ÷ 총 주문금액
     commission: int
     taxes: int
     post_weight: Decimal | None     # 주문 후 비중(%) = (보유 평가금액 + 미체결 매수 + 앞 줄 ± 주문금액) ÷ 총자산
@@ -205,12 +209,12 @@ def validate(targets: list[Target], total_amount: int) -> None:
             raise BasketError(f"같은 종목이 두 번 있어요: {t.symbol}")
         seen.add(t.symbol)
         if t.weight < 0:
-            raise BasketError(f"편입비는 0% 이상이에요: {t.symbol} {t.weight}%")
+            raise BasketError(f"배분 비율은 0% 이상이에요: {t.symbol} {t.weight}%")
         if t.price is not None and t.price <= 0:
             raise BasketError(f"가격은 1원 이상이에요: {t.symbol}")
     total = sum(t.weight for t in targets)
     if total.quantize(CENT) != HUNDRED:
-        raise BasketError(f"목표 편입비 합계가 100%가 아니에요: {total.quantize(CENT)}%")
+        raise BasketError(f"배분 비율 합계가 100%가 아니에요: {total.quantize(CENT)}%")
 
 
 def simulate(pf: Portfolio, targets: list[Target], total_amount: int, side: Side = Side.BUY,
@@ -262,7 +266,7 @@ def simulate(pf: Portfolio, targets: list[Target], total_amount: int, side: Side
 # ---------- 바스켓 파일 (CSV) ----------
 
 _SYMBOL = ("종목코드", "symbol")
-_WEIGHT = ("편입비", "목표 편입비", "weight")
+_WEIGHT = ("배분 비율", "편입비", "목표 편입비", "weight")   # 예전 파일의 "편입비" 열도 배분 비율로 읽어요
 _PRICE = ("가격", "price")
 
 
@@ -274,10 +278,10 @@ def _pick(row: dict, names) -> str:
 
 
 def read_targets(text: str) -> list[Target]:
-    """바스켓 CSV: 열 `종목코드, 편입비[, 가격]` (영문 symbol, weight, price도 받아요). 편입비는 % 숫자."""
+    """바스켓 CSV: 열 `종목코드, 배분 비율[, 가격]` (영문 symbol, weight, price도 받아요). 배분 비율은 % 숫자."""
     rows = list(csv.DictReader(io.StringIO(text.lstrip("﻿"))))
     if not rows or not any(n in rows[0] for n in _SYMBOL) or not any(n in rows[0] for n in _WEIGHT):
-        raise BasketError("바스켓 파일에는 종목코드, 편입비 열이 있어야 해요")
+        raise BasketError("바스켓 파일에는 종목코드, 배분 비율 열이 있어야 해요")
     out = []
     for i, r in enumerate(rows, start=2):
         sym = _pick(r, _SYMBOL)
@@ -287,12 +291,12 @@ def read_targets(text: str) -> list[Target]:
         try:
             out.append(Target(sym.zfill(6), Decimal(w), int(p) if p else None))
         except (ArithmeticError, ValueError) as e:
-            raise BasketError(f"{i}번째 줄의 편입비나 가격이 숫자가 아니에요: {w} {p}") from e
+            raise BasketError(f"{i}번째 줄의 배분 비율이나 가격이 숫자가 아니에요: {w} {p}") from e
     return out
 
 
-HEADER = ["종목코드", "종목명", "현재 편입비", "목표 편입비", "현재가", "주문가", "주문구분", "목표 금액", "수량", "주문금액",
-          "실제 편입비", "편입비 차이", "예상 수수료", "예상 세금", "주문 후 비중", "검사"]
+HEADER = ["종목코드", "종목명", "현재 편입비", "배분 비율", "현재가", "주문가", "주문구분", "배분 금액", "수량", "주문금액",
+          "실제 배분 비율", "배분 차이", "예상 수수료", "예상 세금", "주문 후 비중", "검사"]
 
 
 def write_csv(result: Result, path: str | pathlib.Path) -> pathlib.Path:
