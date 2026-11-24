@@ -15,6 +15,8 @@
     python -m ministp dividend list               # 현금배당 권리와 계좌별 인식·입금 현황 (등록은 dividend add)
     python -m ministp cash list                   # 입출금·대체 내역과 출금가능금액 (기록은 cash deposit | withdraw | transfer)
     python -m ministp audit                       # 감사 로그: 누가 언제 무엇을 했고 어떻게 끝났는지 (거부·실패 포함)
+    python -m ministp master fetch                # 시장 전체 종목정보(KIS 마스터 파일) 받아 두기, 키 필요 없음
+    python -m ministp master check                # 받은 종목정보 점검: 전일 대비, 등록 종목, 기준가 대조 (읽기 전용)
 
 Paper (모의투자) only until Phase 4. Keys are asked for and never saved.
 """
@@ -148,7 +150,7 @@ def run(argv, **kw) -> int:
 
 
 def _run(argv, *, environ=os.environ, client_factory=KisClient, connect=psycopg.connect,
-         now=dt.datetime.now, sleep=time.sleep, feed_factory=None, console=None) -> int:
+         now=dt.datetime.now, sleep=time.sleep, feed_factory=None, console=None, master_download=None) -> int:
     ap = argparse.ArgumentParser(prog="python -m ministp")
     sub = ap.add_subparsers(dest="cmd", required=True)
     sub.add_parser("db-init")
@@ -251,6 +253,11 @@ def _run(argv, *, environ=os.environ, client_factory=KisClient, connect=psycopg.
     p.add_argument("--sample", action="store_true", help="샘플 DB(ministp_sample)에 실행")
     p = sub.add_parser("verify", help="원장 무결성 점검: 저장된 행이 이벤트를 다시 계산한 결과와 같은지 (읽기 전용)")
     p.add_argument("--sample", action="store_true", help="샘플 DB(ministp_sample)를 점검")
+    p = sub.add_parser("master", help="시장 전체 종목정보: KIS 마스터 파일 받기(fetch)와 점검(check). DB에 쓰지 않아요")
+    p.add_argument("action", choices=["fetch", "check"])
+    p.add_argument("--date", type=dt.date.fromisoformat, help="check: 점검할 날 (기본은 가장 최근에 받은 날)")
+    p.add_argument("--csv", action="store_true", help="엑셀로 열 수 있게 받은 폴더에 master.csv도 만들기")
+    p.add_argument("--no-db", action="store_true", help="check: 등록 종목·기준가 대조 없이 파일만 점검")
     p = sub.add_parser("ui", help="업무화면(STP-UI)을 이 PC에서만 열기 (기본은 조회 전용)")
     p.add_argument("--sample", action="store_true", help="샘플 DB(ministp_sample)로 열기. 연습용이라 처리 버튼도 켜져요")
     p.add_argument("--write", action="store_true", help="운영 DB에서 화면의 처리 버튼을 켜기 (없으면 조회 전용)")
@@ -261,9 +268,14 @@ def _run(argv, *, environ=os.environ, client_factory=KisClient, connect=psycopg.
     today = started.date()
     calendar = krx_calendar()
     fees = FeeSchedule.kis_paper()
+    if args.cmd == "master" and (args.action == "fetch" or args.no_db):
+        return _master(args, environ, None, connect, calendar, fees, started, master_download)
     url = database_url(environ)
 
     try:
+        if args.cmd == "master":
+            return _master(args, environ, url, connect, calendar, fees, started, master_download)
+
         if args.cmd == "db-init":
             _create_database(url, connect)
             with connect(url, autocommit=True) as conn:
@@ -738,6 +750,68 @@ def _verify(url: str, connect, calendar, fees) -> int:
             return 1
         print("이상 없음: 저장된 원장이 이벤트를 처음부터 다시 계산한 결과와 같아요.")
         return 0
+
+
+def _master(args, environ, url, connect, calendar, fees, started, download=None) -> int:
+    """R-90~92: market master files. Reads the DB only for `check` and never writes to it."""
+    import urllib.error
+
+    from . import master
+    from .pricecheck import closes_by_day
+    root = master.default_dir(environ)
+    try:
+        if args.action == "fetch":
+            got = master.fetch(root, started.date(), started, download or master.urllib_download)
+            rows = ", ".join(f"{m} {n:,}종목" for m, n in got.rows.items())
+            print(f"{'받음' if got.changed else '오늘 받은 파일과 같아요'}: {got.folder} ({rows})")
+            if args.csv:
+                master.write_csv(master.load_day(root, started.date()), got.folder / "master.csv")
+                print(f"엑셀용: {got.folder / 'master.csv'}")
+            print("점검: python -m ministp master check")
+            return 0
+
+        days = master.kept_days(root)
+        day = args.date or (days[-1] if days else None)
+        if day is None or day not in days:
+            print(f"오류: {root}에 {'받은 파일이 없어요' if day is None else f'{day} 파일이 없어요'}. "
+                  "먼저 python -m ministp master fetch")
+            return 1
+        rows = master.load_day(root, day)
+        prev_day = next((d for d in reversed(days) if d < day), None)
+        prev = master.load_day(root, prev_day) if prev_day else None
+        instruments, held, closes = {}, set(), {}
+        if url is not None:
+            with connect(url, autocommit=True) as conn:
+                books = load_books(conn, calendar, fees)
+            instruments, held = books.instruments, set(books.ledger.positions())
+            closes = {d: v[0] or v[1] for d, v in closes_by_day(books.ledger).items()}
+        rep = master.check(day, rows, prev_day, prev, instruments, held, closes)
+        if args.csv:
+            master.write_csv(rows, root / day.isoformat() / "master.csv")
+    except (master.MasterError, OSError, urllib.error.URLError) as e:
+        print(f"오류: {e}")
+        return 1
+
+    print(f"시장 종목정보 {day} (KIS 마스터 파일, 읽기만 해요)")
+    for (mkt, group), n in sorted(rep.counts.items(), key=lambda kv: (kv[0][0], -kv[1])):
+        print(f"  {mkt:6} {group:10} {n:>6,}")
+    print("  상태: " + ", ".join(f"{k} {v:,}" for k, v in rep.flags.items()))
+    if prev is None:
+        print("전일 대비: 비교할 이전 파일이 없어요 (내일부터 비교해요)")
+    else:
+        print(f"전일 대비 ({prev_day}): 신규 {len(rep.new)}, 빠짐 {len(rep.gone)}, 이름 변경 {len(rep.renamed)}")
+        for r in rep.new[:20]:
+            print(f"  + {r.symbol} {r.name} ({r.market.value} {r.group_name})")
+        for r in rep.gone[:20]:
+            print(f"  - {r.symbol} {r.name} ({r.market.value} {r.group_name})")
+        for a, b in rep.renamed[:20]:
+            print(f"  ~ {a.symbol} {a.name} → {b.name}")
+    if url is None:
+        print("등록 종목·기준가 대조: 건너뜀 (--no-db)")
+    for f in rep.findings:
+        print(f"  [{f.level}] {f.topic}: {f.text}")
+    print(f"결과: {rep.level}")
+    return 1 if rep.level == master.BAD else 0
 
 
 def _db_migrate(url: str, connect, calendar, fees, *, dry_run: bool, apply: bool) -> int:
