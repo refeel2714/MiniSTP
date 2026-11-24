@@ -23,3 +23,6 @@ strategies/private/
 data/local/
 *.sqlite
 .venv/
+
+# Market master files (python -m ministp master fetch)
+data/master/
