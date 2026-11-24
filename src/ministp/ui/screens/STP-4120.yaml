@@ -1,0 +1,39 @@
+id: STP-4120
+title: 마스터 적재 내역
+layout: split
+left: 46
+purpose: master load가 종목 마스터를 넣은 날마다 한 줄이에요. 그날 파일의 종목 수, 신규·변경·빠짐 건수, 받은 두 파일의 해시가 남아 있어요. 왼쪽에서 적재를 고르면 그날 바뀐 종목과 바뀐 항목이 오른쪽에 나오고, 종목을 두 번 누르면 시장 종목 마스터(STP-4110)에서 그 종목의 이력을 열어요. 가격 변동은 여기 나오지 않아요.
+conditions:
+  - {name: date_from, type: date, label: 시작일}
+  - {name: date_to, type: date, label: 종료일}
+  - {name: load_id, type: number, source: master_loads.load_id}
+grids:
+  - id: loads
+    title: 적재 기록
+    live: true
+    tx: STP4120R01
+    load: open
+    key: load_id
+    columns:
+      - {name: load_id, source: master_loads.load_id, format: number}
+      - {name: base_date, source: master_loads.base_date, format: date}
+      - {name: rows_total, source: master_loads.rows_total, format: number}
+      - {name: rows_new, source: master_loads.rows_new, format: number}
+      - {name: rows_changed, source: master_loads.rows_changed, format: number}
+      - {name: rows_delisted, source: master_loads.rows_delisted, format: number}
+      - {name: files, label: 파일 해시 (코스피/코스닥), format: code}
+  - id: changes
+    title: 이 적재에서 바뀐 종목
+    tx: STP4120R02
+    load: master
+    master: loads
+    link: {load_id: load_id}
+    drill: {screen: STP-4110, params: {keyword: symbol}}
+    columns:
+      - {name: symbol, source: instrument_master.symbol, format: code, hidden: true}
+      - {name: sec_group, source: instrument_master.sec_group, format: code, hidden: true}
+      - {name: change, label: 변경 구분, color: status, display: pill}
+      - {name: name, source: instrument_master.name, display: badge, code: symbol, shape: sec_group}
+      - {name: item, label: 바뀐 항목}
+      - {name: before, label: 이전 값}
+      - {name: after, label: 새 값}

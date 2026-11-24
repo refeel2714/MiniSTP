@@ -20,7 +20,7 @@
 |  | 32 분개 | [STP-3200](STP-3200.md) 분개 조회 |
 |  | 33 시산표 | [STP-3300](STP-3300.md) 시산표 |
 |  | 34 계좌 현황 | [STP-3400](STP-3400.md) 계좌정보 |
-| **4 기준정보**<br>위 세 단계가 함께 쓰는 종목, 거래 기준, 계좌 등록 정보, 공통코드 (보유와 잔액은 1~3에 있어요) | 41 종목 | [STP-4100](STP-4100.md) 종목정보 |
+| **4 기준정보**<br>위 세 단계가 함께 쓰는 종목, 거래 기준, 계좌 등록 정보, 공통코드 (보유와 잔액은 1~3에 있어요) | 41 종목 | [STP-4100](STP-4100.md) 종목정보, [STP-4110](STP-4110.md) 시장 종목 마스터, [STP-4120](STP-4120.md) 마스터 적재 내역 |
 |  | 43 거래 기준 | [STP-4300](STP-4300.md) 기준정보 |
 |  | 44 계좌 관리 | [STP-4400](STP-4400.md) 계좌 관리 |
 |  | 46 공통코드 | [STP-4600](STP-4600.md) 코드 관리 |
@@ -45,6 +45,8 @@
 | [STP-3300](STP-3300.md) | 시산표 | 1 | `STP3300R01` |
 | [STP-3400](STP-3400.md) | 계좌정보 | 3 | `STP3400R01`, `STP3400R02`, `STP3400R03` |
 | [STP-4100](STP-4100.md) | 종목정보 | 2 | `STP4100R01`, `STP4100R02` |
+| [STP-4110](STP-4110.md) | 시장 종목 마스터 | 3 | `STP4110R01`, `STP4110R02`, `STP4110R03` |
+| [STP-4120](STP-4120.md) | 마스터 적재 내역 | 2 | `STP4120R01`, `STP4120R02` |
 | [STP-4300](STP-4300.md) | 기준정보 | 5 | `STP4300R01`, `STP4300R02`, `STP4300R03`, `STP4300R04`, `STP4300R05` |
 | [STP-4400](STP-4400.md) | 계좌 관리 | 2 | `STP4400R01`, `STP4400R02`, `STP4400U01`, `STP4400U02` |
 | [STP-4600](STP-4600.md) | 코드 관리 | 2 | `STP4600R01`, `STP4600R02`, `STP4600U01`, `STP4600U02`, `STP4600U03`, `STP4600U04` |
@@ -56,7 +58,7 @@
 
 | 찾는 것 | 목록을 주는 트랜잭션 | 열 수 있는 화면 (넘기는 조회조건) |
 |---|---|---|
-| 화면 | - | 화면 19개 모두 |
+| 화면 | - | 화면 21개 모두 |
 | 종목 | `STP4100R01` | STP-1300 주문가능 조회(`symbol`), STP-3100 원장 조회(`symbol`), STP-3200 분개 조회(`symbol`) |
 
 ## 영향도: DB 컬럼 → 화면
@@ -93,8 +95,15 @@
 | `customer_positions_v.symbol` | 종목코드 | STP-1400 positions |
 | `customers.alias` | 고객 별칭 | STP-1400 customers, STP-1400 customers 버튼 add, STP-4400 accounts |
 | `customers.customer_id` | 고객 ID | STP-1400 customers, STP-1400 customers 버튼 add |
+| `instrument_master.load_id` | 적재 번호 | STP-4110 history |
+| `instrument_master.market` | 시장 | STP-4110 market |
+| `instrument_master.name` | 종목명 | STP-4110 market, STP-4120 changes |
+| `instrument_master.sec_group` | 증권그룹 구분 | STP-4110 market, STP-4110 조회조건, STP-4120 changes |
+| `instrument_master.symbol` | 단축코드 | STP-4110 market, STP-4120 changes |
+| `instrument_master.valid_from` | 적용 시작일 | STP-4110 history |
+| `instrument_master_match_v.status` | 대조 결과 | STP-4100 instruments |
 | `instruments.asset_type` | 자산 유형 | STP-1100 holdings, STP-1200 orders, STP-1300 symbols, STP-1400 positions, STP-2300 symbols, STP-3400 settlements, STP-4100 instruments, STP-4300 fees, STP-4300 ticks |
-| `instruments.market` | 시장 | STP-4100 instruments, STP-4300 fees |
+| `instruments.market` | 시장 | STP-4100 instruments, STP-4110 조회조건, STP-4300 fees |
 | `instruments.name` | 종목명 | STP-1100 holdings, STP-1200 orders, STP-1300 symbols, STP-1400 positions, STP-2300 symbols, STP-3400 settlements, STP-4100 instruments |
 | `instruments.symbol` | 종목코드 | STP-1100 holdings, STP-1300 symbols, STP-1300 조회조건, STP-2300 symbols, STP-3100 events, STP-3100 조회조건, STP-3200 events, STP-3200 조회조건, STP-3400 settlements, STP-4100 instruments |
 | `journal_entries.date` | 회계일 | STP-3200 journal |
@@ -109,6 +118,12 @@
 | `ledger_events.payload` | 이벤트 내용 | STP-3100 events |
 | `ledger_events.recorded_at` | 기록 시각 | STP-3100 events |
 | `ledger_events.seq` | 이벤트 순번 | STP-3100 events, STP-3100 조회조건, STP-3200 events, STP-3200 조회조건 |
+| `master_loads.base_date` | 기준일 | STP-4120 loads |
+| `master_loads.load_id` | 적재 번호 | STP-4120 loads, STP-4120 조회조건 |
+| `master_loads.rows_changed` | 변경 | STP-4120 loads |
+| `master_loads.rows_delisted` | 빠짐 | STP-4120 loads |
+| `master_loads.rows_new` | 신규 | STP-4120 loads |
+| `master_loads.rows_total` | 종목 수 | STP-4120 loads |
 | `oms_order_acks.detail` | 거부 사유 | STP-1200 order |
 | `oms_order_acks.order_no` | 증권사 주문번호 | STP-1200 order |
 | `oms_order_acks.outcome` | 결과 | STP-1200 order |

@@ -1114,3 +1114,177 @@ TRANSACTIONS = {
     "STP4300R04": holiday_calendar,
     "STP4300R05": risk_rules,
 }
+
+
+# ---------- STP-4110 시장 종목 마스터 · STP-4120 마스터 적재 내역 (ERD v2.7, 조회 전용) ----------
+
+MASTER_LIMIT = 500   # rows a market list sends at once; the conditions narrow the rest
+WARNINGS = {"01": "투자주의", "02": "투자경고", "03": "투자위험"}
+MASTER_STATES = ("거래정지", "정리매매", "관리종목", "시장경고", "상장폐지")
+# How a history row reads, item by item: (item, its column(s), how the value is written)
+_MASTER_ITEMS = (
+    ("상장 여부", "listed", lambda v: "상장" if v else "상장폐지 (파일에서 빠짐)"),
+    ("종목명", "name", str),
+    ("표준코드", "isin", str),
+    ("시장", "market", lambda v: {"KOSPI": "유가증권시장", "KOSDAQ": "코스닥"}.get(v, v)),
+    ("증권그룹 구분", "sec_group", None),   # named from 공통코드 SECURITY_GROUP
+    ("매매수량단위", "lot", lambda v: f"{v:,}주"),
+    ("액면가", "par_value", lambda v: f"{v:,}원"),
+    ("상장일", "listed_on", lambda v: v.isoformat() if v else "-"),
+    ("상장주수", "listed_shares_k", lambda v: f"{v:,}천 주"),
+    ("우선주 구분", "preferred", lambda v: "보통주" if v == "0" else f"우선주 ({v})"),
+    ("스팩", "spac", lambda v: "예" if v else "아니오"),
+    ("거래정지", "halted", lambda v: "예" if v else "아니오"),
+    ("정리매매", "liquidation", lambda v: "예" if v else "아니오"),
+    ("관리종목", "managed", lambda v: "예" if v else "아니오"),
+    ("시장경고", "warning", lambda v: f"{WARNINGS[v]} ({v})" if v in WARNINGS else f"없음 ({v})"),
+)
+
+_MASTER_STATE_SQL = """case when not m.listed then '상장폐지' when m.halted then '거래정지'
+            when m.liquidation then '정리매매' when m.managed then '관리종목'
+            when m.warning = '03' then '투자위험' when m.warning = '02' then '투자경고'
+            when m.warning = '01' then '투자주의' end"""
+
+
+def _as_of(conn: psycopg.Connection, day: dt.date | None) -> dt.date | None:
+    """The base date the market screens show: the day asked for, else the latest load."""
+    if day is not None:
+        return day
+    return conn.execute("select max(base_date) from master_loads").fetchone()[0]
+
+
+def market_instruments(conn: psycopg.Connection, day: dt.date | None = None, market: str | None = None,
+                       sec_group: str | None = None, state: str | None = None, keyword: str | None = None,
+                       registered_only: bool = False) -> tuple[Dataset, dict]:
+    """STP-4110: every code of the market as the history says it was on `day` (default: the latest load).
+    Codes that had left the file by then are shown only when `state` asks for 상장폐지."""
+    day = _as_of(conn, day)
+    where, params = ["m.valid_from <= %(day)s"], {"day": day}
+    filters = []
+    if market:
+        filters.append("market = %(market)s"); params["market"] = market
+    if sec_group:
+        filters.append("sec_group = %(group)s"); params["group"] = sec_group
+    if state == "시장경고":
+        filters.append("state in ('투자주의', '투자경고', '투자위험')")
+    elif state:
+        filters.append("state = %(state)s"); params["state"] = state
+    else:
+        filters.append("listed")
+    if keyword:
+        filters.append("(symbol ilike %(kw)s or replace(name, ' ', '') ilike %(kw_name)s)")
+        params["kw"], params["kw_name"] = keyword.strip() + "%", "%" + keyword.replace(" ", "") + "%"
+    if registered_only:
+        filters.append("registered is not null")
+    sql = f"""
+        with now as (select distinct on (m.symbol) m.*, {_MASTER_STATE_SQL} as state
+                       from instrument_master m where {' and '.join(where)}
+                      order by m.symbol, m.valid_from desc),
+             shown as (select n.symbol, n.name, n.market, n.sec_group, n.state, n.listed, n.valid_from,
+                              case when i.symbol is not null then '등록' end as registered
+                         from now n left join instruments i using (symbol))
+        select symbol, name, market, sec_group, state, registered, valid_from, %(day)s::date as as_of from shown
+         where {' and '.join(filters)}
+         order by registered is null, market, symbol"""
+    total = conn.execute(f"select count(*) from ({sql}) x", params).fetchone()[0]
+    ds = _q(conn, sql + f" limit {MASTER_LIMIT}", params)
+    shown = f"{total:,}건 중 {len(ds):,}건" if total > len(ds) else f"{total:,}건"
+    return ds, {"base_date": day.isoformat() if day else "적재 전", "shown": shown}
+
+
+def _master_rows(conn: psycopg.Connection, symbol: str, day: dt.date | None) -> list[dict]:
+    cols = ", ".join(c for _, c, _ in _MASTER_ITEMS)
+    cur = conn.execute(f"select valid_from, load_id, {cols} from instrument_master"
+                       " where symbol = %s and (%s::date is null or valid_from <= %s) order by valid_from",
+                       (symbol, day, day))
+    names = [c.name for c in cur.description]
+    return [dict(zip(names, r)) for r in cur.fetchall()]
+
+
+def _item_text(group_names: dict, col: str, show, v) -> str:
+    if show is None:   # a code: written with its 공통코드 name
+        return f"{group_names.get(v, v)} ({v})"
+    return show(v)
+
+
+def market_instrument(conn: psycopg.Connection, symbol: str, day: dt.date | None = None) -> Dataset:
+    """STP-4110: one code's attributes on `day`, each with the day it took that value. KeyError if unknown."""
+    from .codes import names
+    rows = _master_rows(conn, symbol, _as_of(conn, day))
+    if not rows:
+        raise KeyError(f"그날 마스터에 없는 종목이에요: {symbol}")
+    groups = names(conn, "SECURITY_GROUP")
+    out = []
+    for item, col, show in _MASTER_ITEMS:
+        since = rows[0]["valid_from"]
+        for prev, row in zip(rows, rows[1:]):
+            if row[col] != prev[col]:
+                since = row["valid_from"]
+        out.append((item, _item_text(groups, col, show, rows[-1][col]), since))
+    return Dataset(("item", "value", "since"), tuple(out))
+
+
+def market_instrument_history(conn: psycopg.Connection, symbol: str, day: dt.date | None = None) -> Dataset:
+    """STP-4110: what changed in one code and when, newest first. The first row of a code is its first load."""
+    from .codes import names
+    rows = _master_rows(conn, symbol, _as_of(conn, day))
+    groups = names(conn, "SECURITY_GROUP")
+    out = [(rows[0]["valid_from"], "(첫 적재)", None, "전 항목", rows[0]["load_id"])] if rows else []
+    for prev, row in zip(rows, rows[1:]):
+        for item, col, show in _MASTER_ITEMS:
+            if row[col] != prev[col]:
+                out.append((row["valid_from"], item, _item_text(groups, col, show, prev[col]),
+                            _item_text(groups, col, show, row[col]), row["load_id"]))
+    out.sort(key=lambda r: r[0], reverse=True)
+    return Dataset(("valid_from", "item", "before", "after", "load_id"), tuple(out))
+
+
+def master_loads(conn: psycopg.Connection, date_from: dt.date | None = None, date_to: dt.date | None = None,
+                 load_id: int | None = None) -> Dataset:
+    """STP-4120: one row per `master load`, newest first."""
+    return _q(conn, """
+        select load_id, base_date, rows_total, rows_new, rows_changed, rows_delisted,
+               left(kospi_sha256, 6) || '…/' || left(kosdaq_sha256, 6) || '…' as files, fetched_at
+          from master_loads
+         where (%(f)s::date is null or base_date >= %(f)s) and (%(t)s::date is null or base_date <= %(t)s)
+           and (%(id)s::bigint is null or load_id = %(id)s)
+         order by base_date desc""", {"f": date_from, "t": date_to, "id": load_id})
+
+
+def master_load_changes(conn: psycopg.Connection, load_id: int, kind: str | None = None) -> Dataset:
+    """STP-4120: the codes one load wrote, item by item: 신규 (first row), 변경, 빠짐 (listed false)."""
+    from .codes import names
+    if conn.execute("select 1 from master_loads where load_id = %s", (load_id,)).fetchone() is None:
+        raise KeyError(f"없는 적재 번호예요: ML-{load_id}")
+    groups = names(conn, "SECURITY_GROUP")
+    cols = ", ".join(c for _, c, _ in _MASTER_ITEMS)
+    cur = conn.execute(f"""
+        select m.symbol, m.valid_from, {', '.join('m.' + c for _, c, _ in _MASTER_ITEMS)},
+               p.master_id is not null as had_before, {', '.join('p.' + c + ' as p_' + c for _, c, _ in _MASTER_ITEMS)}
+          from instrument_master m
+          left join lateral (select master_id, {cols} from instrument_master x
+                              where x.symbol = m.symbol and x.valid_from < m.valid_from
+                              order by x.valid_from desc limit 1) p on true
+         where m.load_id = %s order by m.symbol""", (load_id,))
+    names_ = [c.name for c in cur.description]
+    out = []
+    for r in (dict(zip(names_, t)) for t in cur.fetchall()):
+        if not r["had_before"]:
+            change = "신규"
+            items = [("(상장)", None, f"{r['valid_from']} 처음 보임")]
+        elif not r["listed"]:
+            change = "빠짐"
+            items = [("상장 여부", "상장", "상장폐지 (파일에서 빠짐)")]
+        else:
+            change = "변경"
+            items = [(item, _item_text(groups, col, show, r["p_" + col]), _item_text(groups, col, show, r[col]))
+                     for item, col, show in _MASTER_ITEMS if r[col] != r["p_" + col]]
+        if kind and kind != change:
+            continue
+        out += [(change, r["symbol"], r["name"], r["sec_group"], item, before, after) for item, before, after in items]
+    return Dataset(("change", "symbol", "name", "sec_group", "item", "before", "after"), tuple(out))
+
+
+def master_matches(conn: psycopg.Connection) -> dict[str, str]:
+    """STP-4100: each registered instrument's 마스터 대조 result (R-95)."""
+    return dict(conn.execute("select symbol, status from instrument_master_match_v").fetchall())

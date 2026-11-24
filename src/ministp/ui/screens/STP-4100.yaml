@@ -2,7 +2,7 @@ id: STP-4100
 title: 종목정보
 layout: split
 left: 50
-purpose: 등록된 종목의 기본정보를 보여줘요. 기준정보는 어느 계좌를 보든 같은 값만 담아요. 그래서 보유수량과 장부금액은 잔고(STP-1100)에, 종가는 시세(STP-2300)에, 종목의 원장 이벤트는 원장 조회(STP-3100)에 있어요. 왼쪽에서 종목을 고르면 그 종목을 거래할 때 적용되는 기준(수수료, 매도 세금, 결제주기, 호가단위)이 오른쪽에 나오고, 더블클릭하면 주문가능 조회로 가요. 종목 등록·변경은 지금은 CLI(instrument 명령)로만 해요.
+purpose: 등록된 종목의 기본정보를 보여줘요. 기준정보는 어느 계좌를 보든 같은 값만 담아요. 그래서 보유수량과 장부금액은 잔고(STP-1100)에, 종가는 시세(STP-2300)에, 종목의 원장 이벤트는 원장 조회(STP-3100)에 있어요. 왼쪽에서 종목을 고르면 그 종목을 거래할 때 적용되는 기준(수수료, 매도 세금, 결제주기, 호가단위)이 오른쪽에 나오고, 더블클릭하면 주문가능 조회로 가요. 종목 등록·변경은 지금은 CLI(instrument 명령)로만 해요. 대조 결과는 등록한 이름·시장·자산 유형이 마지막으로 적재한 시장 마스터(STP-4110)와 같은지예요.
 grids:
   - id: instruments
     title: 등록 종목
@@ -16,6 +16,7 @@ grids:
       - {name: market, source: instruments.market, format: code}
       - {name: asset_type, source: instruments.asset_type, format: code}
       - {name: sell_tax, label: 매도 세율(거래세+농특세)}
+      - {name: master_match, source: instrument_master_match_v.status, format: code, color: status, display: pill}
   - id: rules
     title: 이 종목에 적용되는 거래 기준
     tx: STP4100R02

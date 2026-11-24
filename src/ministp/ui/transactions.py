@@ -268,7 +268,44 @@ def _trial(c: TxContext, p) -> TxResult:
 
 
 def _instruments(c: TxContext, p) -> TxResult:
-    return TxResult({"main": q.instrument_master(c.books)})
+    ds = q.instrument_master(c.books)
+    match = q.master_matches(c.conn)   # R-95: the registered code against the latest market master
+    return TxResult({"main": q.Dataset(ds.columns + ("master_match",),
+                                       tuple(r + (match.get(r[0], "MISSING"),) for r in ds.rows))})
+
+
+def _market(c: TxContext, p) -> TxResult:
+    ds, meta = q.market_instruments(c.conn, p.get("date"), p.get("market"), p.get("sec_group"), p.get("state"),
+                                    p.get("keyword"), p.get("registered_only", False))
+    return TxResult({"main": ds}, meta)
+
+
+def _market_one(c: TxContext, p) -> TxResult:
+    if not p.get("symbol"):
+        raise TxError("종목코드가 필요해요")
+    try:
+        return TxResult({"main": q.market_instrument(c.conn, p["symbol"], p.get("date"))})
+    except KeyError as e:
+        raise TxError(e.args[0]) from e
+
+
+def _market_history(c: TxContext, p) -> TxResult:
+    if not p.get("symbol"):
+        raise TxError("종목코드가 필요해요")
+    return TxResult({"main": q.market_instrument_history(c.conn, p["symbol"], p.get("date"))})
+
+
+def _master_loads(c: TxContext, p) -> TxResult:
+    return TxResult({"main": q.master_loads(c.conn, p.get("date_from"), p.get("date_to"), p.get("load_id"))})
+
+
+def _master_changes(c: TxContext, p) -> TxResult:
+    if p.get("load_id") is None:
+        raise TxError("적재 번호가 필요해요")
+    try:
+        return TxResult({"main": q.master_load_changes(c.conn, p["load_id"], p.get("change"))})
+    except KeyError as e:
+        raise TxError(e.args[0]) from e
 
 
 def _instrument_rules(c: TxContext, p) -> TxResult:
@@ -391,6 +428,12 @@ TRANSACTIONS: dict[str, Tx] = {t.tx_id: t for t in [
     Tx("STP3400R03", "결제 예정", {}, _settlements),
     Tx("STP4100R01", "종목정보", {}, _instruments),
     Tx("STP4100R02", "종목에 적용되는 거래 기준", {"symbol": "text"}, _instrument_rules),
+    Tx("STP4110R01", "시장 종목 목록", {"date": "date", "market": "text", "sec_group": "text", "state": "text",
+                                     "keyword": "text", "registered_only": "bool"}, _market),
+    Tx("STP4110R02", "기준일의 종목 속성", {"symbol": "text", "date": "date"}, _market_one),
+    Tx("STP4110R03", "종목 속성 변경 이력", {"symbol": "text", "date": "date"}, _market_history),
+    Tx("STP4120R01", "마스터 적재 기록", {"date_from": "date", "date_to": "date", "load_id": "int"}, _master_loads),
+    Tx("STP4120R02", "적재에서 바뀐 종목", {"load_id": "int", "change": "text"}, _master_changes),
     Tx("STP4300R01", "수수료·세금", {}, _fees),
     Tx("STP4300R02", "결제주기 규칙", {}, _settlement_rules),
     Tx("STP4300R03", "호가단위", {}, _ticks),

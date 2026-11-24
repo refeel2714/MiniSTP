@@ -292,7 +292,8 @@ def _rows(client, tx, params=None, dataset="main"):
 def test_instrument_master_holds_nothing_of_the_account_and_shows_the_rules_the_system_uses(client):
     rows, _ = _rows(client, "STP4100R01")
     # reference data is the same whichever account is looked at: no holdings, no closes the books took
-    assert set(rows[0]) == {"symbol", "instrument_name", "market", "asset_type", "sell_tax"}
+    assert set(rows[0]) == {"symbol", "instrument_name", "market", "asset_type", "sell_tax", "master_match"}
+    assert {r["master_match"] for r in rows if r["symbol"] in ("005930", "069500", "360750")} == {"MATCH"}
     kospi_stock = next(r for r in rows if r["market"] == "KOSPI" and r["asset_type"] == "STOCK")
     assert kospi_stock["sell_tax"] == "0.2%"          # 0.05% 거래세 + 0.15% 농특세
     rules, _ = _rows(client, "STP4100R02", {"symbol": kospi_stock["symbol"]})
@@ -490,3 +491,37 @@ def test_returns_screen_reads_the_nav_month_by_month(client):
     days, _ = _rows(client, "STP6100R02", {"month": months[0]["month"]})
     assert days[0]["month_to_date"] == months[0]["month_return"] and days[0]["date"] == months[0]["last_date"]
     assert client.post("/api/tx/STP6100R02", json={"params": {"month": "11월"}}).status_code == 400
+
+
+def test_market_master_screens_show_the_history_the_sample_loaded(client, sample):
+    """STP-4110, STP-4120 (R-94, R-95): the market as of a day, one code's attributes and changes, each load."""
+    rows, meta = _rows(client, "STP4110R01")
+    assert meta["base_date"] == sample.last_day.isoformat() and meta["shown"] == f"{len(rows)}건"
+    assert [r["symbol"] for r in rows[:3]] == ["005930", "069500", "360750"]      # the books' codes first
+    by = {r["symbol"]: r for r in rows}
+    assert "900040" not in by and by["900010"]["state"] == "관리종목" and by["900020"]["state"] == "거래정지"
+    assert by["005930"]["registered"] == "등록" and by["900030"]["registered"] is None
+    gone, _ = _rows(client, "STP4110R01", {"state": "상장폐지"})
+    assert [r["symbol"] for r in gone] == ["900040"]
+    first, _ = _rows(client, "STP4110R01", {"date": sample.first_day.isoformat()})
+    assert {r["symbol"] for r in first} >= {"900040"} and "900060" not in {r["symbol"] for r in first}
+    found, _ = _rows(client, "STP4110R01", {"keyword": "오피스", "registered_only": "false"})
+    assert [r["symbol"] for r in found] == ["900030"]
+    assert _rows(client, "STP4110R01", {"registered_only": "true"})[0] == rows[:3]
+
+    attrs, _ = _rows(client, "STP4110R02", {"symbol": "900010"})
+    item = {r["item"]: (r["value"], r["since"]) for r in attrs}
+    assert item["관리종목"][0] == "예" and item["시장경고"] == ("투자주의 (01)", sample.last_day.isoformat())
+    assert item["증권그룹 구분"][0] == "주권 (ST)" and item["상장주수"][0] == "19,500천 주"
+    hist, _ = _rows(client, "STP4110R03", {"symbol": "900010"})
+    assert [(r["item"], r["before"], r["after"]) for r in hist] == [
+        ("시장경고", "없음 (00)", "투자주의 (01)"), ("상장주수", "18,000천 주", "19,500천 주"),
+        ("관리종목", "아니오", "예"), ("(첫 적재)", None, "전 항목")]
+    assert client.post("/api/tx/STP4110R02", json={"params": {"symbol": "999999"}}).status_code == 400
+
+    loads, _ = _rows(client, "STP4120R01")
+    assert [(r["rows_new"], r["rows_changed"], r["rows_delisted"]) for r in loads] == [(0, 2, 1), (1, 2, 0), (8, 0, 0)]
+    changes, _ = _rows(client, "STP4120R02", {"load_id": loads[0]["load_id"]})
+    assert ("빠짐", "900040", "상장 여부") in {(r["change"], r["symbol"], r["item"]) for r in changes}
+    assert ("변경", "900030", "종목명", "샘플리츠", "샘플오피스리츠") in {
+        (r["change"], r["symbol"], r["item"], r["before"], r["after"]) for r in changes}

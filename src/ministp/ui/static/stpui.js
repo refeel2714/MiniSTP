@@ -33,6 +33,9 @@
     "접수 거부": "bad", "결제 지연": "bad", "접수 기록 없음": "miss",
     "정상": "ok", "주의": "warn", "확인 필요": "bad", "평가 전": "info",
     "완료": "ok", "대기": "info", "누락": "miss", "점검 완료": "ok", "진행 중": "info",
+    RENAMED: "warn", DIFFERENT: "bad", DELISTED: "bad", MISSING: "miss",   // 종목 마스터 대조 (R-95)
+    "등록": "info", "신규": "info", "변경": "warn", "빠짐": "miss", "상장폐지": "miss",
+    "거래정지": "bad", "정리매매": "bad", "관리종목": "warn", "투자주의": "warn", "투자경고": "warn", "투자위험": "bad",
   };
 
   // ---------- account (다계좌) ----------
@@ -211,7 +214,7 @@
   // the number, the name and the code stay readable, the picture adds size, trend or state.
   const WEEK = ["월", "화", "수", "목", "금", "토", "일"];
   const HUES = 8;
-  const ROUND = new Set(["STOCK"]);   // 주식은 원, 그 밖(ETF, ETN ...)은 둥근 사각
+  const ROUND = new Set(["STOCK", "ST"]);   // 주식(자산 유형 STOCK, 증권그룹 ST 주권)은 원, 그 밖(ETF, ETN ...)은 둥근 사각
   function hue(code) {
     let n = 0;
     for (const ch of String(code ?? "")) n = (n * 31 + ch.codePointAt(0)) % 9973;
