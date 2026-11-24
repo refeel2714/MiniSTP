@@ -56,7 +56,7 @@ _FLAGS = ("spac", "halted", "liquidation", "managed")
 GROUPS = {
     "ST": "주권", "EF": "ETF", "EN": "ETN", "RT": "리츠", "MF": "증권투자회사", "SC": "선박투자회사",
     "IF": "인프라투융자회사", "DR": "주식예탁증서", "BC": "수익증권", "FS": "외국주권", "FE": "해외ETF",
-    "SW": "신주인수권증권", "SR": "신주인수권증서", "EW": "ELW",
+    "SW": "신주인수권증권", "SR": "신주인수권증서", "EW": "ELW", "PF": "상장 공모펀드",
 }
 ASSET_GROUP = {AssetType.STOCK: "ST", AssetType.ETF: "EF"}   # how the books' asset types map to group codes
 
@@ -81,8 +81,8 @@ class MasterRow:
     listed_on: dt.date | None
     par_value: int
     prev_volume: int
-    listed_shares: int     # unit as KIS gives it (not converted)
-    market_cap: int        # unit as KIS gives it (not converted)
+    listed_shares: int     # 천 주 (thousands of shares, as KIS gives it)
+    market_cap: int        # 억 원 (100 million won, as KIS gives it)
 
     @property
     def group_name(self) -> str:
@@ -260,7 +260,7 @@ def write_csv(rows: dict[str, MasterRow], path: Path) -> None:
     import csv
     heads = ["단축코드", "표준코드", "종목명", "시장", "그룹", "그룹명", "기준가", "매매수량단위", "거래정지",
              "정리매매", "관리종목", "시장경고", "락구분", "SPAC", "우선주", "증거금비율", "상장일", "액면가",
-             "전일거래량", "상장주수(KIS 단위)", "시가총액(KIS 단위)"]
+             "전일거래량", "상장주수(천 주)", "시가총액(억 원)"]
     with path.open("w", encoding="utf-8-sig", newline="") as f:
         w = csv.writer(f)
         w.writerow(heads)
