@@ -16,6 +16,7 @@
     python -m ministp master fetch                # 시장 전체 종목정보(KIS 마스터 파일) 받아 두기, 키 필요 없음
     python -m ministp master check                # 받은 종목정보 점검: 전일 대비, 등록 종목, 기준가 대조 (읽기 전용)
     python -m ministp erp export --from 2026-11-18  # 분개를 ERP 일반전표 업로드 CSV로 (읽기 전용)
+    python -m ministp basket simulate --amount 10000000  # 바스켓 주문 시뮬레이션 (계산만, 주문 안 함)
 
 Paper (모의투자) only until Phase 4. Keys are asked for and never saved.
 """
@@ -154,6 +155,48 @@ def _erp_export(url: str, connect, args, today: dt.date) -> int:
     return 0
 
 
+def _basket(url: str, connect, calendar, fees, args, now: dt.datetime) -> int:
+    from decimal import Decimal
+
+    from . import basket
+    try:
+        with connect(url) as conn:
+            books = load_books(conn, calendar, fees)
+            pf = basket.load_portfolio(books, conn, now.date(), now)
+            conn.rollback()
+        if args.file:
+            with open(args.file, encoding="utf-8-sig") as f:
+                targets = basket.read_targets(f.read())
+        else:
+            targets = basket.default_targets(pf)
+            print("바스켓 파일이 없어서 지금 보유 종목을 현재 편입비 그대로 써요.")
+        side = Side.SELL if args.side == "sell" else Side.BUY
+        result = basket.simulate(pf, targets, args.amount, side, basket.PriceBasis(args.price), fees,
+                                 Decimal(str(args.limit)))
+    except (basket.BasketError, OSError) as e:
+        print(f"계산하지 않았어요: {e}")
+        return 1
+    print(f"{'매수' if side is Side.BUY else '매도'} 바스켓 {args.amount:,}원 · 주문가 {basket.BASIS_TEXT[result.basis]}"
+          f" · 계산 기준 {pf.price_basis or '가격 없음'} · 종목당 한도 {result.weight_limit}%")
+    print(f"  {'종목':8} {'현재%':>7} {'목표%':>7} {'주문가':>9} {'수량':>6} {'주문금액':>13} {'실제%':>7} {'차이%p':>7}"
+          f" {'수수료':>7} {'주문후%':>7}  검사")
+    for ln in result.lines:
+        post = "" if ln.post_weight is None else f"{ln.post_weight}"
+        price = f"{ln.order_price:,}" if ln.order_price else "-"
+        print(f"  {ln.symbol:8} {ln.current_weight:>7} {ln.weight:>7} {price:>9} {ln.qty:>6,} {ln.amount:>13,}"
+              f" {ln.actual_weight:>7} {ln.weight_gap:>+7} {ln.commission:>7,} {post:>7}  {basket.issue_text(ln.issues)}")
+    print(f"  배정 {result.allocated:,} · 남는 금액 {result.leftover:,} · 예상 수수료 {result.commission:,}"
+          + (f" · 예상 세금 {result.taxes:,}" if result.taxes else ""))
+    if side is Side.BUY:
+        print(f"  필요 금액(여유분 포함) {result.required_cash:,} / 주문가능금액 {result.available_cash:,}"
+              f" → {basket.issue_text(result.issues)}")
+    print("결과: " + ("결재로 넘길 수 있어요 (결재·전송은 게이트 뒤)." if result.ok else "검사에 걸린 행이 있어요."))
+    if args.out is not None:
+        path = basket.write_csv(result, args.out or basket.default_out(now.date()))
+        print(f"저장: {path}")
+    return 0 if result.ok else 2
+
+
 def run(argv, **kw) -> int:
     """Every audit row this command writes: from the console, by whoever is logged in to this PC."""
     with audit.acting_as("CLI"):
@@ -250,6 +293,16 @@ def _run(argv, *, environ=os.environ, client_factory=KisClient, connect=psycopg.
     p.add_argument("--mapping", help="회사 계정코드 매핑 YAML (없으면 MiniSTP 계정 그대로). 예시: docs/erp/mapping.example.yaml")
     p.add_argument("--out", help="저장할 CSV 경로 (기본 erp-export/전표_날짜_건별.csv)")
     p.add_argument("--sample", action="store_true", help="샘플 DB(ministp_sample)에서 내보내기")
+    p = sub.add_parser("basket", help="바스켓 주문 시뮬레이션: 편입비로 총 주문금액을 종목별 수량으로 나눠요. DB에 쓰지 않고 주문도 안 내요 (R-97)")
+    p.add_argument("action", choices=["simulate"])
+    p.add_argument("file", nargs="?", help="바스켓 CSV (종목코드, 편입비[, 가격]). 없으면 지금 보유 종목을 현재 편입비 그대로")
+    p.add_argument("--amount", type=int, required=True, help="총 주문금액(원)")
+    p.add_argument("--side", choices=["buy", "sell"], default="buy")
+    p.add_argument("--price", choices=["current", "tick1", "market"], default="current",
+                   help="current: 현재가 지정가, tick1: 현재가 +1호가(매도는 -1), market: 시장가")
+    p.add_argument("--limit", type=float, default=30.0, help="종목당 주문 후 비중 한도(%%), 투자 지침 전까지의 예시값")
+    p.add_argument("--out", nargs="?", const="", default=None, help="결과를 CSV로 저장 (경로를 안 주면 basket/바스켓_날짜.csv)")
+    p.add_argument("--sample", action="store_true", help="샘플 DB(ministp_sample)로 계산")
     p = sub.add_parser("ui", help="업무화면(STP-UI)을 이 PC에서만 열기 (기본은 조회 전용)")
     p.add_argument("--sample", action="store_true", help="샘플 DB(ministp_sample)로 열기. 연습용이라 처리 버튼도 켜져요")
     p.add_argument("--write", action="store_true", help="운영 DB에서 화면의 처리 버튼을 켜기 (없으면 조회 전용)")
@@ -294,6 +347,13 @@ def _run(argv, *, environ=os.environ, client_factory=KisClient, connect=psycopg.
                 target = (environ.get("MINISTP_SAMPLE_DATABASE_URL")
                           or psycopg.conninfo.make_conninfo(url, dbname=SAMPLE_DB))
             return _erp_export(target, connect, args, today)
+
+        if args.cmd == "basket":
+            target = url
+            if args.sample:
+                target = (environ.get("MINISTP_SAMPLE_DATABASE_URL")
+                          or psycopg.conninfo.make_conninfo(url, dbname=SAMPLE_DB))
+            return _basket(target, connect, calendar, fees, args, started)
 
         if args.cmd == "verify":
             target = url
