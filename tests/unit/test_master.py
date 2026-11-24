@@ -194,7 +194,12 @@ def test_cli_fetch_and_check_without_the_db(tmp_path, capsys):
     assert csv[0].startswith("단축코드,표준코드,종목명") and len(csv) == 6
     assert cli.run(["master", "check", "--no-db"], environ=env, now=at) == 0
     out = capsys.readouterr().out
-    assert "KOSPI  주권" in out and "비교할 이전 파일이 없어요" in out and "결과: 정상" in out
+    assert "  KOSPI  주권" + " " * 12 + "      2" in out and "비교할 이전 파일이 없어요" in out and "결과: 정상" in out
+
+
+def test_the_count_table_lines_up_with_korean_names():
+    assert master.ljust_wide("주권", 8) == "주권    " and master.ljust_wide("ETF", 8) == "ETF     "
+    assert master.ljust_wide("인프라투융자회사", 8) == "인프라투융자회사"
 
 
 def test_cli_fetch_reports_a_network_failure(tmp_path, capsys):
