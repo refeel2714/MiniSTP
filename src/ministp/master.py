@@ -272,6 +272,13 @@ def write_csv(rows: dict[str, MasterRow], path: Path) -> None:
                         r.listed_shares, r.market_cap])
 
 
+def ljust_wide(text: str, width: int) -> str:
+    """Pad for a console where Korean (East Asian wide) characters take two columns."""
+    import unicodedata
+    cols = sum(2 if unicodedata.east_asian_width(c) in "WF" else 1 for c in text)
+    return text + " " * max(0, width - cols)
+
+
 # ---------- check ----------
 
 OK, WARN, BAD = "정상", "주의", "확인 필요"
