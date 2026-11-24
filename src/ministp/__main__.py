@@ -179,7 +179,7 @@ def _basket(url: str, connect, calendar, fees, args, now: dt.datetime) -> int:
                 targets = basket.read_targets(f.read())
         else:
             targets = basket.default_targets(pf)
-            print("바스켓 파일이 없어서 지금 보유 종목을 현재 편입비 그대로 써요.")
+            print("바스켓 파일이 없어서 지금 보유 종목을 현재 편입비 그대로 배분 비율로 써요.")
         side = Side.SELL if args.side == "sell" else Side.BUY
         result = basket.simulate(pf, targets, args.amount, side, basket.PriceBasis(args.price), fees,
                                  Decimal(str(args.limit)))
@@ -188,7 +188,7 @@ def _basket(url: str, connect, calendar, fees, args, now: dt.datetime) -> int:
         return 1
     print(f"{'매수' if side is Side.BUY else '매도'} 바스켓 {args.amount:,}원 · 주문가 {basket.BASIS_TEXT[result.basis]}"
           f" · 계산 기준 {pf.price_basis or '가격 없음'} · 종목당 한도 {result.weight_limit}%")
-    print(f"  {'종목':8} {'현재%':>7} {'목표%':>7} {'주문가':>9} {'수량':>6} {'주문금액':>13} {'실제%':>7} {'차이%p':>7}"
+    print(f"  {'종목':8} {'현재%':>7} {'배분%':>7} {'주문가':>9} {'수량':>6} {'주문금액':>13} {'실제%':>7} {'차이%p':>7}"
           f" {'수수료':>7} {'주문후%':>7}  검사")
     for ln in result.lines:
         post = "" if ln.post_weight is None else f"{ln.post_weight}"
@@ -319,9 +319,9 @@ def _run(argv, *, environ=os.environ, client_factory=KisClient, connect=psycopg.
     p.add_argument("--mapping", help="회사 계정코드 매핑 YAML (없으면 MiniSTP 계정 그대로). 예시: docs/erp/mapping.example.yaml")
     p.add_argument("--out", help="저장할 CSV 경로 (기본 erp-export/전표_날짜_건별.csv)")
     p.add_argument("--sample", action="store_true", help="샘플 DB(ministp_sample)에서 내보내기")
-    p = sub.add_parser("basket", help="바스켓 주문 시뮬레이션: 편입비로 총 주문금액을 종목별 수량으로 나눠요. DB에 쓰지 않고 주문도 안 내요 (R-97)")
+    p = sub.add_parser("basket", help="바스켓 주문 시뮬레이션: 배분 비율로 총 주문금액을 종목별 수량으로 나눠요. DB에 쓰지 않고 주문도 안 내요 (R-97)")
     p.add_argument("action", choices=["simulate"])
-    p.add_argument("file", nargs="?", help="바스켓 CSV (종목코드, 편입비[, 가격]). 없으면 지금 보유 종목을 현재 편입비 그대로")
+    p.add_argument("file", nargs="?", help="바스켓 CSV (종목코드, 배분 비율[, 가격]). 없으면 지금 보유 종목을 현재 편입비 비율 그대로")
     p.add_argument("--amount", type=int, required=True, help="총 주문금액(원)")
     p.add_argument("--side", choices=["buy", "sell"], default="buy")
     p.add_argument("--price", choices=["current", "tick1", "market"], default="current",
