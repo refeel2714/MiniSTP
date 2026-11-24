@@ -115,7 +115,7 @@ def test_every_page_carries_the_menu_tree_and_a_screen_its_place_in_it(client, c
     assert "DATA.tree" in script and 'class: "tree"' in script
     assert "| **3 원장·회계**" in index["README.md"] and "| 32 분개 | [STP-3200](STP-3200.md) 분개 조회 |" in index["README.md"]
     assert "분류: 원장·회계 > 분개" in index["STP-3200.md"]
-    assert "[STP-4100](STP-4100.md) 종목정보 (딸린 화면 [STP-4101](STP-4101.md) 마스터 적재 내역)" in index["README.md"]
+    assert "[STP-4100](STP-4100.md) 종목정보 (딸린 화면 [STP-4101](STP-4101.md) 마스터 적재 이력)" in index["README.md"]
     assert "딸린 화면: [STP-4100](STP-4100.md)에서 들어와요" in index["STP-4101.md"]
 
 

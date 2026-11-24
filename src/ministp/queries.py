@@ -1117,7 +1117,7 @@ TRANSACTIONS = {
 }
 
 
-# ---------- STP-4100 종목정보(시장 전 종목) · STP-4101 마스터 적재 내역 (ERD v2.7, 조회 전용) ----------
+# ---------- STP-4100 종목정보(시장 전 종목) · STP-4101 마스터 적재 이력 (ERD v2.7, 조회 전용) ----------
 # One list for every code: the market master as of a day, and the registered codes the books trade.
 # The tables stay apart (instruments is the books' fixed reference, the master moves with every load);
 # the screen shows them side by side and says where they differ (R-95).
