@@ -14,14 +14,14 @@ from dataclasses import dataclass
 
 import psycopg
 
-from .. import accounts, codes
+from .. import accounts, approval, codes
 from ..calendar import BusinessCalendar
 from ..fees import FeeSchedule
-from ..ops import OpsError, resolve_break
+from ..ops import OpsError, load_books, resolve_break
 from ..queries import CHART_GROUP
 from ..recon import Cause
 from ..store import DEFAULT_ACCOUNT
-from .transactions import COERCE
+from .transactions import COERCE, parse_lines, picked_keys
 
 
 class ActionError(ValueError):
@@ -47,6 +47,9 @@ class Action:
     audit: str = ""               # the action code of its audit row (audit.ACTIONS)
     target: tuple[str, ...] = ()  # the parameters that name what it acts on, joined with a dot
     account: str | None = None    # the parameter that is an account id, when the action is about one account
+    # 원장에 쓰는 처리는 단일 작성자 잠금을 잡고 `run` 뒤에서 차례를 기다려요. 결재는 원장에 쓰지 않고 계좌별 DB 잠금으로
+    # 차례를 지켜서, 장중 `run`이 떠 있어도 바로 돼요 (CLI의 request·user·right 명령과 같아요).
+    writer: bool = True
 
     def named(self, raw: dict):
         """This request as the audit log names it, from what the screen sent: (action, account, target, detail).
@@ -120,6 +123,87 @@ def _code_use(c: ActionContext, p) -> str:
     return f"사용 여부를 바꿨어요: {p['group_id']} {p['code']} → {p['in_use']}. 코드는 지우지 않아요."
 
 
+# ---------- 주문 결재 (STP-1210, STP-5100, STP-5200): the `request`, `user` and `right` commands ----------
+# 누가 하는지는 감사 로그와 같은 값(화면 서버를 띄운 PC 로그인 이름)이에요. 권한은 버튼이 잠겨 있어도 여기서 다시 봐요.
+
+def _books(c: ActionContext):
+    return load_books(c.conn, c.calendar, c.fees, c.account_id)
+
+
+def _picked_lines(p) -> tuple[list, str | None]:
+    drafts = {d.key: d for d in parse_lines(p["lines"])}
+    keys = picked_keys(p["picked"])
+    missing = [k for k in keys if k not in drafts]
+    if missing:
+        raise ActionError(f"화면에 없는 줄이에요: {', '.join(missing)}. 화면을 새로 고친 뒤 다시 해 주세요")
+    chosen = [drafts[k] for k in keys]
+    if not chosen:
+        raise ActionError("결재 요청할 줄을 체크하세요")
+    groups = {d.group for d in chosen}
+    if len(groups) > 1:
+        raise ActionError("바스켓에서 온 줄(BK)은 바스켓 줄끼리 요청해요")
+    return [d.line for d in chosen], ("BK" if groups == {"BK"} else None)
+
+
+def _request(c: ActionContext, p, self_approve: bool) -> str:
+    lines, batch = _picked_lines(p)
+    now = dt.datetime.combine(c.today, dt.datetime.now().time())
+    day = approval.order_day(c.calendar, now)
+    ids, _ = approval.submit(_books(c), c.today, day, lines, batch=batch, self_approve=self_approve, now=now)
+    head = f"{len(ids)}건을 결재 요청했어요 ({day} 주문): {', '.join(ids)}"
+    if self_approve:
+        return head + ". 셀프 승인까지 했어요. 장중이면 run이 다시 검증하고 바로 보내요."
+    return head + ". 승인자가 STP-5100에서 승인하면 run이 보내요."
+
+
+def _request_send(c: ActionContext, p) -> str:
+    return _request(c, p, True)
+
+
+def _request_only(c: ActionContext, p) -> str:
+    return _request(c, p, False)
+
+
+def _approve(c: ActionContext, p) -> str:
+    ids = picked_keys(p["picked"])
+    approval.approve(_books(c), c.today, ids)
+    return f"{len(ids)}건을 승인했어요: {', '.join(ids)}. 장중이면 run이 보내기 직전에 한 번 더 검증하고 보내요."
+
+
+def _reject(c: ActionContext, p) -> str:
+    ids = picked_keys(p["picked"])
+    approval.reject(c.conn, c.account_id, c.today, ids, p["reason"])
+    return f"{len(ids)}건을 반려했어요: {', '.join(ids)}"
+
+
+def _cancel_requests(c: ActionContext, p) -> str:
+    ids = picked_keys(p["picked"])
+    approval.cancel(c.conn, c.account_id, ids, p.get("reason"))
+    return f"{len(ids)}건의 요청을 거뒀어요: {', '.join(ids)}"
+
+
+def _user_add(c: ActionContext, p) -> str:
+    approval.add_user(c.conn, p["user_id"], p["name"], c.today)
+    return f"사용자를 등록했어요: {p['user_id']} {p['name']}. 권한은 오른쪽 권한 이력에서 줘요."
+
+
+def _grant(c: ActionContext, p) -> str:
+    right = p["right_code"]
+    approval.grant(c.conn, p["user_id"], right, c.today, account_id=p.get("account_id"),
+                   max_order_value=p.get("max_order_value"), self_approve=p.get("self_approve") or False,
+                   effective_from=p.get("effective_from"), reason=p.get("reason"))
+    return (f"권한을 줬어요: {p['user_id']} {approval.RIGHTS.get(right, right)} ({p.get('account_id') or '모든 계좌'},"
+            f" {p.get('effective_from') or c.today}부터). 이전 행은 이력에 그대로 있어요.")
+
+
+def _revoke(c: ActionContext, p) -> str:
+    right = p["right_code"]
+    approval.grant(c.conn, p["user_id"], right, c.today, account_id=p.get("account_id"),
+                   effective_from=p.get("effective_from"), reason=p.get("reason"), revoke=True)
+    return (f"권한을 거뒀어요: {p['user_id']} {approval.RIGHTS.get(right, right)} ({p.get('account_id') or '모든 계좌'},"
+            f" {p.get('effective_from') or c.today}부터)")
+
+
 ACTIONS: dict[str, Action] = {a.tx_id: a for a in [
     Action("STP2100U01", "불일치 원인 판단", {"result_id": "int", "cause": "text", "note": "text"}, _resolve,
            audit="RESOLVE", target=("result_id",)),
@@ -139,6 +223,26 @@ ACTIONS: dict[str, Action] = {a.tx_id: a for a in [
            _code_rename, optional=("description",), audit="CODE_RENAME", target=("group_id", "code")),
     Action("STP4600U04", "코드 사용 여부 변경", {"group_id": "text", "code": "text", "in_use": "text"}, _code_use,
            audit="CODE_USE", target=("group_id", "code")),
+    Action("STP1210U01", "결재 요청", {"lines": "text", "picked": "text"}, _request_only,
+           audit="ORDER_REQUEST", target=("picked",), writer=False),
+    Action("STP1210U02", "결재 요청하고 셀프 승인", {"lines": "text", "picked": "text"}, _request_send,
+           audit="ORDER_REQUEST", target=("picked",), writer=False),
+    Action("STP5100U01", "승인", {"picked": "text"}, _approve, audit="ORDER_APPROVE", target=("picked",), writer=False),
+    Action("STP5100U02", "반려", {"picked": "text", "reason": "text"}, _reject,
+           audit="ORDER_REJECT", target=("picked",), writer=False),
+    Action("STP5100U03", "요청 취소", {"picked": "text", "reason": "text"}, _cancel_requests, optional=("reason",),
+           audit="ORDER_REQUEST_CANCEL", target=("picked",), writer=False),
+    Action("STP5200U01", "사용자 등록", {"user_id": "text", "name": "text"}, _user_add,
+           audit="USER_ADD", target=("user_id",), writer=False),
+    Action("STP5200U02", "권한 부여", {"user_id": "text", "right_code": "text", "account_id": "text",
+                                    "max_order_value": "int", "self_approve": "bool", "effective_from": "date",
+                                    "reason": "text"}, _grant,
+           optional=("account_id", "max_order_value", "self_approve", "effective_from"),
+           audit="RIGHT_GRANT", target=("user_id",), account="account_id", writer=False),
+    Action("STP5200U03", "권한 회수", {"user_id": "text", "right_code": "text", "account_id": "text",
+                                    "effective_from": "date", "reason": "text"}, _revoke,
+           optional=("account_id", "effective_from"),
+           audit="RIGHT_REVOKE", target=("user_id",), account="account_id", writer=False),
 ]}
 
 

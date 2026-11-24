@@ -221,11 +221,8 @@ def _approval(conn, args, today: dt.date) -> int:
 
 
 def order_day(calendar, at: dt.datetime) -> dt.date:
-    """요청이 나갈 주문일: 영업일 장 마감 전이면 오늘, 아니면 다음 영업일."""
-    today = at.date()
-    if calendar.is_business_day(today) and at.time() <= MARKET_CLOSE:
-        return today
-    return calendar.add_business_days(today, 1)
+    from .approval import order_day as day
+    return day(calendar, at)
 
 
 def _parse_line(text: str):

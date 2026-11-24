@@ -169,10 +169,52 @@ def _build_sample(conn, calendar, fees, start, days, seed, accounts) -> SampleSu
         summary.last_day = day
     _sample_master(conn, summary.first_day, calendar.add_business_days(summary.first_day, days // 2),
                    summary.last_day)
+    _sample_approvals(conn, calendar, fees, summary.last_day)
     summary.streak = clean_streak(conn, calendar, summary.last_day)
     for x in others:
         x.summary.streak = clean_streak(conn, calendar, summary.last_day, x.spec.account_id)
     return summary
+
+
+# 주문 결재 (ERD v2.8, R-99~101): made-up users with their rights, and a few requests of the last day on the default
+# account so STP-1210, 5100 and 5200 have something to show. The person who builds the sample (the PC login) gets every
+# right with self-approval, so the screens can be tried on it. The requests are never sent: the sample has no `run`.
+SAMPLE_USERS = [  # (id, name, rights: (right, 1건 한도, 셀프 승인))
+    ("choi.cfo", "최재무", (("RIGHTS_ADMIN", None, False), ("ORDER_APPROVE", 10_000_000, False))),
+    ("kim.trader", "김운용", (("ORDER_WRITE", None, False),)),
+    ("lee.fin", "이자금", (("ORDER_WRITE", None, False), ("ORDER_APPROVE", 5_000_000, True))),
+]
+
+
+def _sample_approvals(conn, calendar, fees, day: dt.date) -> None:
+    from . import approval
+    from .ticks import tick_size
+    me = audit.os_user()
+    with audit.acting_as("SYSTEM", SAMPLE_USERS[0][0]):   # the first user registers themself and gives out the rights
+        for uid, name, rights in SAMPLE_USERS + ([(me, "이 PC 사용자", (("RIGHTS_ADMIN", None, False),
+                                                  ("ORDER_WRITE", None, False), ("ORDER_APPROVE", None, True)))]
+                                                if me not in {u[0] for u in SAMPLE_USERS} else []):
+            approval.add_user(conn, uid, name, day)
+            for right, limit, self_ok in rights:
+                approval.grant(conn, uid, right, day, max_order_value=limit, self_approve=self_ok, reason="샘플")
+    books = _books(conn, calendar, fees)
+    prices = {i.symbol: p for i, p in SAMPLE_INSTRUMENTS} | approval.account_state(books, day).prices
+
+    def line(symbol, side, qty):
+        inst = books.instruments[symbol]
+        tick = tick_size(prices[symbol], inst.asset_type)
+        return approval.Line(symbol, side, qty, prices[symbol] // tick * tick)
+
+    syms = [i.symbol for i, _ in SAMPLE_INSTRUMENTS]
+    with audit.acting_as("SYSTEM", "kim.trader"):
+        approved, _ = approval.submit(books, day, day, [line(syms[0], Side.BUY, 2)])
+        rejected, _ = approval.submit(books, day, day, [line(syms[1], Side.BUY, 3)])
+        approval.submit(books, day, day, [line(syms[2], Side.BUY, 1)])
+        approval.submit(books, day, day, [line(syms[0], Side.BUY, 1), line(syms[1], Side.BUY, 1)], batch="BK")
+    with audit.acting_as("SYSTEM", "lee.fin"):
+        approval.approve(books, day, approved)
+    with audit.acting_as("SYSTEM", "choi.cfo"):
+        approval.reject(conn, DEFAULT_ACCOUNT, day, rejected, "샘플: 한 번에 사지 말고 나눠서")
 
 
 # 시장 종목 마스터 (ERD v2.7): the three instruments the books use and a few made-up codes around them,

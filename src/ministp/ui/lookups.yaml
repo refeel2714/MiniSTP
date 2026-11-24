@@ -33,3 +33,13 @@ customer:
     - {name: customer_id, source: customers.customer_id, format: code}
     - {name: alias, source: customers.alias}
     - {name: accounts, label: 계좌 수, format: number}
+account:
+  title: 계좌 찾기
+  tx: STP4400R01
+  value: account_id
+  shows: alias
+  columns:
+    - {name: account_id, source: trading_accounts.account_id, format: code}
+    - {name: alias, source: trading_accounts.alias}
+    - {name: customer_id, source: trading_accounts.customer_id, format: code}
+    - {name: status, source: account_status_v.status, format: code, codes: ACCOUNT_STATUS}

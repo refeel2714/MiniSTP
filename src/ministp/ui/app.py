@@ -173,13 +173,20 @@ def create_app(dsn: str, *, calendar: BusinessCalendar, fees: FeeSchedule, today
                 out.setdefault(group_id, {})[code] = name
         return out
 
+    def who() -> dict:
+        """결재 사용자 (R-99): 이 화면 서버를 띄운 PC 로그인 이름과, 등록돼 있으면 그 이름. 처리 버튼은 이 사람으로 기록돼요."""
+        uid = audit.os_user()
+        with connect_read_only(dsn, connect) as conn:
+            row = conn.execute("select name from app_users where user_id = %s", (uid,)).fetchone()
+        return {"id": uid, "name": row[0] if row else None}
+
     def parent_of(screen_id: str | None) -> dict | None:
         pid = parent_id(screen_id) if screen_id else None
         return {"id": pid, "title": screens[pid].title} if pid in screens else None
 
     def shell_data(screen_id: str | None) -> str:
         data = {"menu": menu, "jump": jump, "today": business_day().isoformat(), "db": db_name, "label": label,
-                "accounts": accounts(), "default_account": DEFAULT_ACCOUNT, "codes": code_names(),
+                "accounts": accounts(), "default_account": DEFAULT_ACCOUNT, "codes": code_names(), "user": who(),
                 "tree": tree, "path": menu_path(classes, screen_id) if screen_id else [],   # 화면 분류
                 "writable": write_dsn is not None, "token": token if write_dsn else "",
                 "screen": resolved.get(screen_id) if screen_id else None,
@@ -227,7 +234,8 @@ def create_app(dsn: str, *, calendar: BusinessCalendar, fees: FeeSchedule, today
             return JSONResponse({"error": "계좌 ID 형식이 올바르지 않아요"}, status_code=400)
         started = time.perf_counter()
         try:
-            with connect_read_only(dsn, connect) as conn:
+            # 결재 화면의 잠금 이유(R-99)는 누가 보는지에 달려 있어요: 처리 버튼과 같은 사람(PC 로그인 이름)으로 읽어요
+            with connect_read_only(dsn, connect) as conn, audit.acting_as("UI", tx=tx_id):
                 if conn.execute("select 1 from trading_accounts where account_id = %s", (account,)).fetchone() is None:
                     raise TxError(f"등록되지 않은 계좌예요: {account}")
                 result = run_tx(tx_id, TxContext(conn, calendar, fees, business_day(), account), params)
@@ -271,7 +279,8 @@ def create_app(dsn: str, *, calendar: BusinessCalendar, fees: FeeSchedule, today
             with connect(write_dsn, autocommit=True) as conn, audit.acting_as("UI", tx=tx_id), audit.refusals(
                     conn, lambda: known.named(body.get("params", {})) if known else None,
                     refused=(ActionError, TxError, OpsError), failed=(CalendarNotLoadedError, psycopg.Error)):
-                acquire_writer(conn)          # one writer at a time: waits its turn behind run, daily, ...
+                if known is None or known.writer:
+                    acquire_writer(conn)      # one writer at a time: waits its turn behind run, daily, ...
                 require_current_schema(conn)  # like every CLI command: never write a ledger of another shape
                 with conn.transaction():      # all of it or none of it
                     message = run_action(tx_id, ActionContext(conn, calendar, fees, business_day(), account),

@@ -1,0 +1,79 @@
+id: STP-1210
+title: 주식 주문
+purpose: 주문을 한 줄씩 쓰고, 체크한 줄을 한 번에 결재 요청해요(R-99~102). 오른쪽 "선택 묶음 검증"은 체크한 줄을 보낼 순서대로 쌓고 이미 잡힌 요청(결재 대기, 승인 후 미전송)과 미체결 주문까지 더해서 다시 본 결과예요(R-98). 한 줄씩은 통과해도 묶음으로 보면 예수금이나 비중이 모자랄 수 있어서, 줄마다 단건과 묶음 결과를 함께 보여 줘요. 묶음이 불합격이거나 작성 권한이 없으면 결재 요청이 잠기고, 셀프 승인 허용이 있는 승인 권한이 없으면 "승인하고 전송"이 잠겨요. 쓴 줄은 저장하지 않아요. 요청한 줄은 아래 목록에 남고, 승인되면 장중 `run`이 다시 검증한 뒤 보내요. 바스켓(STP-1500)에서 계산한 줄을 그대로 가져올 수도 있어요(BK 묶음, 전부 아니면 전무).
+layout: split
+left: 64
+grids:
+  - id: lines
+    title: 주문 작성
+    tx: STP1210R01
+    load: input
+    key: key
+    weight: 3
+    meta: {order_date: 주문일, user: 사용자}
+    pick: {param: picked, when: pickable, group: batch_id}
+    draft:
+      param: lines
+      label: ＋ 줄 추가
+      remove: 줄 빼기
+      fields:
+        - {name: symbol, source: order_requests.symbol, lookup: symbol}
+        - {name: side, source: order_requests.side, type: select, options: [BUY, SELL]}
+        - {name: qty, source: order_requests.qty, type: number}
+        - {name: limit_price, label: 지정가 (비우면 시장가), type: number, optional: true}
+    columns:
+      - {name: key, label: 줄, format: code, hidden: true}
+      - {name: pickable, label: 체크 가능, hidden: true}
+      - {name: symbol, source: order_requests.symbol, format: code}
+      - {name: instrument_name, source: instruments.name, display: badge, code: symbol, shape: asset_type}
+      - {name: asset_type, source: instruments.asset_type, format: code}
+      - {name: side, source: order_requests.side, format: code, color: side, sub: kind, codes: ORDER_SIDE}
+      - {name: kind, label: 주문 유형}
+      - {name: qty, source: order_requests.qty, format: number}
+      - {name: limit_price, source: order_requests.limit_price, format: money}
+      - {name: amount, label: 주문금액, format: money}
+      - {name: alone, label: 단건, display: pill, color: check}
+      - {name: together, label: 묶음, display: pill, color: check}
+      - {name: status, source: order_requests_v.status, display: pill, color: status}
+      - {name: batch_id, source: order_requests.batch_id, format: code}
+      - {name: request_id, source: order_requests.request_id, format: code, hidden: true}
+    actions:
+      - id: request
+        label: 결재 요청
+        tx: STP1210U01
+        lock: request_lock
+        clears: true
+        note: 체크한 줄을 결재 대기로 올려요. 승인자가 STP-5100에서 승인하면 장중 run이 다시 검증하고 보내요. 서버가 묶음 검증과 권한을 한 번 더 봐요.
+      - id: send
+        label: 승인하고 전송
+        tx: STP1210U02
+        lock: send_lock
+        clears: true
+        note: 결재 요청과 셀프 승인을 한 번에 해요. 셀프 승인 허용이 있는 승인 권한과 1건 한도 안에서만 돼요. 승인되면 장중 run이 다시 검증하고 바로 보내요.
+  - id: set
+    title: 선택 묶음 검증
+    tx: STP1210R02
+    load: input
+    key: item
+    weight: 2
+    meta: {picked: 체크, verdict: 판단}
+    columns:
+      - {name: item, label: 항목}
+      - {name: result, label: 결과, display: pill, color: verdict}
+      - {name: value, label: 체크한 줄 + 이미 잡힌 주문, sub: detail}
+      - {name: detail, label: 기준}
+  - id: history
+    title: 결재·전송 이력
+    tx: STP1210R03
+    load: master
+    master: lines
+    link: {request_id: request_id}
+    weight: 2
+    columns:
+      - {name: id, source: order_approvals.id, format: number, hidden: true}
+      - {name: at, source: order_approvals.at, format: datetime}
+      - {name: action, source: order_approvals.action, format: code}
+      - {name: actor, source: order_approvals.actor}
+      - {name: self_approved, source: order_approvals.self_approved}
+      - {name: client_id, source: order_approvals.client_id, format: code}
+      - {name: reason, source: order_approvals.reason}

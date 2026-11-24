@@ -451,7 +451,7 @@ def test_every_shipped_screen_has_its_place_in_the_classification():
     assert menu_problems(menu, screens) == []
     tree = menu_tree(menu, screens)
     assert [(a["id"], a["name"]) for a in tree] == [("1", "주문·잔고"), ("2", "대사·평가"), ("3", "원장·회계"),
-                                                    ("4", "기준정보"), ("6", "성과")]  # the order a trade flows in
+                                                    ("4", "기준정보"), ("5", "운용 통제"), ("6", "성과")]  # the order a trade flows in
     placed = [s["id"] for a in tree for g in a["groups"] for s in g["screens"]]
     subs = [x["id"] for a in tree for g in a["groups"] for s in g["screens"] for x in s["subs"]]
     assert placed == sorted(i for i in screens if i.endswith("0"))               # every screen once, in number order
