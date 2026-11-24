@@ -709,7 +709,13 @@
 
     function searchParams(g) {
       const all = condValues();
-      return Object.fromEntries(Object.entries(all).filter(([k]) => g.tx_params.includes(k)));
+      const out = Object.fromEntries(Object.entries(all).filter(([k]) => g.tx_params.includes(k)));
+      // 입력 그리드: what is typed there goes along as one condition (`행키:값,…`); before it has rows, nothing
+      for (const e of def.grids.filter(x => x.edit && g.tx_params.includes(x.edit.param))) {
+        const v = grids[e.id] && grids[e.id].editValue();
+        if (v !== undefined) out[e.edit.param] = v;
+      }
+      return out;
     }
 
     let recalcTimer = null;
@@ -780,7 +786,7 @@
 
     const panels = def.grids.map(g => {
       const grid = Grid(g, { onSelect: row => onSelect(g, row), onDrill: row => drill(g, row),
-        onAction: (b, row) => onAction(g, b, row),
+        onAction: (b, row) => onAction(g, b, row), onEdit: () => recalc(), lookups: def.lookups,
         leads: def.grids.some(d => d.load === "master" && d.master === g.id) });
       grids[g.id] = grid;
       return grid.el;
@@ -789,8 +795,10 @@
     // 좌우 구성: the list that has details on the left, its details on the right, each scrolling
     // inside its own panel. Grids that follow no row stay below, full width.
     function splitView() {
-      const detail = g => g.load === "master";
-      const leads = g => def.grids.some(d => detail(d) && d.master === g.id);
+      const editParams = def.grids.filter(g => g.edit).map(g => g.edit.param);
+      const follows = g => g.load === "input" && g.tx_params.some(p => editParams.includes(p));   // worked out from an 입력 그리드
+      const detail = g => g.load === "master" || follows(g);
+      const leads = g => !!g.edit || def.grids.some(d => d.load === "master" && d.master === g.id);
       const pick = test => def.grids.filter(test).map(g => grids[g.id].el);
       def.grids.filter(g => (leads(g) || detail(g)) && g.view !== "cards")
         .forEach(g => { grids[g.id].el.style.flexGrow = g.weight; });   // share of the height (cards take what they need)
@@ -868,7 +876,7 @@
   }
 
   // ---------- grid ----------
-  function Grid(g, { onSelect, onDrill, leads, onAction }) {
+  function Grid(g, { onSelect, onDrill, leads, onAction, onEdit, lookups }) {
     let rows = [], view = [], sel = -1, sortCol = null, sortDir = 1;
     let changed = new Map();   // row key -> Set of changed columns ("*" = new row), shown once
     let previous = new Map();  // row key -> the row before this fill (numbers roll from here)
@@ -893,13 +901,23 @@
     // 처리 버튼 live at the top right of their grid.
     const acts = (g.actions || []).map(b => ({ b, btn: h("button", { type: "button", class: "act",
       onclick: () => onAction(b, b.needs_row ? view[sel] : null) }, b.label) }));
+    // 입력 그리드: one column is typed in here. Nothing is saved; the values go to the grids that work them out.
+    const ed = g.edit || null;
+    let edits = new Map();     // row key -> typed text
+    let added = [];            // rows put in with 행 추가 (kept when the grid is read again)
+    let editTotal = null;      // the footer cell of the typed column
+    const editBtns = ed ? [
+      ed.add && lookups && lookups[ed.add] ? h("button", { type: "button", class: "act", title: "찾기 팝업에서 골라 행을 더해요",
+        onclick: () => openLookup(lookups[ed.add], {}, "", addRow) }, "＋ 추가") : null,
+      ed.reset ? h("button", { type: "button", class: "act", title: "고친 값을 모두 처음 값으로 되돌려요", onclick: resetEdits }, ed.reset) : null,
+    ].filter(Boolean) : [];
     const el = h("section", { class: "panel" + (g.view === "cards" ? " cards-panel" : ""), "aria-label": g.title },
       h("div", { class: "phead" }, h("h2", { text: g.title }), aboutBox,
         g.live ? h("span", { class: "livechip", title: "DB가 바뀌면 자동으로 다시 조회해요" }, "실시간") : null,
         metaBox, count,
         modes ? h("div", { class: "seg", role: "group", "aria-label": "보기" }, modes) : null,
         h("span", { class: "txid", title: "조회 트랜잭션", text: g.tx }),
-        acts.length ? h("div", { class: "acts" }, acts.map(a => a.btn)) : null),
+        acts.length || editBtns.length ? h("div", { class: "acts" }, editBtns, acts.map(a => a.btn)) : null),
       chartBox, body);
 
     // A button is off, and says why, until it has what it works on.
@@ -943,6 +961,11 @@
       busy(false);
       if (!ds) return fail(`데이터셋 ${g.dataset}이 없어요`);
       const fresh = ds.rows.map(r => Object.fromEntries(ds.columns.map((c, i) => [c, r[i]])));
+      if (ed) {   // rows the user added stay unless the list now has them itself
+        const have = new Set(fresh.map(r => rowKey(r)));
+        added = added.filter(r => !have.has(rowKey(r)));
+        fresh.push(...added);
+      }
       const keep = live && view[sel] ? rowKey(view[sel]) : null;
       changed = new Map();
       previous = new Map(rows.map(r => [rowKey(r), r]));
@@ -978,6 +1001,79 @@
       previous = new Map();
       if (chartBox) renderChart();
       syncActions();
+    }
+
+    function editedValue(r) {
+      const k = rowKey(r);
+      return edits.has(k) ? edits.get(k) : r[ed.column];
+    }
+    function isEdited(r) {
+      const v = editedValue(r);
+      return Number(v) !== Number(r[ed.base] ?? 0) || String(v).trim() === "";
+    }
+    // What the grids on the right get: every row, typed or not. Nothing until the rows are here.
+    function editValue() {
+      if (!ed || !loaded) return undefined;
+      return rows.map(r => `${rowKey(r)}:${String(editedValue(r) ?? 0).trim()}`).join(",");
+    }
+    function editSum() {
+      return rows.reduce((s, r) => s + (Number(editedValue(r)) || 0), 0);
+    }
+    function showEditTotal() {
+      if (!editTotal) return;
+      const sum = Math.round(editSum() * 100) / 100;
+      editTotal.textContent = fmt(sum, "rate");
+      editTotal.classList.toggle("bad", Math.abs(sum - 100) > 0.004);
+      editTotal.title = Math.abs(sum - 100) > 0.004 ? "합계가 100이 아니면 계산하지 않아요" : "";
+    }
+    function shownEdit(v) {   // a number from the server with its two decimals; what was typed as typed
+      return typeof v === "number" ? v.toFixed(2) : String(v ?? "");
+    }
+    function editCell(r) {
+      const k = rowKey(r), base = r[ed.base] ?? 0;
+      const input = h("input", { type: "text", inputmode: "decimal", class: "einput", autocomplete: "off",
+        "aria-label": `${k} ${g.columns.find(c => c.name === ed.column).label}`, value: shownEdit(editedValue(r)) });
+      const back = h("button", { type: "button", class: "erevert", title: "이 행만 처음 값으로 되돌려요",
+        text: "↺ " + fmt(base, "rate") });
+      const box = h("div", { class: "ebox" }, input, back);
+      const sync = () => box.classList.toggle("edited", isEdited(r));
+      input.addEventListener("input", () => {
+        edits.set(k, input.value);
+        sync(); showEditTotal(); onEdit();
+      });
+      input.addEventListener("keydown", e => {
+        e.stopPropagation();   // typing here does not move the row or open another screen
+        if (e.key === "Enter") { e.preventDefault(); input.blur(); }
+      });
+      back.addEventListener("click", e => {
+        e.stopPropagation();
+        edits.delete(k);
+        input.value = shownEdit(r[ed.column]);
+        sync(); showEditTotal(); onEdit();
+      });
+      sync();
+      return box;
+    }
+    function resetEdits() {
+      edits = new Map();
+      if (added.length) {
+        const gone = new Set(added.map(r => rowKey(r)));
+        rows = rows.filter(r => !gone.has(rowKey(r)));
+        added = [];
+      }
+      if (loaded) apply();
+      onEdit();
+    }
+    function addRow(picked) {
+      const k = String(picked[keyCol] ?? "");
+      if (!k || rows.some(r => rowKey(r) === k)) { toast(`${k} 이미 바스켓에 있어요`); return; }
+      const r = Object.fromEntries(g.columns.map(c => [c.name, picked[c.name] ?? null]));
+      r[keyCol] = k; r[ed.base] = 0; r[ed.column] = 0;
+      added.push(r); rows.push(r);
+      if (loaded) apply();
+      const inputs = body.querySelectorAll("input.einput");
+      if (inputs.length) inputs[inputs.length - 1].focus();
+      onEdit();
     }
 
     function renderMeta(meta) {
@@ -1221,6 +1317,7 @@
         "aria-selected": i === sel ? "true" : "false",
         onclick: () => select(i), ondblclick: () => onDrill(view[i]),
       }, h("td", { class: "rn", text: i + 1 }), cols.map(c => {
+        if (ed && c.name === ed.column) return h("td", { class: "r ecell" }, editCell(r));
         const v = r[c.name];
         const named = codeName(c, v);
         const text = named ?? fmt(v, c.format);
@@ -1244,14 +1341,17 @@
         }
         return td;
       }))));
+      editTotal = null;
       const foot = g.totals.length ? h("tfoot", {}, h("tr", {}, h("td", { class: "rn", text: "합계" }), cols.map(c =>
-        g.totals.includes(c.name)
+        ed && c.name === ed.column ? (editTotal = h("td", { class: "r" }))
+        : g.totals.includes(c.name)
           ? (sum => h("td", { class: ("r " + (c.color === "sign" ? tone(sum, "sign") : "")).trim(), text: fmt(sum, c.format) }))(
               rows.reduce((s, r) => s + (Number(r[c.name]) || 0), 0))
           : h("td", {})))) : null;
       const table = h("table", { class: "grid", tabindex: "0", role: "grid", "aria-rowcount": rows.length,
         onkeydown: key }, h("thead", {}, head), tbody, foot);
       body.replaceChildren(table, h("div", { class: "selbar", "aria-hidden": "true" }));
+      showEditTotal();
       rolls.forEach(a => roll(...a));
       if (g.drill) el.classList.add("drillable");
       placeBar(true);
@@ -1349,7 +1449,7 @@
       chartBox.replaceChildren(s);
     }
 
-    return { el, fill, clear, busy, fail, skeleton, about };
+    return { el, fill, clear, busy, fail, skeleton, about, editValue: () => (ed ? editValue() : undefined) };
   }
 
   // The tree starts shut where the viewer shut it, and on a narrow window (it would push the screen down).

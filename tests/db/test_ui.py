@@ -537,3 +537,24 @@ def test_market_master_screens_show_the_history_the_sample_loaded(client, sample
     assert ("빠짐", "900040", "상장 여부") in {(r["change"], r["symbol"], r["item"]) for r in changes}
     assert ("변경", "900030", "종목명", "샘플리츠", "샘플오피스리츠") in {
         (r["change"], r["symbol"], r["item"], r["before"], r["after"]) for r in changes}
+
+
+def test_basket_screen_starts_from_current_weights_and_recomputes_what_is_typed(client, conn):
+    before = conn.execute("select (select count(*) from ledger_events), (select count(*) from broker_snapshots)").fetchone()
+    first = client.post("/api/tx/STP1500R01", json={"params": {}}).json()["datasets"]["main"]
+    rows = [dict(zip(first["columns"], r)) for r in first["rows"]]
+    assert rows and round(sum(r["current_weight"] for r in rows), 2) == 100
+    assert all(r["target_weight"] == r["current_weight"] for r in rows)
+    plan = client.post("/api/tx/STP1500R02", json={"params": {"amount": 10_000_000}}).json()
+    assert len(plan["datasets"]["main"]["rows"]) == len(rows) and plan["meta"]["limit"] == "30%"
+    typed = ",".join(f"{r['symbol']}:{100 if i == 0 else 0}" for i, r in enumerate(rows))
+    one = client.post("/api/tx/STP1500R02", json={"params": {"amount": 1_000_000, "basket": typed, "limit": 100,
+                                                             "basis": "현재가 +1호가"}}).json()
+    lines = [dict(zip(one["datasets"]["main"]["columns"], r)) for r in one["datasets"]["main"]["rows"]]
+    assert lines[0]["amount"] > 0 and all(ln["qty"] == 0 for ln in lines[1:])
+    summary = dict(zip(one["datasets"]["summary"]["columns"], one["datasets"]["summary"]["rows"][0]))
+    assert summary["allocated"] + summary["leftover"] == 1_000_000 and summary["ok"] is True
+    bad = client.post("/api/tx/STP1500R02", json={"params": {"amount": 1_000_000, "basket": f"{rows[0]['symbol']}:50"}})
+    assert "100%가 아니에요" in bad.json()["error"]
+    after = conn.execute("select (select count(*) from ledger_events), (select count(*) from broker_snapshots)").fetchone()
+    assert before == after   # 계산만, DB에는 아무것도 쓰지 않아요

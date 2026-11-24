@@ -493,3 +493,15 @@ dialog.dlg.jump { width: min(560px, calc(100vw - 32px)); margin-top: 12vh; }
   dialog.dlg[open], .toast { animation: none; }
   button.act, button.ghost, button.find { transition: none; }
 }
+
+/* 입력 그리드: the typed column. Changed from its first value = warn outline and a ↺ to take it back. */
+td.ecell { padding-top: 3px; padding-bottom: 3px; }
+.ebox { display: inline-flex; flex-direction: column; align-items: flex-end; gap: 1px; }
+input.einput { font: inherit; font-variant-numeric: tabular-nums; text-align: right; width: 84px; height: 24px; padding: 0 6px;
+  color: var(--ink); background: var(--warn-bg); border: 1px dashed var(--line-strong); border-radius: 5px; }
+input.einput:focus { outline: 2px solid var(--sel-line); outline-offset: 0; border-style: solid; }
+.ebox.edited input.einput { border: 2px solid var(--warn); color: var(--warn); font-weight: 600; }
+button.erevert { display: none; font: 11px ui-monospace, monospace; color: var(--warn); background: none; border: 0; padding: 0; cursor: pointer; }
+.ebox.edited button.erevert { display: block; }
+button.erevert:hover { text-decoration: underline; }
+tfoot td.bad { color: var(--bad); }

@@ -50,7 +50,9 @@ def screen_markdown(screen: Screen, catalog: dict, lookups=None, menu=None) -> s
     out += ["## 목적", "", screen.purpose, ""]
     if screen.layout == "split":
         left, right, below = split_sides(screen)
-        out += ["## 화면 구성", "", "좌우 구성이에요. 왼쪽 목록에서 행을 고르면 오른쪽이 그 행의 상세로 바뀌어요.", "",
+        intro = ("좌우 구성이에요. 왼쪽에 입력하면 오른쪽이 그 값으로 다시 계산돼요." if any(g.edit for g in left)
+                 else "좌우 구성이에요. 왼쪽 목록에서 행을 고르면 오른쪽이 그 행의 상세로 바뀌어요.")
+        out += ["## 화면 구성", "", intro, "",
                 f"- 왼쪽 (너비 {screen.left}%): {_names(left)}", f"- 오른쪽: {_names(right)}"]
         if below:
             out.append(f"- 아래 (고른 행과 무관): {_names(below)}")
@@ -105,6 +107,13 @@ def screen_markdown(screen: Screen, catalog: dict, lookups=None, menu=None) -> s
             facts.append(f"- 표시: T계정 (계정 `{t['account']}`마다 T 하나, 차변 `{t['debit']}`은 왼쪽, 대변 `{t['credit']}`은 오른쪽)."
                          + (f" 전표(`{t['entry']}`)마다 묶고" if t.get("entry") else " 한 묶음으로 그리고")
                          + " 그 아래에 차변 합계, 대변 합계와 대차 일치 여부를 보여요. 나머지 열은 묶음의 머리말에 나오고, 오른쪽 위에서 표로 바꿔 볼 수 있어요")
+        if g.edit:
+            e = g.edit
+            facts.append(f"- 입력: `{e['column']}` 칸에 값을 넣어요 (저장하지 않음). 처음 값과 되돌아갈 값은 `{e['base']}`."
+                         " 고친 칸은 주황 테두리와 원래 값이 보이고, 그 칸의 ↺를 누르면 그 행만 되돌아가요."
+                         + (f" 그리드 오른쪽 위 `{e['reset']}` 버튼은 모든 행을 되돌려요." if e.get("reset") else "")
+                         + (f" 행 추가는 찾기 팝업 `{e['add']}`로 골라요." if e.get("add") else "")
+                         + f" 넣은 값은 `{e['param']}` 조건(`행키:값,…`)으로 오른쪽 그리드에 가요")
         if g.totals:
             facts.append(f"- 합계: {', '.join(f'`{t}`' for t in g.totals)}")
         if g.meta:
