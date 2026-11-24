@@ -6,7 +6,7 @@ import pytest
 
 from db.test_ops import URL, conn  # noqa: F401
 from ministp import __main__ as cli
-from ministp import codes, master, master_db
+from ministp import codes, master, master_db, queries
 from ministp.instruments import Market
 from ministp.store.integrity import check_master
 from unit.test_master import KOSDAQ, KOSPI, downloads, line
@@ -106,11 +106,16 @@ def test_the_history_cannot_be_changed_and_a_forged_row_is_found(conn, env):  # 
 
 def test_the_match_view_names_what_differs(conn, env):  # noqa: F811
     assert master_db.matches(conn) == [("069500", "KODEX 200", None, "MISSING")]   # nothing loaded yet
+    listed, meta = queries.market_instruments(conn)          # STP-4100 lists the booked code all the same
+    assert [r[:2] + r[3:8] for r in listed.rows] == [("069500", "KODEX 200", "EF", None, "등록", "MISSING", "STP-1300")]
+    assert meta["base_date"] == "적재 전"
     fetch(env, D1, [line(Market.KOSPI, "069500", "KODEX200", group="ST")])
     assert cli.run(["master", "load"], environ=env, now=at(D1)) == 0
     assert master_db.matches(conn) == [("069500", "KODEX 200", "KODEX200", "DIFFERENT")]   # ETF registered, ST here
     fetch(env, D2, [line(Market.KOSPI, "069500", "KODEX 코스피200", group="EF")])
     assert cli.run(["master", "load"], environ=env, now=at(D2)) == 0
     assert master_db.matches(conn) == [("069500", "KODEX 200", "KODEX 코스피200", "RENAMED")]
+    by_day = {d: queries.market_instruments(conn, d)[0].records()[0]["master_match"] for d in (D1, D2)}
+    assert by_day == {D1: "DIFFERENT", D2: "RENAMED"}          # the 대조 is against the master of the day shown
     rows = master.load_day(master.default_dir(env), D2)
     assert master_db.changes(master_db.current(conn), rows) == ([], [], [])   # loaded state = the file

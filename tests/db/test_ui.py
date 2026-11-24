@@ -106,11 +106,17 @@ def test_every_page_carries_the_menu_tree_and_a_screen_its_place_in_it(client, c
                                     client.get(path).text, re.S).group(1))
     home, page = data("/"), data("/screen/STP-3200")
     assert home["tree"] == page["tree"] and home["path"] == [] and page["path"] == ["원장·회계", "분개"]
-    assert [s["id"] for a in home["tree"] for g in a["groups"] for s in g["screens"]] == sorted(load_screens())
+    assert [s["id"] for a in home["tree"] for g in a["groups"] for s in g["screens"]] == sorted(
+        i for i in load_screens() if i.endswith("0"))                    # a 딸린 화면 hangs from its parent instead
+    sub = data("/screen/STP-4101")
+    assert sub["parent"] == {"id": "STP-4100", "title": "종목정보"} and page["parent"] is None
+    assert sub["path"] == ["기준정보", "종목"] and "crumbLine" in client.get("/static/stpui.js").text
     script, index = client.get("/static/stpui.js").text, all_docs(load_screens(), erd.read_catalog(conn, "public"))
     assert "DATA.tree" in script and 'class: "tree"' in script
     assert "| **3 원장·회계**" in index["README.md"] and "| 32 분개 | [STP-3200](STP-3200.md) 분개 조회 |" in index["README.md"]
     assert "분류: 원장·회계 > 분개" in index["STP-3200.md"]
+    assert "[STP-4100](STP-4100.md) 종목정보 (딸린 화면 [STP-4101](STP-4101.md) 마스터 적재 내역)" in index["README.md"]
+    assert "딸린 화면: [STP-4100](STP-4100.md)에서 들어와요" in index["STP-4101.md"]
 
 
 def test_server_refuses_to_start_when_a_screen_has_no_place_in_the_classification(sample, monkeypatch):
@@ -290,21 +296,23 @@ def _rows(client, tx, params=None, dataset="main"):
 
 
 def test_instrument_master_holds_nothing_of_the_account_and_shows_the_rules_the_system_uses(client):
-    rows, _ = _rows(client, "STP4100R01")
+    registered, _ = _rows(client, "STP4100R05")          # 종목 찾기: the codes the books trade
     # reference data is the same whichever account is looked at: no holdings, no closes the books took
-    assert set(rows[0]) == {"symbol", "instrument_name", "market", "asset_type", "sell_tax", "master_match"}
-    assert {r["master_match"] for r in rows if r["symbol"] in ("005930", "069500", "360750")} == {"MATCH"}
-    kospi_stock = next(r for r in rows if r["market"] == "KOSPI" and r["asset_type"] == "STOCK")
+    assert set(registered[0]) == {"symbol", "instrument_name", "market", "asset_type", "sell_tax"}
+    kospi_stock = next(r for r in registered if r["market"] == "KOSPI" and r["asset_type"] == "STOCK")
     assert kospi_stock["sell_tax"] == "0.2%"          # 0.05% 거래세 + 0.15% 농특세
-    rules, _ = _rows(client, "STP4100R02", {"symbol": kospi_stock["symbol"]})
+    rows, _ = _rows(client, "STP4100R01")
+    assert {r["master_match"] for r in rows if r["symbol"] in ("005930", "069500", "360750")} == {"MATCH"}
+    assert all(r["opens"] == ("STP-1300" if r["registered"] else None) for r in rows)   # only a booked code opens 주문가능
+    rules, _ = _rows(client, "STP4100R04", {"symbol": kospi_stock["symbol"]})
     by_item = {r["item"]: r["value"] for r in rules}
     assert (by_item["위탁수수료율"], by_item["증권거래세율"], by_item["농어촌특별세율"]) == ("0.015%", "0.05%", "0.15%")
     assert by_item["결제주기"] == "T+2" and by_item["2,000원 미만"] == "1원" and by_item["500,000원 이상"] == "1,000원"
-    etf = next(r for r in rows if r["asset_type"] == "ETF")
-    etf_rules, _ = _rows(client, "STP4100R02", {"symbol": etf["symbol"]})
+    etf = next(r for r in registered if r["asset_type"] == "ETF")
+    etf_rules, _ = _rows(client, "STP4100R04", {"symbol": etf["symbol"]})
     assert [(r["item"], r["value"]) for r in etf_rules if r["kind"] == "호가단위"] == [("2,000원 미만", "1원"), ("2,000원 이상", "5원")]
     assert {r["item"]: r["value"] for r in etf_rules}["증권거래세율"] == "0%"
-    assert client.post("/api/tx/STP4100R02", json={"params": {"symbol": "999999"}}).status_code == 400
+    assert client.post("/api/tx/STP4100R04", json={"params": {"symbol": "999999"}}).status_code == 400
     screen = client.get("/api/screen/STP-4100").json()
     assert not any(c["name"] in ("qty", "book_cost", "last_close") for g in screen["grids"] for c in g["columns"])
 
@@ -494,34 +502,38 @@ def test_returns_screen_reads_the_nav_month_by_month(client):
 
 
 def test_market_master_screens_show_the_history_the_sample_loaded(client, sample):
-    """STP-4110, STP-4120 (R-94, R-95): the market as of a day, one code's attributes and changes, each load."""
-    rows, meta = _rows(client, "STP4110R01")
+    """STP-4100, STP-4101 (R-94, R-95): the market as of a day, one code's attributes and changes, each load."""
+    rows, meta = _rows(client, "STP4100R01")
     assert meta["base_date"] == sample.last_day.isoformat() and meta["shown"] == f"{len(rows)}건"
     assert [r["symbol"] for r in rows[:3]] == ["005930", "069500", "360750"]      # the books' codes first
     by = {r["symbol"]: r for r in rows}
     assert "900040" not in by and by["900010"]["state"] == "관리종목" and by["900020"]["state"] == "거래정지"
     assert by["005930"]["registered"] == "등록" and by["900030"]["registered"] is None
-    gone, _ = _rows(client, "STP4110R01", {"state": "상장폐지"})
+    gone, _ = _rows(client, "STP4100R01", {"state": "상장폐지"})
     assert [r["symbol"] for r in gone] == ["900040"]
-    first, _ = _rows(client, "STP4110R01", {"date": sample.first_day.isoformat()})
+    first, _ = _rows(client, "STP4100R01", {"date": sample.first_day.isoformat()})
     assert {r["symbol"] for r in first} >= {"900040"} and "900060" not in {r["symbol"] for r in first}
-    found, _ = _rows(client, "STP4110R01", {"keyword": "오피스", "registered_only": "false"})
+    found, _ = _rows(client, "STP4100R01", {"keyword": "오피스", "registered_only": "false"})
     assert [r["symbol"] for r in found] == ["900030"]
-    assert _rows(client, "STP4110R01", {"registered_only": "true"})[0] == rows[:3]
+    assert _rows(client, "STP4100R01", {"registered_only": "true"})[0] == [r for r in rows if r["registered"]]
 
-    attrs, _ = _rows(client, "STP4110R02", {"symbol": "900010"})
+    attrs, _ = _rows(client, "STP4100R02", {"symbol": "900010"})
     item = {r["item"]: (r["value"], r["since"]) for r in attrs}
     assert item["관리종목"][0] == "예" and item["시장경고"] == ("투자주의 (01)", sample.last_day.isoformat())
     assert item["증권그룹 구분"][0] == "주권 (ST)" and item["상장주수"][0] == "19,500천 주"
-    hist, _ = _rows(client, "STP4110R03", {"symbol": "900010"})
+    hist, _ = _rows(client, "STP4100R03", {"symbol": "900010"})
     assert [(r["item"], r["before"], r["after"]) for r in hist] == [
         ("시장경고", "없음 (00)", "투자주의 (01)"), ("상장주수", "18,000천 주", "19,500천 주"),
         ("관리종목", "아니오", "예"), ("(첫 적재)", None, "전 항목")]
-    assert client.post("/api/tx/STP4110R02", json={"params": {"symbol": "999999"}}).status_code == 400
+    assert client.post("/api/tx/STP4100R02", json={"params": {"symbol": "999999"}}).status_code == 400
+    # a code the books do not hold still has the rules it would trade under, if it is a 주권 or an ETF
+    unbooked, _ = _rows(client, "STP4100R04", {"symbol": "900010"})
+    assert {r["item"]: r["value"] for r in unbooked}["증권거래세율"] == "0.2%"          # 코스닥 주권: 거래세만
+    assert _rows(client, "STP4100R04", {"symbol": "900030"})[0] == []     # 리츠: not a kind the books trade
 
-    loads, _ = _rows(client, "STP4120R01")
+    loads, _ = _rows(client, "STP4101R01")
     assert [(r["rows_new"], r["rows_changed"], r["rows_delisted"]) for r in loads] == [(0, 2, 1), (1, 2, 0), (8, 0, 0)]
-    changes, _ = _rows(client, "STP4120R02", {"load_id": loads[0]["load_id"]})
+    changes, _ = _rows(client, "STP4101R02", {"load_id": loads[0]["load_id"]})
     assert ("빠짐", "900040", "상장 여부") in {(r["change"], r["symbol"], r["item"]) for r in changes}
     assert ("변경", "900030", "종목명", "샘플리츠", "샘플오피스리츠") in {
         (r["change"], r["symbol"], r["item"], r["before"], r["after"]) for r in changes}

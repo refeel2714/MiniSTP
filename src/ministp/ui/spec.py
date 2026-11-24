@@ -7,7 +7,7 @@ at once which screens it touches.
 """
 from .actions import ACTIONS
 from .definitions import (Screen, column_comment, jump_targets, load_lookups, load_menu, menu_path, menu_tree,
-                          resolve, short, split_sides, usages)
+                          parent_id, resolve, short, split_sides, usages)
 from .transactions import TRANSACTIONS
 
 LOAD_TEXT = {"search": "조회 버튼", "open": "화면 열 때 + 조회 버튼", "master": "목록(마스터)에서 행 선택",
@@ -44,6 +44,9 @@ def screen_markdown(screen: Screen, catalog: dict, lookups=None, menu=None) -> s
            " 직접 고치지 말고 화면 정의를 고친 뒤 `python scripts/gen_screen_docs.py`를 실행하세요.", ""]
     if path:
         out += [f"분류: {' > '.join(path)}", ""]
+    if parent_id(screen.id):
+        out += [f"딸린 화면: [{parent_id(screen.id)}]({parent_id(screen.id)}.md)에서 들어와요. 메뉴트리에는 따로 나오지 않고,"
+                " 화면 제목 위의 돌아가기로 들어온 화면으로 돌아가요.", ""]
     out += ["## 목적", "", screen.purpose, ""]
     if screen.layout == "split":
         left, right, below = split_sides(screen)
@@ -174,15 +177,18 @@ def index_markdown(screens: dict[str, Screen], catalog: dict, menu=None) -> str:
     out = ["# STP-UI 화면 목록과 영향도", "",
            "> `python scripts/gen_screen_docs.py`로 생성돼요. 화면 정의(YAML)와 DB 주석에서 만들어지니 직접 고치지 마세요.",
            "", "## 화면 분류", "",
-           "화면번호 `STP-ABCC`가 곧 분류예요. 첫 자리 A는 대분류(거래가 흘러가는 순서), 둘째 자리까지 AB는 중분류(그 단계에서 다루는 대상), "
-           "뒤 두 자리 CC는 같은 대상을 다루는 화면의 순번이에요. 조회와 처리는 번호가 아니라 트랜잭션 ID로 갈라요(R 조회, U 처리). "
+           "화면번호 `STP-ABCD`가 곧 분류예요. 첫 자리 A는 대분류(거래가 흘러가는 순서), 둘째 자리까지 AB는 중분류(그 단계에서 다루는 대상), "
+           "셋째 자리 C는 같은 대상을 다루는 화면의 순번이에요. 끝자리 D가 0이면 대표 화면이고, 1~9면 그 대표 화면(ABC0)에서 "
+           "들어가는 딸린 화면이라 메뉴트리에 따로 나오지 않고 아래 표에서 대표 화면 뒤 괄호에 적어요. 조회와 처리는 번호가 아니라 트랜잭션 ID로 갈라요(R 조회, U 처리). "
            "분류는 [menu.yaml](../../src/ministp/ui/menu.yaml) 한 곳에 적고, 서버는 시작할 때 모든 화면번호가 분류에 들어가는지, "
            "화면이 없는 분류가 없는지 확인해요. 왼쪽 메뉴트리와 첫 화면도 이 표를 그대로 그려요.",
            "", "| 대분류 | 중분류 | 화면 |", "|---|---|---|"]
     for area in menu_tree(menu, screens):
         for n, group in enumerate(area["groups"]):
             head = f"**{area['id']} {area['name']}**<br>{_cell(area['note'])}" if n == 0 else ""
-            shown = ", ".join(f"[{x['id']}]({x['id']}.md) {x['title']}" for x in group["screens"])
+            shown = ", ".join(f"[{x['id']}]({x['id']}.md) {x['title']}"
+                              + (" (딸린 화면 " + ", ".join(f"[{y['id']}]({y['id']}.md) {y['title']}" for y in x["subs"]) + ")"
+                                 if x["subs"] else "") for x in group["screens"])
             out.append(f"| {head} | {group['id']} {group['name']} | {shown} |")
     out += ["", "## 화면", "", "| 화면번호 | 화면명 | 그리드 | 트랜잭션 |", "|---|---|---|---|"]
     for s in screens.values():

@@ -268,10 +268,7 @@ def _trial(c: TxContext, p) -> TxResult:
 
 
 def _instruments(c: TxContext, p) -> TxResult:
-    ds = q.instrument_master(c.books)
-    match = q.master_matches(c.conn)   # R-95: the registered code against the latest market master
-    return TxResult({"main": q.Dataset(ds.columns + ("master_match",),
-                                       tuple(r + (match.get(r[0], "MISSING"),) for r in ds.rows))})
+    return TxResult({"main": q.instrument_master(c.books)})
 
 
 def _market(c: TxContext, p) -> TxResult:
@@ -311,10 +308,13 @@ def _master_changes(c: TxContext, p) -> TxResult:
 def _instrument_rules(c: TxContext, p) -> TxResult:
     if not p.get("symbol"):
         raise TxError("종목코드가 필요해요")
-    try:
-        return TxResult({"main": q.instrument_rules(c.books, p["symbol"], c.today)})
-    except KeyError as e:
-        raise TxError(e.args[0]) from e
+    sym = p["symbol"]
+    inst = None if sym in c.books.instruments else q.master_instrument(c.conn, sym, p.get("date"))
+    if inst is None and sym not in c.books.instruments:
+        if c.conn.execute("select 1 from instrument_master where symbol = %s", (sym,)).fetchone():
+            return TxResult({"main": q.Dataset(("kind", "item", "value", "note"), ())})   # not a 주권 or an ETF
+        raise TxError(f"등록되지 않은 종목이에요: {sym}")
+    return TxResult({"main": q.instrument_rules(c.books, sym, c.today, inst)})
 
 
 def _account(c: TxContext, p) -> TxResult:
@@ -426,14 +426,15 @@ TRANSACTIONS: dict[str, Tx] = {t.tx_id: t for t in [
     Tx("STP3400R01", "계좌 요약", {}, _account),
     Tx("STP3400R02", "예수금 D+n", {}, _ladder),
     Tx("STP3400R03", "결제 예정", {}, _settlements),
-    Tx("STP4100R01", "종목정보", {}, _instruments),
-    Tx("STP4100R02", "종목에 적용되는 거래 기준", {"symbol": "text"}, _instrument_rules),
-    Tx("STP4110R01", "시장 종목 목록", {"date": "date", "market": "text", "sec_group": "text", "state": "text",
-                                     "keyword": "text", "registered_only": "bool"}, _market),
-    Tx("STP4110R02", "기준일의 종목 속성", {"symbol": "text", "date": "date"}, _market_one),
-    Tx("STP4110R03", "종목 속성 변경 이력", {"symbol": "text", "date": "date"}, _market_history),
-    Tx("STP4120R01", "마스터 적재 기록", {"date_from": "date", "date_to": "date", "load_id": "int"}, _master_loads),
-    Tx("STP4120R02", "적재에서 바뀐 종목", {"load_id": "int", "change": "text"}, _master_changes),
+    Tx("STP4100R01", "종목 목록 (시장 전 종목과 등록 종목)", {"date": "date", "market": "text", "sec_group": "text",
+                                                   "state": "text", "keyword": "text", "registered_only": "bool"},
+       _market),
+    Tx("STP4100R02", "기준일의 종목 속성", {"symbol": "text", "date": "date"}, _market_one),
+    Tx("STP4100R03", "종목 속성 변경 이력", {"symbol": "text", "date": "date"}, _market_history),
+    Tx("STP4100R04", "종목에 적용되는 거래 기준", {"symbol": "text", "date": "date"}, _instrument_rules),
+    Tx("STP4100R05", "등록 종목 (종목 찾기)", {}, _instruments),
+    Tx("STP4101R01", "마스터 적재 기록", {"date_from": "date", "date_to": "date", "load_id": "int"}, _master_loads),
+    Tx("STP4101R02", "적재에서 바뀐 종목", {"load_id": "int", "change": "text"}, _master_changes),
     Tx("STP4300R01", "수수료·세금", {}, _fees),
     Tx("STP4300R02", "결제주기 규칙", {}, _settlement_rules),
     Tx("STP4300R03", "호가단위", {}, _ticks),

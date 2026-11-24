@@ -1,28 +1,66 @@
 id: STP-4100
 title: 종목정보
 layout: split
-left: 50
-purpose: 등록된 종목의 기본정보를 보여줘요. 기준정보는 어느 계좌를 보든 같은 값만 담아요. 그래서 보유수량과 장부금액은 잔고(STP-1100)에, 종가는 시세(STP-2300)에, 종목의 원장 이벤트는 원장 조회(STP-3100)에 있어요. 왼쪽에서 종목을 고르면 그 종목을 거래할 때 적용되는 기준(수수료, 매도 세금, 결제주기, 호가단위)이 오른쪽에 나오고, 더블클릭하면 주문가능 조회로 가요. 종목 등록·변경은 지금은 CLI(instrument 명령)로만 해요. 대조 결과는 등록한 이름·시장·자산 유형이 마지막으로 적재한 시장 마스터(STP-4110)와 같은지예요.
+left: 44
+purpose: 시장에 상장된 전 종목과 원장에 등록한 종목을 한 목록으로 보여줘요. 시장 종목은 KIS 마스터 파일을 master load로 적재한 이력에서 기준일 시점의 값을 꺼내요(가격은 담지 않아요. 종가는 시세 STP-2300). 등록 종목은 원장이 거래하는 종목이라 맨 위에 오고, 대조 결과는 등록한 이름·시장·자산 유형이 기준일의 마스터와 같은지예요. 왼쪽에서 종목을 고르면 그날의 속성과 각 속성이 그 값이 된 날, 언제 무엇이 바뀌었는지, 그 종목을 거래할 때 적용되는 기준(수수료, 매도 세금, 결제주기, 호가단위)이 오른쪽에 나와요. 등록 종목을 두 번 누르면 주문가능 조회로, 변경 이력을 두 번 누르면 그날의 적재 내역(STP-4101)으로 가요. 목록은 한 번에 500행까지라 조회조건으로 좁혀요. 종목 등록·변경은 지금은 CLI(instrument 명령)로만 해요.
+conditions:
+  - {name: date, type: date, label: 기준일}
+  - {name: market, type: select, source: instruments.market, options: [KOSPI, KOSDAQ]}
+  - {name: sec_group, type: select, source: instrument_master.sec_group,
+     options: [ST, EF, EN, RT, MF, SC, IF, DR, BC, FS, FE, SW, SR, EW, PF]}
+  - {name: state, type: select, label: 상태, options: [거래정지, 정리매매, 관리종목, 시장경고, 상장폐지]}
+  - {name: keyword, type: text, label: 종목코드·종목명}
+  - {name: registered_only, type: bool, label: 원장 등록 종목만}
 grids:
   - id: instruments
-    title: 등록 종목
+    title: 종목
     tx: STP4100R01
     load: open
     key: symbol
-    drill: {screen: STP-1300, params: {symbol: symbol}}
+    meta: {base_date: 기준일, shown: 표시}
+    drill: {by: opens, screens: [STP-1300], params: {symbol: symbol}}
     columns:
-      - {name: symbol, source: instruments.symbol, format: code}
-      - {name: instrument_name, source: instruments.name, display: badge, code: symbol, shape: asset_type}
-      - {name: market, source: instruments.market, format: code}
-      - {name: asset_type, source: instruments.asset_type, format: code}
-      - {name: sell_tax, label: 매도 세율(거래세+농특세)}
+      - {name: symbol, source: instrument_master.symbol, format: code, hidden: true}
+      - {name: sec_group, source: instrument_master.sec_group, format: code, hidden: true}
+      - {name: as_of, label: 기준일, format: date, hidden: true}
+      - {name: opens, label: 이동 화면, format: code, hidden: true}
+      - {name: name, source: instrument_master.name, display: badge, code: symbol, shape: sec_group}
+      - {name: market, source: instrument_master.market, format: code, codes: MARKET}
+      - {name: state, label: 상태, color: status, display: pill}
+      - {name: registered, label: 원장 등록, color: status, display: pill}
       - {name: master_match, source: instrument_master_match_v.status, format: code, color: status, display: pill}
-  - id: rules
-    title: 이 종목에 적용되는 거래 기준
+  - id: attrs
+    title: 기준일의 종목 속성
     tx: STP4100R02
+    weight: 3
     load: master
     master: instruments
-    link: {symbol: symbol}
+    link: {symbol: symbol, date: as_of}
+    columns:
+      - {name: item, label: 항목}
+      - {name: value, label: 값}
+      - {name: since, label: 이 값이 된 날, format: date}
+  - id: history
+    title: 속성 변경 이력
+    tx: STP4100R03
+    weight: 2
+    load: master
+    master: instruments
+    link: {symbol: symbol, date: as_of}
+    drill: {screen: STP-4101, params: {load_id: load_id}}
+    columns:
+      - {name: valid_from, source: instrument_master.valid_from, format: date}
+      - {name: item, label: 바뀐 항목}
+      - {name: before, label: 이전 값}
+      - {name: after, label: 새 값}
+      - {name: load_id, source: instrument_master.load_id, format: number}
+  - id: rules
+    title: 이 종목에 적용되는 거래 기준 (주권·ETF)
+    tx: STP4100R04
+    weight: 2
+    load: master
+    master: instruments
+    link: {symbol: symbol, date: as_of}
     columns:
       - {name: kind, label: 구분}
       - {name: item, label: 항목}

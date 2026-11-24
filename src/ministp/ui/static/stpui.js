@@ -583,7 +583,7 @@
   // 메뉴트리: 대분류 > (중분류) > 화면. A 중분류 holding one screen is not drawn as a branch of its own:
   // the screen sits right under the 대분류, and the branch appears when a second screen joins it.
   function leaf(m, screen) {
-    const on = screen && m.id === screen.id;
+    const on = screen && (m.id === screen.id || (DATA.parent && m.id === DATA.parent.id));   // a 딸린 화면 lights its parent
     return h("li", {}, h("a", { href: "/screen/" + m.id, class: on ? "on" : null, "aria-current": on ? "page" : null, title: m.id + " " + m.title },
       h("span", { class: "sid", text: m.id.slice(4) }), h("span", { class: "lt", text: m.title })));
   }
@@ -808,8 +808,24 @@
       split.style.setProperty("--fit", Math.max(380, Math.round(room)) + "px");
     }
 
+    // 화면 분류, and for a 딸린 화면 the screen it is opened from with a way back to it
+    function crumbLine() {
+      const p = DATA.parent;
+      if (!DATA.path.length && !p) return null;
+      if (!p) return h("p", { class: "crumb", "aria-label": "화면 분류", text: DATA.path.join(" › ") });
+      const back = h("button", { type: "button", class: "back", title: "들어온 화면으로 돌아가요" }, "← 돌아가기");
+      back.addEventListener("click", () => {
+        const from = document.referrer && new URL(document.referrer).origin === location.origin;
+        if (from && history.length > 1) history.back(); else location.href = "/screen/" + p.id;
+      });
+      return h("p", { class: "crumb", "aria-label": "화면 분류" }, back,
+        h("span", { text: (DATA.path.length ? DATA.path.join(" › ") + " › " : "") }),
+        h("a", { href: "/screen/" + p.id, text: p.id.slice(4) + " " + p.title }),
+        h("span", { text: " › " + def.id.slice(4) + " 딸린 화면" }));
+    }
+
     frame(def, h("main", { class: "screen" },
-      DATA.path.length ? h("p", { class: "crumb", "aria-label": "화면 분류", text: DATA.path.join(" › ") }) : null,
+      crumbLine(),
       h("div", { class: "title" },
         h("h1", {}, h("span", { class: "sid", text: def.id }), " " + def.title),
         h("a", { class: "spec", href: "/spec/" + def.id, title: "정의 파일과 DB 주석에서 생성한 화면정의서" }, "화면정의서")),

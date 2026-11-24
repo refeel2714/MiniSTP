@@ -949,12 +949,13 @@ def instrument_master(books) -> Dataset:
     return Dataset(("symbol", "instrument_name", "market", "asset_type", "sell_tax"), tuple(rows))
 
 
-def instrument_rules(books, symbol: str, today: dt.date) -> Dataset:
+def instrument_rules(books, symbol: str, today: dt.date, inst=None) -> Dataset:
     """한 종목에 적용되는 거래 기준: 수수료, 매도 세금, 결제주기, 호가단위. The same objects the ledger and the
     order check calculate with (STP-4300 shows them for every market and asset type).
+    `inst` is an unregistered code taken from the market master; else the registered one.
     KeyError when the symbol is not registered."""
     from .ticks import tick_table
-    inst = books.instruments.get(symbol)
+    inst = inst or books.instruments.get(symbol)
     if inst is None:
         raise KeyError(f"등록되지 않은 종목이에요: {symbol}")
     fees, rules = books.ledger.fees, books.ledger.settlement_cycle.rules
@@ -1106,8 +1107,8 @@ TRANSACTIONS = {
     "STP2400R02": close_steps,
     "STP6100R01": return_months,
     "STP6100R02": return_month_days,
-    "STP4100R01": instrument_master,
-    "STP4100R02": instrument_rules,
+    "STP4100R04": instrument_rules,
+    "STP4100R05": instrument_master,
     "STP4300R01": fee_rules,
     "STP4300R02": settlement_rules,
     "STP4300R03": tick_rules,
@@ -1116,7 +1117,10 @@ TRANSACTIONS = {
 }
 
 
-# ---------- STP-4110 시장 종목 마스터 · STP-4120 마스터 적재 내역 (ERD v2.7, 조회 전용) ----------
+# ---------- STP-4100 종목정보(시장 전 종목) · STP-4101 마스터 적재 내역 (ERD v2.7, 조회 전용) ----------
+# One list for every code: the market master as of a day, and the registered codes the books trade.
+# The tables stay apart (instruments is the books' fixed reference, the master moves with every load);
+# the screen shows them side by side and says where they differ (R-95).
 
 MASTER_LIMIT = 500   # rows a market list sends at once; the conditions narrow the rest
 WARNINGS = {"01": "투자주의", "02": "투자경고", "03": "투자위험"}
@@ -1153,13 +1157,24 @@ def _as_of(conn: psycopg.Connection, day: dt.date | None) -> dt.date | None:
     return conn.execute("select max(base_date) from master_loads").fetchone()[0]
 
 
+GROUP_OF = {"STOCK": "ST", "ETF": "EF"}   # a registered asset type and the 증권그룹 the master gives it
+_MATCH_SQL = """case when n.symbol is null then 'MISSING'
+            when not n.listed then 'DELISTED'
+            when n.market <> i.market or n.sec_group <> case i.asset_type when 'STOCK' then 'ST' when 'ETF' then 'EF' end
+                 then 'DIFFERENT'
+            when replace(n.name, ' ', '') <> replace(i.name, ' ', '') then 'RENAMED'
+            else 'MATCH' end"""
+
+
 def market_instruments(conn: psycopg.Connection, day: dt.date | None = None, market: str | None = None,
                        sec_group: str | None = None, state: str | None = None, keyword: str | None = None,
                        registered_only: bool = False) -> tuple[Dataset, dict]:
-    """STP-4110: every code of the market as the history says it was on `day` (default: the latest load).
-    Codes that had left the file by then are shown only when `state` asks for 상장폐지."""
+    """STP-4100: every code of the market as the history says it was on `day` (default: the latest load), and
+    every registered code, with its 대조 결과 against that day (R-95). A registered code the master does not
+    hold is listed from instruments (MISSING). Codes that had left the file are shown when registered, or when
+    `state` asks for 상장폐지."""
     day = _as_of(conn, day)
-    where, params = ["m.valid_from <= %(day)s"], {"day": day}
+    params = {"day": day}
     filters = []
     if market:
         filters.append("market = %(market)s"); params["market"] = market
@@ -1170,7 +1185,7 @@ def market_instruments(conn: psycopg.Connection, day: dt.date | None = None, mar
     elif state:
         filters.append("state = %(state)s"); params["state"] = state
     else:
-        filters.append("listed")
+        filters.append("(listed or registered is not null)")
     if keyword:
         filters.append("(symbol ilike %(kw)s or replace(name, ' ', '') ilike %(kw_name)s)")
         params["kw"], params["kw_name"] = keyword.strip() + "%", "%" + keyword.replace(" ", "") + "%"
@@ -1178,18 +1193,36 @@ def market_instruments(conn: psycopg.Connection, day: dt.date | None = None, mar
         filters.append("registered is not null")
     sql = f"""
         with now as (select distinct on (m.symbol) m.*, {_MASTER_STATE_SQL} as state
-                       from instrument_master m where {' and '.join(where)}
+                       from instrument_master m where m.valid_from <= %(day)s
                       order by m.symbol, m.valid_from desc),
-             shown as (select n.symbol, n.name, n.market, n.sec_group, n.state, n.listed, n.valid_from,
-                              case when i.symbol is not null then '등록' end as registered
-                         from now n left join instruments i using (symbol))
-        select symbol, name, market, sec_group, state, registered, valid_from, %(day)s::date as as_of from shown
+             shown as (select coalesce(n.symbol, i.symbol) as symbol, coalesce(n.name, i.name) as name,
+                              coalesce(n.market, i.market) as market,
+                              coalesce(n.sec_group, case i.asset_type when 'STOCK' then 'ST' when 'ETF' then 'EF' end)
+                                  as sec_group,
+                              n.state, coalesce(n.listed, true) as listed, n.valid_from,
+                              case when i.symbol is not null then '등록' end as registered,
+                              case when i.symbol is not null then {_MATCH_SQL} end as master_match,
+                              case when i.symbol is not null then 'STP-1300' end as opens
+                         from now n full join instruments i using (symbol))
+        select symbol, name, market, sec_group, state, registered, master_match, opens, valid_from,
+               %(day)s::date as as_of
+          from shown
          where {' and '.join(filters)}
          order by registered is null, market, symbol"""
     total = conn.execute(f"select count(*) from ({sql}) x", params).fetchone()[0]
     ds = _q(conn, sql + f" limit {MASTER_LIMIT}", params)
     shown = f"{total:,}건 중 {len(ds):,}건" if total > len(ds) else f"{total:,}건"
     return ds, {"base_date": day.isoformat() if day else "적재 전", "shown": shown}
+
+
+def master_instrument(conn: psycopg.Connection, symbol: str, day: dt.date | None = None):
+    """The code as the market master has it on `day`, as an Instrument the fee and tick rules take; None when the
+    master does not hold it or it is not a 주권 or an ETF (the only kinds the books trade)."""
+    from .instruments import AssetType, Instrument, Market
+    row = conn.execute("select name, market, sec_group from instrument_master where symbol = %s and valid_from <= %s"
+                       " order by valid_from desc limit 1", (symbol, _as_of(conn, day))).fetchone()
+    asset = {v: k for k, v in GROUP_OF.items()}.get(row[2]) if row else None
+    return Instrument(symbol, row[0], Market(row[1]), AssetType(asset)) if asset else None
 
 
 def _master_rows(conn: psycopg.Connection, symbol: str, day: dt.date | None) -> list[dict]:
@@ -1208,10 +1241,12 @@ def _item_text(group_names: dict, col: str, show, v) -> str:
 
 
 def market_instrument(conn: psycopg.Connection, symbol: str, day: dt.date | None = None) -> Dataset:
-    """STP-4110: one code's attributes on `day`, each with the day it took that value. KeyError if unknown."""
+    """STP-4100: one code's attributes on `day`, each with the day it took that value. KeyError if unknown."""
     from .codes import names
     rows = _master_rows(conn, symbol, _as_of(conn, day))
     if not rows:
+        if conn.execute("select 1 from instruments where symbol = %s", (symbol,)).fetchone():
+            return Dataset(("item", "value", "since"), ())   # registered, not (yet) in the master: MISSING
         raise KeyError(f"그날 마스터에 없는 종목이에요: {symbol}")
     groups = names(conn, "SECURITY_GROUP")
     out = []
@@ -1225,7 +1260,7 @@ def market_instrument(conn: psycopg.Connection, symbol: str, day: dt.date | None
 
 
 def market_instrument_history(conn: psycopg.Connection, symbol: str, day: dt.date | None = None) -> Dataset:
-    """STP-4110: what changed in one code and when, newest first. The first row of a code is its first load."""
+    """STP-4100: what changed in one code and when, newest first. The first row of a code is its first load."""
     from .codes import names
     rows = _master_rows(conn, symbol, _as_of(conn, day))
     groups = names(conn, "SECURITY_GROUP")
@@ -1241,7 +1276,7 @@ def market_instrument_history(conn: psycopg.Connection, symbol: str, day: dt.dat
 
 def master_loads(conn: psycopg.Connection, date_from: dt.date | None = None, date_to: dt.date | None = None,
                  load_id: int | None = None) -> Dataset:
-    """STP-4120: one row per `master load`, newest first."""
+    """STP-4101: one row per `master load`, newest first."""
     return _q(conn, """
         select load_id, base_date, rows_total, rows_new, rows_changed, rows_delisted,
                left(kospi_sha256, 6) || '…/' || left(kosdaq_sha256, 6) || '…' as files, fetched_at
@@ -1252,7 +1287,7 @@ def master_loads(conn: psycopg.Connection, date_from: dt.date | None = None, dat
 
 
 def master_load_changes(conn: psycopg.Connection, load_id: int, kind: str | None = None) -> Dataset:
-    """STP-4120: the codes one load wrote, item by item: 신규 (first row), 변경, 빠짐 (listed false)."""
+    """STP-4101: the codes one load wrote, item by item: 신규 (first row), 변경, 빠짐 (listed false)."""
     from .codes import names
     if conn.execute("select 1 from master_loads where load_id = %s", (load_id,)).fetchone() is None:
         raise KeyError(f"없는 적재 번호예요: ML-{load_id}")
@@ -1283,8 +1318,3 @@ def master_load_changes(conn: psycopg.Connection, load_id: int, kind: str | None
             continue
         out += [(change, r["symbol"], r["name"], r["sec_group"], item, before, after) for item, before, after in items]
     return Dataset(("change", "symbol", "name", "sec_group", "item", "before", "after"), tuple(out))
-
-
-def master_matches(conn: psycopg.Connection) -> dict[str, str]:
-    """STP-4100: each registered instrument's 마스터 대조 result (R-95)."""
-    return dict(conn.execute("select symbol, status from instrument_master_match_v").fetchall())
