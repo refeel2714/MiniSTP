@@ -29,12 +29,12 @@ CENT = Decimal("0.01")
 DEFAULT_WEIGHT_LIMIT = Decimal(30)   # 종목당 비중 한도(%), 투자 지침(D9 더할 것 2) 전까지의 예시값
 
 ISSUE_TEXT = {
+    "ACCOUNT_NOT_OPEN": "정상 상태의 계좌가 아니에요 (정지·해지 계좌는 주문을 받지 않아요)",
     **{k: v for k, v in REASON_TEXT.items() if k},     # 주문 검증의 거부 사유 그대로 (R-36~38)
     "NOT_REGISTERED": "등록되지 않은 종목이에요",
     "NO_PRICE": "현재가가 없어요: 가격을 넣어 주세요",
     "WEIGHT_LIMIT": "주문 후 비중이 종목당 한도를 넘어요",
     "INSUFFICIENT_CASH": "필요 금액이 주문가능금액보다 커요 (R-37)",
-    "ACCOUNT_INACTIVE": "주문할 수 없는 계좌 상태예요",
     "GROUP_BLOCKED": "같은 묶음의 다른 줄이 막혀서 함께 보낼 수 없어요",
 }
 
@@ -193,7 +193,7 @@ def check_set(state: AccountState, selected: list[Proposed], committed: list[Pro
     if state.halted:
         issues.append("KILL_SWITCH")
     if not state.active:
-        issues.append("ACCOUNT_INACTIVE")
+        issues.append("ACCOUNT_NOT_OPEN")
     if required > available:
         issues.append("INSUFFICIENT_CASH")
     return SetCheck(tuple(lines), tuple(issues), available, required)
