@@ -149,7 +149,7 @@ grant select on all tables in schema public to ministp_ui;
 ## 개발
 
 ```bash
-uv venv && uv pip install -e . pytest httpx
+uv venv && uv pip install -e . pytest httpx hypothesis
 .venv/bin/pytest -q            # 전체
 .venv/bin/pytest -q -m gate    # 스펙 04 게이트 테스트만
 ```
@@ -159,6 +159,13 @@ DB 테스트는 PostgreSQL 16이 필요합니다. `MINISTP_TEST_DATABASE_URL`이
 ```bash
 MINISTP_TEST_DATABASE_URL=postgresql://postgres:postgres@localhost:5432/ministp_test .venv/bin/pytest -q -m db
 ```
+
+**원장 불변식 무작위 시험**: 예제 몇 개로는 못 보는 순서 문제를 찾으려고, 거래 흐름을 무작위로 만들어 매 단계마다 원장 규칙을 확인합니다([hypothesis](https://hypothesis.readthedocs.io/) 상태 기계). 실패하면 가장 짧은 재현 순서로 줄여서 보여 줍니다.
+
+- `tests/unit/test_ledger_properties.py` (원장 단독): 입금, 매수, 일부·전량 매도, 날짜 넘김(휴장일을 건너뛰는 결제 포함), 일 마감을 섞고, 매 단계마다 시산표 차대 일치, 원가 보존(들어간 원가 = 매도원가 + 남은 원가), 이동평균 매도원가(R-32·33), 예수금·미지급금·미수금이 미결제 체결과 맞는지, 손익·수수료·세금 계정이 체결 결과의 합과 맞는지, 순자산 = 자본 계정 합(R-60), 이벤트를 다시 재생하면 같은 원장이 되는지(R-04)를 시험이 따로 센 장부와 맞춥니다.
+- `tests/db/test_operations_properties.py` (운영 경로, DB 필요): 모의 증권사를 상대로 실제 운영 함수(`run`의 장중 실행기, `daily`)를 써서 시장가·지정가 주문, 주문 검증 거절, 일부 체결, 시스템 취소와 증권사 화면 취소, 체결 동기화, 프로그램 재시작, 시세 변동, 일 마감과 날짜 넘김을 섞습니다. 매 조회 뒤 장중 대사가 모두 일치하는지, 같은 체결이 두 번 들어가지 않는지, 주문 상태가 증권사 누적 상태와 맞는지, 일 마감 대사가 무오류이고 원장 내부 대사(`verify`)가 모두 맞는지, DB에서 다시 읽은 원장이 메모리와 같은지 봅니다. 이 시험이 재시작 뒤 주문번호 중복(#64)과 결제일 장중 예수금 어긋남(#65)을 찾았습니다.
+
+평소에는 각각 150가지·25가지 흐름을 돌리고, 깊게 볼 때는 `MINISTP_PROPERTY_EXAMPLES=5000`처럼 늘립니다.
 
 | 모듈 | 역할 | 스펙 |
 |---|---|---|
@@ -215,6 +222,8 @@ MINISTP_TEST_DATABASE_URL=postgresql://postgres:postgres@localhost:5432/ministp_
 .venv\Scripts\python -m ministp daily                         :: 영업일 15:40 이후
 .venv\Scripts\python -m ministp status
 .venv\Scripts\python -m ministp resolve 12 FEE_DIFF "메모"     :: 불일치 판단 기록
+.venv\Scripts\python -m ministp master fetch                  :: 시장 전체 종목정보 받기 (아침, 키 필요 없음)
+.venv\Scripts\python -m ministp master check                  :: 받은 종목정보 점검 (읽기만)
 ```
 
 계좌가 여러 개일 때 (ERD v2.0부터):
@@ -243,6 +252,8 @@ MINISTP_TEST_DATABASE_URL=postgresql://postgres:postgres@localhost:5432/ministp_
 `run`은 한국투자증권 실시간 체결통보(WebSocket)를 받아 체결 즉시 원장(IBOR)에 반영하고, 끊기면 1분마다 조회로 보완하며, 5분마다 장중 대사를 남깁니다. 결제일이 된 체결은 시작할 때 바로 결제로 반영해서, 장중 예수금 D+0도 증권사와 같습니다. 1분마다 보유 종목과 미체결 주문 종목의 현재가를 받아 증권사 기록(`INTRADAY_PRICE`)에 남기고, `status`가 그 가격으로 평가금액과 평가손익을 보여 줍니다(받은 시각과 함께, 5분 넘게 갱신되지 않으면 `갱신 멈춤`). 현재가는 IBOR 평가에만 쓰고 원장에는 넣지 않으며, 기준가와 분개는 지금처럼 `daily`의 종가로 냅니다(R-68). 창에 `buy 069500 1`, `sell 069500 1 81000`, `cancel 1`, `status`, `recon`, `quit`을 입력해 씁니다. `cancel`은 오늘 MiniSTP가 낸 주문의 미체결 잔량을 모두 취소합니다. 주문은 `status`의 미체결 목록에 나오는 번호(`1`, `S20261124-0001`)나 증권사 주문번호로 고릅니다. 먼저 체결을 조회해 이미 들어온 체결부터 반영하고, 증권사가 취소 요청을 받은 뒤에만 주문을 `취소 요청 중`으로 바꾸며, 증권사가 확인한 취소 수량을 다음 조회에서 읽어 `CANCELED`로 닫습니다. 증권사가 거절하면 주문은 그대로 남고 주문가능금액 예약도 그대로입니다. 받아들여진 취소 요청은 증권사 기록(`CANCEL_REQUEST`)에 남겨, 프로그램을 다시 띄워도 취소 요청 중인 주문을 압니다(R-45). HTS ID(체결통보 구독 키)를 처음에 물어봅니다. 15:30에 스스로 끝나고, 원장을 쓰는 명령은 한 번에 하나만 실행됩니다.
 
 `daily`는 결제, 체결 반영, 종가 평가와 NAV, 대사를 차례로 하고 무오류 연속 영업일을 보여줍니다. 증권사 앱에서 직접 낸 주문은 원장에 들어가지 않고 이상 거래로 표시됩니다.
+
+`master fetch`는 한국투자증권이 매일 아침 공개하는 코스피·코스닥 종목정보 마스터 파일(상장 종목과 ETF·ETN·리츠 전부, 기준가, 거래정지·관리종목, 상장주수 등)을 받아 `data/master/날짜/`에 받은 그대로 두고 해시를 남깁니다(`--csv`를 붙이면 엑셀용 `master.csv`도 만듭니다). `master check`는 상품 구분별 종목 수, 전날 대비 신규·빠짐·이름 변경, 등록 종목의 이름·시장·구분, 보유 종목의 기준가와 원장이 평가한 전 영업일 종가를 대조합니다. DB에는 쓰지 않아서 `run`과 함께 돌려도 됩니다(R-90~92). `--no-db`를 붙이면 DB 없이 파일만 점검합니다.
 
 ## 보안
 
