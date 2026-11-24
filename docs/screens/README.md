@@ -12,6 +12,7 @@
 |  | 12 주문·체결 | [STP-1200](STP-1200.md) 주문·체결 블로터 |
 |  | 13 주문가능 | [STP-1300](STP-1300.md) 주문가능 조회 |
 |  | 14 고객별 보유 | [STP-1400](STP-1400.md) 고객별 보유 |
+|  | 15 운용 주문 | [STP-1500](STP-1500.md) 바스켓 주문 시뮬레이션 |
 | **2 대사·평가**<br>증권사와 맞는지, 하루의 값이 얼마인지 | 21 대사 | [STP-2100](STP-2100.md) 일일 대사 결과, [STP-2110](STP-2110.md) 원장 내부 대사 |
 |  | 22 기준가 | [STP-2200](STP-2200.md) 기준가·무오류 현황, [STP-2210](STP-2210.md) 기준가 이력 |
 |  | 23 시세 | [STP-2300](STP-2300.md) 시세 추이 |
@@ -34,6 +35,7 @@
 | [STP-1200](STP-1200.md) | 주문·체결 블로터 | 3 | `STP1200R01`, `STP1200R02` |
 | [STP-1300](STP-1300.md) | 주문가능 조회 | 2 | `STP1300R02`, `STP1300R01` |
 | [STP-1400](STP-1400.md) | 고객별 보유 | 3 | `STP1400R01`, `STP1400R02`, `STP1400R03` |
+| [STP-1500](STP-1500.md) | 바스켓 주문 시뮬레이션 | 3 | `STP1500R01`, `STP1500R02` |
 | [STP-2100](STP-2100.md) | 일일 대사 결과 | 2 | `STP2100R02`, `STP2100R01`, `STP2100U01` |
 | [STP-2110](STP-2110.md) | 원장 내부 대사 | 3 | `STP2110R01`, `STP2110R02` |
 | [STP-2200](STP-2200.md) | 기준가·무오류 현황 | 1 | `STP2200R01` |
@@ -56,7 +58,7 @@
 
 | 찾는 것 | 목록을 주는 트랜잭션 | 열 수 있는 화면 (넘기는 조회조건) |
 |---|---|---|
-| 화면 | - | 화면 19개 모두 |
+| 화면 | - | 화면 20개 모두 |
 | 종목 | `STP4100R01` | STP-1300 주문가능 조회(`symbol`), STP-3100 원장 조회(`symbol`), STP-3200 분개 조회(`symbol`) |
 
 ## 영향도: DB 컬럼 → 화면
@@ -91,10 +93,10 @@
 | `customer_positions_v.symbol` | 종목코드 | STP-1400 positions |
 | `customers.alias` | 고객 별칭 | STP-1400 customers, STP-4400 accounts |
 | `customers.customer_id` | 고객 ID | STP-1400 customers |
-| `instruments.asset_type` | 자산 유형 | STP-1100 holdings, STP-1200 orders, STP-1300 symbols, STP-1400 positions, STP-2300 symbols, STP-3400 settlements, STP-4100 instruments, STP-4300 fees, STP-4300 ticks |
+| `instruments.asset_type` | 자산 유형 | STP-1100 holdings, STP-1200 orders, STP-1300 symbols, STP-1400 positions, STP-1500 basket, STP-1500 plan, STP-2300 symbols, STP-3400 settlements, STP-4100 instruments, STP-4300 fees, STP-4300 ticks |
 | `instruments.market` | 시장 | STP-4100 instruments, STP-4300 fees |
-| `instruments.name` | 종목명 | STP-1100 holdings, STP-1200 orders, STP-1300 symbols, STP-1400 positions, STP-2300 symbols, STP-3400 settlements, STP-4100 instruments |
-| `instruments.symbol` | 종목코드 | STP-1100 holdings, STP-1300 symbols, STP-1300 조회조건, STP-2300 symbols, STP-3100 events, STP-3100 조회조건, STP-3200 events, STP-3200 조회조건, STP-3400 settlements, STP-4100 instruments |
+| `instruments.name` | 종목명 | STP-1100 holdings, STP-1200 orders, STP-1300 symbols, STP-1400 positions, STP-1500 basket, STP-1500 plan, STP-2300 symbols, STP-3400 settlements, STP-4100 instruments |
+| `instruments.symbol` | 종목코드 | STP-1100 holdings, STP-1300 symbols, STP-1300 조회조건, STP-1500 basket, STP-1500 plan, STP-2300 symbols, STP-3100 events, STP-3100 조회조건, STP-3200 events, STP-3200 조회조건, STP-3400 settlements, STP-4100 instruments |
 | `journal_entries.date` | 회계일 | STP-3200 journal |
 | `journal_entries.entry_id` | 전표 번호 | STP-3200 journal |
 | `journal_entries.kind` | 전표 유형 | STP-3200 journal |
@@ -114,7 +116,7 @@
 | `oms_orders.created_at` | 생성 시각 | STP-1200 orders |
 | `oms_orders.limit_price` | 지정가 | STP-1200 order, STP-1300 조회조건 |
 | `oms_orders.qty` | 주문수량 | STP-1200 orders, STP-1300 조회조건 |
-| `oms_orders.side` | 매매구분 | STP-1200 orders, STP-1300 조회조건, STP-3400 settlements |
+| `oms_orders.side` | 매매구분 | STP-1200 orders, STP-1300 조회조건, STP-1500 조회조건, STP-3400 settlements |
 | `oms_orders.symbol` | 종목코드 | STP-1200 orders |
 | `oms_orders.trade_date` | 주문일 | STP-1200 조회조건 |
 | `position_ledger.cost_delta` | 장부금액 증감 | STP-3100 positions |

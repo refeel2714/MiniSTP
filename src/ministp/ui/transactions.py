@@ -312,6 +312,74 @@ def _holidays(c: TxContext, p) -> TxResult:
                                    "until": until.isoformat() if until else ""})
 
 
+def _basket_portfolio(c: TxContext):
+    from ..basket import load_portfolio
+    return load_portfolio(c.books, c.conn, c.today)
+
+
+def _basket_current(c: TxContext, p) -> TxResult:
+    """바스켓의 첫 모습: 보유 종목을 현재 편입비 그대로 (R-97)."""
+    from ..basket import current_weights
+    pf = _basket_portfolio(c)
+    rows = tuple((s, pf.instruments[s].name if s in pf.instruments else "",
+                  pf.instruments[s].asset_type.value if s in pf.instruments else "", w, w, pf.prices.get(s))
+                 for s, w in current_weights(pf).items())
+    return TxResult({"main": Dataset(("symbol", "instrument_name", "asset_type", "current_weight", "target_weight",
+                                      "price"), rows)}, {"basis": pf.price_basis or "가격 없음"})
+
+
+BASKET_SIDES = {"BUY": "BUY", "SELL": "SELL"}
+BASKET_BASES = {"현재가 지정가": "current", "현재가 +1호가": "tick1", "시장가": "market"}
+
+
+def parse_basket(text: str):
+    """화면이 보내는 바스켓 `종목:편입비,종목:편입비`."""
+    from decimal import Decimal, InvalidOperation
+
+    from ..basket import Target
+    out = []
+    for part in filter(None, (x.strip() for x in text.split(","))):
+        sym, _, w = part.partition(":")
+        try:
+            out.append(Target(sym.strip(), Decimal(w.strip() or "0")))
+        except InvalidOperation as e:
+            raise TxError(f"편입비가 숫자가 아니에요: {sym} {w}") from e
+    return out
+
+
+def _basket_plan(c: TxContext, p) -> TxResult:
+    """종목별 주문안과 요약 (R-97). 계산만 하고 DB에는 쓰지 않아요."""
+    from decimal import Decimal
+
+    from ..basket import BasketError, PriceBasis, default_targets, issue_text, simulate
+    from ..ledger import Side
+    pf = _basket_portfolio(c)
+    targets = parse_basket(p["basket"]) if p.get("basket") else default_targets(pf)
+    side = (p.get("side") or "BUY").upper()
+    if side not in BASKET_SIDES:
+        raise TxError(f"매매구분은 BUY 또는 SELL이에요: {side}")
+    basis = BASKET_BASES.get(p.get("basis") or "현재가 지정가")
+    if basis is None:
+        raise TxError(f"주문가 기준은 {', '.join(BASKET_BASES)} 가운데 하나예요")
+    try:
+        r = simulate(pf, targets, p.get("amount") or 0, Side(side), PriceBasis(basis), c.fees,
+                     Decimal(p["limit"]) if p.get("limit") is not None else Decimal(30))
+    except BasketError as e:
+        raise TxError(str(e)) from e
+    lines = tuple((ln.symbol, ln.name, ln.asset_type, ln.order_price, f"호가 {ln.tick:,}원" if ln.tick else "",
+                   "지정가" if ln.limit_price else ("시장가" if ln.order_price else ""), ln.target_amount, ln.qty,
+                   ln.amount, ln.actual_weight, ln.weight_gap, ln.commission + ln.taxes, ln.post_weight,
+                   not ln.blocked, issue_text(ln.issues)) for ln in r.lines)
+    summary = ((r.total_amount, r.allocated, r.leftover, r.commission + r.taxes, r.required_cash, r.available_cash,
+                r.ok, issue_text(r.issues) if r.issues else ("결재로 넘길 수 있어요" if r.ok else "검사에 걸린 종목이 있어요")),)
+    return TxResult({"main": Dataset(("symbol", "instrument_name", "asset_type", "order_price", "tick_text",
+                                      "order_kind", "target_amount", "qty", "amount", "actual_weight", "weight_gap",
+                                      "costs", "post_weight", "ok", "check_text"), lines),
+                     "summary": Dataset(("total_amount", "allocated", "leftover", "costs", "required_cash",
+                                         "available_cash", "ok", "verdict"), summary)},
+                    {"basis": pf.price_basis or "가격 없음", "ok": r.ok, "limit": f"{r.weight_limit}%"})
+
+
 def _risk(c: TxContext, p) -> TxResult:
     return TxResult({"main": q.risk_rules()})
 
@@ -363,6 +431,9 @@ TRANSACTIONS: dict[str, Tx] = {t.tx_id: t for t in [
     Tx("STP1300R01", "종목별 주문가능", {}, _capacities),
     Tx("STP1300R02", "주문가능 판단", {"symbol": "text", "side": "text", "qty": "int", "limit_price": "int"},
        _order_check),
+    Tx("STP1500R01", "바스켓 (현재 편입비)", {}, _basket_current),
+    Tx("STP1500R02", "종목별 주문안", {"amount": "int", "side": "text", "basis": "text", "limit": "int",
+                                   "basket": "text"}, _basket_plan),
     Tx("STP1200R01", "주문·체결 블로터", {"day": "date"}, _blotter),
     Tx("STP1200R02", "주문의 접수와 체결별 결제", {"client_id": "text"}, _order),
     Tx("STP2100R01", "대사 결과", {"date_from": "date", "date_to": "date", "kind": "text", "only_breaks": "bool"},
