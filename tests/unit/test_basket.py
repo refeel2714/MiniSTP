@@ -97,3 +97,24 @@ def test_read_targets_and_write_csv(tmp_path):
     assert text.splitlines()[0].startswith("종목코드,종목명,현재 편입비") and "합계" in text
     with pytest.raises(BasketError, match="이미"):
         write_csv(r, p)
+
+
+def test_each_line_runs_the_order_check_as_if_the_earlier_lines_were_sent():
+    from dataclasses import replace
+
+    from ministp.risk import RiskLimits
+    # 휴장일에는 어느 줄도 못 보내요 (R-38)
+    r = simulate(replace(PF, business_day=False), [Target("005930", D("100"))], 1_000_000)
+    assert r.lines[0].issues == ("NOT_BUSINESS_DAY",) and not r.ok
+    # 1회 주문 금액 한도
+    r = simulate(PF, [Target("005930", D("100"))], 1_000_000, limits=RiskLimits(max_order_value=500_000))
+    assert "MAX_ORDER_VALUE" in r.lines[0].issues
+    # 미체결 매도가 있으면 그만큼 매도가능수량이 줄어요 (보유 96, 매도가능 50)
+    r = simulate(PF, [Target("005930", D("100"))], 3_000_000, side=Side.SELL)
+    assert r.lines[0].qty == 51 and "SHORT_SELL" in r.lines[0].issues
+    r = simulate(PF, [Target("005930", D("100"))], 2_905_000, side=Side.SELL)
+    assert r.lines[0].qty == 50 and "SHORT_SELL" not in r.lines[0].issues
+    # 앞 줄 매수가 주문가능금액을 쓰면 뒷줄이 주문 검증에서 걸려요 (보낼 때와 같은 결과)
+    pf = replace(PF, available_cash=5_000_000, projected_cash=5_000_000)
+    r = simulate(pf, [Target("069500", D("60")), Target("360750", D("40"))], 8_000_000, weight_limit=D(100))
+    assert r.lines[0].issues == () and r.lines[1].issues == ("INSUFFICIENT_CASH",)
