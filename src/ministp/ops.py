@@ -400,7 +400,7 @@ class IntradayRunner:
             self.out(f"[{received_at:%H:%M:%S}] 접수 {n.side} {n.symbol} x{n.qty} (주문 {n.order_no})")
             return
         t0 = self.monotonic()
-        # R-76 (v1.26): the notice's own quantity and price, once the broker's query shows it
+        # R-76 (v1.27): the notice's own quantity and price, once the broker's query shows it
         booked = self.session.sync(self.day, notices=[n] if n.is_fill else (), gap="hold")
         ms = int((self.monotonic() - t0) * 1000)
         self.stats.fills_booked += len(booked)
