@@ -4,10 +4,10 @@
 
 - 목표 금액 = 총 주문금액 × 편입비, 수량 = 목표 금액 ÷ 주문가 (1주 단위 내림).
 - 주문가: 현재가를 호가단위에 맞춘 값(매수는 올림, 매도는 내림), +1호가, 또는 시장가(현재가로 어림).
-- 검사는 종목마다 주문 검증이 쓰는 그 함수(`risk.check_order`, R-36~38)를 불러요: 영업일, 수량, 호가단위,
-  1회 주문 금액 한도, 매도가능수량(공매도 금지), 주문가능금액. 바스켓은 단건 주문 여러 개로 나가므로,
-  앞 줄의 매수 금액을 미체결 매수 예약에 더한 채로 다음 줄을 검사해요(보낼 때와 같은 순서, 같은 결과).
-  여기에 주문 후 종목 비중 한도(투자 지침이 생기기 전까지 예시값)를 더해요.
+- 검사는 묶음 검증(`precheck.check_set`, R-98)이 해요: 종목마다 주문 검증 함수(`risk.check_order`, R-36~38)로
+  영업일, 수량, 호가단위, 1회 주문 금액 한도, 매도가능수량(공매도 금지), 주문가능금액을 보고, 앞 줄을 보냈다고
+  친 채로 다음 줄을 검사해요(보낼 때와 같은 순서, 같은 결과). 여기에 주문 후 종목 비중 한도(투자 지침이 생기기
+  전까지 예시값, 매수에만, 미체결 매수 포함)를 더해요.
 - 화면을 처음 열 때 목표 편입비는 현재 편입비(보유 종목의 평가금액 비중, 예수금 제외)예요.
 """
 import csv
@@ -21,12 +21,13 @@ from enum import StrEnum
 from .fees import FeeSchedule
 from .instruments import Instrument
 from .ledger import Side
-from .risk import REASON_TEXT, RiskLimits, check_order
+from .precheck import DEFAULT_WEIGHT_LIMIT, AccountState, Proposed, check_set
+from .precheck import ISSUE_TEXT as CHECK_TEXT
+from .risk import RiskLimits
 from .ticks import round_to_tick, tick_size
 
 HUNDRED = Decimal(100)
 CENT = Decimal("0.01")
-DEFAULT_WEIGHT_LIMIT = Decimal(30)   # 종목당 비중 한도(%), 투자 지침(D9 더할 것 2) 전까지의 예시값
 
 
 class BasketError(ValueError):
@@ -42,14 +43,7 @@ class PriceBasis(StrEnum):
 BASIS_TEXT = {PriceBasis.CURRENT: "현재가 지정가", PriceBasis.TICK1: "현재가 +1호가", PriceBasis.MARKET: "시장가"}
 
 # 행 검사 결과. BLOCK이면 이 바스켓은 결재로 넘길 수 없어요. WARN은 보여 주기만 해요.
-ISSUE_TEXT = {
-    **{k: v for k, v in REASON_TEXT.items() if k},     # 주문 검증의 거부 사유 그대로 (R-36~38)
-    "NOT_REGISTERED": "등록되지 않은 종목이에요",
-    "NO_PRICE": "현재가가 없어요: 가격을 넣어 주세요",
-    "ZERO_QTY": "편입비가 작아 1주도 살 수 없어요",
-    "WEIGHT_LIMIT": "주문 후 비중이 종목당 한도를 넘어요",
-    "INSUFFICIENT_CASH": "필요 금액이 주문가능금액보다 커요 (R-37)",
-}
+ISSUE_TEXT = {**CHECK_TEXT, "ZERO_QTY": "편입비가 작아 1주도 살 수 없어요"}   # 묶음 검증(R-98)의 사유 그대로
 WARN = {"ZERO_QTY"}
 
 
@@ -64,6 +58,7 @@ class Portfolio:
     projected_cash: int             # 결제 후 예수금
     price_basis: str = ""           # 화면 머리에 적는 "계산 기준" (예: 현재가 14:32)
     business_day: bool = True       # 오늘이 영업일인지 (R-38: 휴장일에는 주문하지 않음)
+    open_buy_value: dict[str, int] = field(default_factory=dict)   # 종목별 미체결 매수 예약 (비중 한도용)
 
     @property
     def pending_buy_value(self) -> int:
@@ -82,6 +77,14 @@ class Portfolio:
     def total_assets(self) -> int:
         """주문 후 비중의 분모: 보유 평가금액 + 결제 후 예수금."""
         return self.market_value + self.projected_cash
+
+    def state(self) -> AccountState:
+        """묶음 검증(R-98)이 보는 계좌 모습."""
+        return AccountState(instruments=self.instruments, prices=self.prices, held_qty=self.held_qty,
+                            projected_cash=self.projected_cash, reserved_buy=self.pending_buy_value,
+                            open_buy_value=self.open_buy_value,
+                            open_sell_qty={s: q - self.sellable_qty.get(s, 0) for s, q in self.held_qty.items()},
+                            business_day=self.business_day)
 
 
 @dataclass(frozen=True)
@@ -108,7 +111,7 @@ class Line:
     actual_weight: Decimal          # 주문금액 ÷ 총 주문금액(%)
     commission: int
     taxes: int
-    post_weight: Decimal | None     # 주문 후 비중(%) = (보유 평가금액 ± 주문금액) ÷ 총자산
+    post_weight: Decimal | None     # 주문 후 비중(%) = (보유 평가금액 + 미체결 매수 + 앞 줄 ± 주문금액) ÷ 총자산
     issues: tuple[str, ...] = ()
 
     @property
@@ -216,9 +219,8 @@ def simulate(pf: Portfolio, targets: list[Target], total_amount: int, side: Side
     validate(targets, total_amount)
     fees = fees or FeeSchedule.spec_v1()
     now_w = current_weights(pf)
-    assets = pf.total_assets
-    lines = []
-    sent_buys = 0
+    state = pf.state()
+    rows = []          # (줄 기본값, 먼저 정해진 사유, 묶음 검증에 넣을 줄 또는 None)
     for t in targets:
         inst = pf.instruments.get(t.symbol)
         target_amount = int((Decimal(total_amount) * t.weight / HUNDRED).to_integral_value(rounding=ROUND_DOWN))
@@ -226,41 +228,33 @@ def simulate(pf: Portfolio, targets: list[Target], total_amount: int, side: Side
         base = dict(symbol=t.symbol, current_weight=now_w.get(t.symbol, Decimal(0)), weight=t.weight,
                     current_price=cur, target_amount=target_amount)
         if inst is None or cur is None:
-            lines.append(Line(**base, name=inst.name if inst else "", asset_type=inst.asset_type.value if inst else "",
+            rows.append((dict(base, name=inst.name if inst else "", asset_type=inst.asset_type.value if inst else "",
                               order_price=None, limit_price=None, tick=None, qty=0, amount=0,
-                              actual_weight=Decimal(0), commission=0, taxes=0, post_weight=None,
-                              issues=("NOT_REGISTERED" if inst is None else "NO_PRICE",)))
+                              actual_weight=Decimal(0), commission=0, taxes=0, post_weight=None),
+                         ("NOT_REGISTERED" if inst is None else "NO_PRICE",), None))
             continue
         price, limit, tick = _order_price(cur, inst, side, basis)
         qty = target_amount // price
         amount = qty * price
         costs = fees.costs(inst, side is Side.SELL, amount)
-        held = pf.held_value(t.symbol)
-        post = held + amount if side is Side.BUY else held - amount
-        issues = []
-        if qty == 0 and t.weight > 0:
-            issues.append("ZERO_QTY")
-        if qty > 0:     # the order check itself, as if the earlier lines were already sent
-            held_qty = pf.held_qty.get(t.symbol, 0)
-            decision = check_order(limits, side=side, qty=qty, ref_price=price, held_qty=held_qty,
-                                   pending_sell_qty=held_qty - pf.sellable_qty.get(t.symbol, 0),
-                                   buying_power=pf.projected_cash,
-                                   pending_buy_value=pf.pending_buy_value + sent_buys, halted=False,
-                                   limit_price=limit, tick=tick if limit else None,
-                                   business_day=pf.business_day)
-            if not decision.ok:
-                issues.append(decision.reason)
-            if side is Side.BUY:
-                sent_buys += amount
-        post_weight = _pct(post, assets) if assets else None
-        if post_weight is not None and post_weight > weight_limit:
-            issues.append("WEIGHT_LIMIT")
-        lines.append(Line(**base, name=inst.name, asset_type=inst.asset_type.value, order_price=price,
-                          limit_price=limit, tick=tick, qty=qty, amount=amount,
-                          actual_weight=_pct(amount, total_amount), commission=costs.commission,
-                          taxes=costs.taxes, post_weight=post_weight, issues=tuple(issues)))
-    required = (sum(int(ln.amount * (1 + limits.cash_buffer_rate)) for ln in lines)
-                if side is Side.BUY else 0)
+        row = dict(base, name=inst.name, asset_type=inst.asset_type.value, order_price=price, limit_price=limit,
+                   tick=tick, qty=qty, amount=amount, actual_weight=_pct(amount, total_amount),
+                   commission=costs.commission, taxes=costs.taxes,
+                   post_weight=_pct(state.held_value(t.symbol) + state.open_buy_value.get(t.symbol, 0),
+                                    state.total_assets) if state.total_assets else None)
+        if qty == 0:
+            rows.append((row, ("ZERO_QTY",) if t.weight > 0 else (), None))
+        else:   # 보낼 때와 같은 순서로, 앞 줄을 보냈다고 친 채로 (R-98)
+            rows.append((row, (), Proposed(t.symbol, side, qty, price, limit, key=str(len(rows) + 1))))
+    checked = check_set(state, [p for _, _, p in rows if p], limits=limits, weight_limit=weight_limit)
+    found = iter(checked.lines)
+    lines = []
+    for row, issues, p in rows:
+        if p is not None:
+            ln = next(found)
+            row, issues = dict(row, post_weight=ln.post_weight), ln.together
+        lines.append(Line(**row, issues=issues))
+    required = checked.required_cash if side is Side.BUY else 0
     issues = ("INSUFFICIENT_CASH",) if side is Side.BUY and required > pf.available_cash else ()
     return Result(side, basis, total_amount, weight_limit, tuple(lines), pf.available_cash, required, issues)
 
@@ -343,11 +337,15 @@ def load_portfolio(books, conn, today: dt.date, now: dt.datetime | None = None) 
     reserved, _ = pending_buy_value(open_orders, prices)
     held = {s: p.qty for s, p in books.ledger.positions().items() if p.qty > 0}
     selling: dict[str, int] = {}
+    buying: dict[str, int] = {}
     for o in open_orders:
         if o.side is Side.SELL:
             selling[o.symbol] = selling.get(o.symbol, 0) + o.remaining_qty
+        elif (price := o.limit_price or prices.get(o.symbol)) is not None:
+            buying[o.symbol] = buying.get(o.symbol, 0) + o.remaining_qty * price
     projected = books.ledger.projected_cash()
-    return Portfolio(business_day=books.ledger.calendar.is_business_day(today),instruments=dict(books.instruments), prices=prices, held_qty=held,
+    return Portfolio(business_day=books.ledger.calendar.is_business_day(today), open_buy_value=buying,
+                     instruments=dict(books.instruments), prices=prices, held_qty=held,
                      sellable_qty={s: max(q - selling.get(s, 0), 0) for s, q in held.items()},
                      available_cash=projected - reserved, projected_cash=projected,
                      price_basis=valuation_basis(books.ledger, list(held), quotes, now))
