@@ -1051,6 +1051,7 @@
     function busy(on) { el.classList.toggle("busy", on); el.setAttribute("aria-busy", on ? "true" : "false"); }
     function fail(msg) {
       busy(false); rows = []; view = []; sel = -1; loaded = false;
+      metaBox.replaceChildren();   // 지난 조회의 판단(예: 결재 가능 예)이 오류 옆에 남지 않게
       morph(body, () => body.replaceChildren(h("div", { class: "err", role: "alert", text: msg })));
       syncActions();
     }

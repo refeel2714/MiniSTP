@@ -423,7 +423,7 @@ button.act.locked::before { content: "🔒 "; font-size: 11px; }   /* 권한이 
 .grid th.pk, .grid td.pk { width: 28px; text-align: center; padding-left: 2px; padding-right: 2px; }
 .grid input.pkbox { margin: 0; width: 14px; height: 14px; accent-color: var(--sel-line); cursor: pointer; vertical-align: middle; }
 .grid tbody tr.picked td { background: color-mix(in srgb, var(--sel-line) 7%, transparent); }
-.dlg .fabout { margin: 0 0 8px; font-weight: 600; font-size: 12px; word-break: break-all; }
+.dlg .fabout { margin: 10px 14px 0; font-weight: 600; font-size: 12px; word-break: break-all; }
 button.primary:disabled { opacity: .6; cursor: progress; }
 button.ghost { height: 28px; padding: 0 14px; }
 button.find { font-size: 12px; height: 28px; padding: 0 8px; background: var(--head); }
