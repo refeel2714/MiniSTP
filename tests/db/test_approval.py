@@ -282,3 +282,36 @@ def test_run_sends_what_another_person_approves_and_expires_the_rest_at_the_clos
     assert status(team, a).status == "SENT" and broker.calls[-1] == ("order", "069500", "BUY", 2)
     r.run(dt.time(15, 20))                # 장 마감: 나가지 않은 요청은 만료
     assert status(team, b).status == "EXPIRED" and any("만료했어요" in line for line in out)
+
+
+def test_the_approval_limit_is_per_request_so_a_basket_counts_its_total(team):
+    """C-13: 1건 승인 한도의 1건은 요청 1건. 바스켓은 줄을 나눠도 합계로 봐요(쪼개서 한도를 피하지 못해요)."""
+    b = books(team)
+    lines = [Line("069500", BUY, 80, 80_000), Line("069500", BUY, 80, 80_000)]    # 640만 원씩, 합계 1,280만 원
+    with as_("kim"):
+        with pytest.raises(ApprovalError, match="바스켓 합계 12,800,000원이 1건 승인 한도 10,000,000원"):
+            approval.submit(b, DAY, DAY, lines, basket=True, self_approve=True, weight_limit=WIDE, now=NOW)
+        keys, _ = approval.submit(b, DAY, DAY, lines, self_approve=True, weight_limit=WIDE, now=NOW)   # 단건 2건
+    assert [status(team, k).status for k in keys] == ["APPROVED", "APPROVED"]
+    with as_("lee"):
+        (bk,), _ = approval.submit(b, DAY, DAY, lines, basket=True, weight_limit=WIDE, now=NOW)
+    with as_("kim"):
+        with pytest.raises(ApprovalError, match=f"요청 {bk.request_no}: 바스켓 합계"):
+            approval.approve(b, DAY, [bk], weight_limit=WIDE, now=NOW)
+    with as_("park"):                                    # 한도 없는 승인자는 승인해요
+        approval.approve(b, DAY, [bk], weight_limit=WIDE, now=NOW)
+    assert status(team, bk).status == "APPROVED"
+
+
+def test_screen_lines_count_a_basket_group_as_one_request_for_the_limit():
+    """1210의 아직 요청하지 않은 줄: BK 묶음은 한 요청(합계), 낱개 줄은 줄마다 한 요청."""
+    from ministp.precheck import Proposed
+    right = approval.Right(user_id="kim", right_code="ORDER_APPROVE", account_id=None, max_order_value=1_000_000,
+                           self_approve=True, effective_from=DAY)
+    single = [Proposed("069500", BUY, 10, 80_000, 80_000, key="N1"), Proposed("069500", BUY, 10, 80_000, 80_000, key="N2")]
+    basket = [Proposed("069500", BUY, 10, 80_000, 80_000, key="N1", group="BK"),
+              Proposed("069500", BUY, 10, 80_000, 80_000, key="N2", group="BK")]
+    assert approval.request_amounts(single) == {"N1": 800_000, "N2": 800_000}
+    assert approval.over_limit(right, single) is None
+    assert approval.over_limit(right, basket) == ("BK", 1_600_000)
+    assert approval.over_limit(None, basket) is None
