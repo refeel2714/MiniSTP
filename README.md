@@ -1,8 +1,20 @@
 # MiniSTP
 
-A mini brokerage back office for Korean equities: straight-through processing from order to execution, T+2 settlement, an append-only ledger, double-entry journals, daily NAV, and automated daily reconciliation against broker balances.
+**체결이 곧 전표다.**
 
-주문부터 체결, 결제(T+2), 원장, 회계 분개, 일별 기준가, 증권사 잔고 일일 대사까지 한 흐름으로 처리하는 개인용 미니 증권사 원장 시스템입니다. 성공 기준은 수익률이 아니라 **원장이 틀리지 않는 것**입니다.
+법인이 HTS로 매매하고 회계팀이 거래내역을 다시 입력하던 일을, 체결 순간 분개까지 만들고 매일 증권사와 대사해서 틀리지 않게 합니다.
+
+An order-to-ledger system for corporate equity investment in Korea: pre-trade checks, execution, T+2 settlement, an append-only ledger whose every fill is a balanced journal entry, daily close, and automated daily reconciliation against the broker.
+
+주문부터 체결, 결제(T+2), 원장, 회계 분개, 일 마감, 증권사 잔고 일일 대사까지 한 흐름으로 처리하는 법인 주식투자 원장 시스템입니다. 성공 기준은 수익률이 아니라 **원장이 틀리지 않는 것**입니다.
+
+## 왜 만드나
+
+일반 법인이 여유자금으로 주식을 사면 매매(HTS), 회계 장부(ERP), 증권사 잔고가 세 군데에 따로 있습니다. 자금 담당자가 HTS로 매매하면 회계 담당자가 거래내역을 내려받아 ERP에 전표를 손으로 입력하고, 결산 때 평가분개를, 감사 때 잔고 대조를 또 손으로 합니다. 옮겨 적을 때마다 틀릴 수 있고, 회사 돈인데 누가 언제 승인했는지 남지 않습니다.
+
+MiniSTP는 주문 → 체결 → 분개 → 결제 → 마감 → 대사를 한 원장에서 잇습니다. 체결이 들어오는 순간 대차가 맞는 전표가 생기고(고치지 않고 반대전표로만 정정), 매일 증권사 잔고와 대사해서 장부가 맞는다는 증거를 남깁니다. 다음 단계는 주문 결재(작성자·승인자 분리), 투자 지침 한도, ERP 전표 연계와 3자 대사(증권사·원장·ERP)입니다. 자세한 내용은 [D9](docs/spec/01-decisions.md)에 있습니다.
+
+지금은 한국투자증권 모의투자 계좌로 운영하며 20영업일 연속 대사 일치를 확인하고 있습니다.
 
 ## 상태
 
@@ -22,8 +34,9 @@ Phase 0 (스펙 확정), Phase 1 (원장 코어 + 백테스트) 완료. Phase 2 
 | Phase 1 | 원장 코어 + 백테스트 | 샘플 거래 세트 기대값 100% 일치 |
 | Phase 2 | OMS + 모의투자 연동 (한국투자증권 KIS), 일일 마감과 대사 | 20영업일 연속 대사 무오류 |
 | Phase 2.5 | 실시간 IBOR: 체결통보(WebSocket) 즉시 반영, 장중 포지션·주문가능금액, 장중 대사 | 모의 운영 중 장중 불일치 0건, 체결 반영 지연 측정 |
-| Phase 3 | 계정계 확장: 다계좌(리테일 위탁 고객계좌, [D7](docs/spec/01-decisions.md)), 주문가능금액·증거금, 권리 처리(배당·분할), ABOR 일 마감(`DayClosed`), 감사 로그, 업무화면 플랫폼 STP-UI(IBOR 실시간 + ABOR 기준가) | 공개 저장소와 데모 완성 |
-| Phase 3.5 (구상) | 통제·분석: 컴플라이언스 규칙(사전·사후) → PMS 지표 → 리스크 지표, 모두 같은 원장의 규칙과 보기 ([D8](docs/spec/01-decisions.md)) | 규칙 위반이 대사처럼 기록·판단됨 |
+| Phase 3 | 계정계 확장: 다계좌(법인 1 : 증권계좌 N, [D7](docs/spec/01-decisions.md)·[D9](docs/spec/01-decisions.md)), 주문가능금액·증거금, 권리 처리(배당·분할), ABOR 일 마감(`DayClosed`), 감사 로그, 업무화면 플랫폼 STP-UI(IBOR 실시간 + ABOR 기준가) | 공개 저장소와 데모 완성 |
+| Phase 3.5 | 법인 업무(D9): 주문 결재, 투자 지침 한도, ERP 전표 연계와 3자 대사, 법인 배당 세무 | 전표 내보내기와 3자 대사가 샘플 DB에서 일치 |
+| Phase 3.6 (구상) | 통제·분석: 컴플라이언스 규칙(사전·사후) → PMS 지표 → 리스크 지표, 모두 같은 원장의 규칙과 보기 ([D8](docs/spec/01-decisions.md)) | 규칙 위반이 대사처럼 기록·판단됨 |
 | Phase 4~5 | 소액 실매매, 다자산 확장 (선택) | |
 
 ### 진행 순서 (2026-11-22 갱신)
