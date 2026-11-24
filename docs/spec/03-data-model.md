@@ -213,22 +213,26 @@ Phase 2 구현(v1.4)은 위 설계를 단순화했다. 주문 생성 정보는 `
 5. **한계**: 첫 적재는 그날 파일의 전 종목(약 4천 행)이 신규로 들어간다. 그보다 앞선 날의 상태는 알 수 없다. 화면은 다음 PR.
 
 
-## 주문 결재 (v1.36, ERD v2.8, 초안)
+## 주문 결재 (v1.36, ERD v2.9, 초안)
 
 | 테이블 | 주요 컬럼 | 비고 |
 |---|---|---|
 | app_users | user_id, name, created_by, created_at | 사용자. 지금은 PC 로그인 이름이 ID(ID 체계 보류), 추가만 |
 | user_rights | right_row_id, user_id, account_id, right_code, granted, max_order_value, self_approve, effective_from, granted_by, reason | 결재 권한 이력(R-99). 부여·회수마다 한 행, 계좌가 비면 모든 계좌 |
-| order_requests | request_id, account_id, trade_date, batch_id, line_no, symbol, side, qty, limit_price, created_by | 주문 요청 한 줄. 묶음 번호가 같으면 전부 아니면 전무 |
-| order_approvals | id, request_id, action, actor, self_approved, client_id, reason, set_check, at | 결재 이력(R-100). 순서는 트리거 `ministp_order_approval_flow`가 지킴, 전송 행은 주문 ID를 가짐 |
+| order_requests | **trade_date, request_no**, account_id, order_type, created_by | 주문 요청 = 결재 한 건. 요청 번호는 주문일마다 1부터(계좌와 무관). 주문 유형 SINGLE 단건 / BASKET 바스켓 |
+| order_request_lines | **trade_date, request_no, line_no**, symbol, side, qty, limit_price | 요청의 종목 줄. 단건은 한 줄, 바스켓은 여러 줄. 요청한 뒤에는 더하지 못함(트리거 `ministp_order_lines_fixed`) |
+| order_approvals | id, trade_date, request_no, action, actor, self_approved, reason, set_check, at | 결재 이력(R-100, 요청 단위): 요청·승인·반려·취소·만료. 순서는 트리거 `ministp_order_approval_flow`가 지킴 |
+| order_sends | id, trade_date, request_no, line_no, outcome, client_id, reason, set_check, at | 전송 이력(R-101, 줄 단위): 승인된 요청의 줄마다 한 번 전송·전송 실패. 주문 ID 유일, 승인 다음에만(트리거 `ministp_order_send_flow`) |
 
 | 뷰 | 주요 컬럼 | 비고 |
 |---|---|---|
 | user_rights_v | user_id, user_name, account_id, right_code, max_order_value, self_approve, effective_from | 오늘 적용되는 권한(부여된 것만) |
-| order_requests_v | request_id, …, status, approved_by, self_approved, client_id, last_reason | 요청마다 상태(결재 이력의 마지막 행) |
+| order_requests_v | trade_date, request_no, order_type, line_count, amount, status, approved_by, self_approved, sent_lines, failed_lines, last_reason | 요청마다 상태(결재 이력의 마지막 행과 줄별 전송 결과) |
+| order_request_lines_v | trade_date, request_no, line_no, symbol, side, qty, limit_price, amount, send_outcome, client_id, send_reason | 줄마다 전송 결과 |
 
-1. **넷 다 추가만 한다**: 고치거나 지우지 않는다. 권한 변경은 새 행, 요청의 상태 변화는 결재 이력의 새 행이다.
-2. **이중 전송 방지**: 전송 행은 주문 의도(`oms_orders`)와 같은 트랜잭션에 증권사 호출 전에 들어간다. 주문 ID 하나에 전송 행 하나(부분 유일 인덱스), 승인 다음에만 전송(트리거).
+1. **여섯 다 추가만 한다**: 고치거나 지우지 않는다. 권한 변경은 새 행, 요청의 상태 변화는 결재 이력이나 전송 이력의 새 행이다.
+2. **이중 전송 방지**: 전송 행은 주문 의도(`oms_orders`)와 같은 트랜잭션에 증권사 호출 전에 들어간다. 줄 하나에 전송 행 하나, 주문 ID 하나에 전송 행 하나, 승인 다음에만 전송(트리거).
+3. **v2.8 → v2.9 (11/24)**: 운영 적용 전에 요청 키를 `Q날짜-순번` 글자에서 주문일 + 요청 번호로, 바스켓을 종목마다 요청에서 요청 한 건 + 줄 여러 개로 바꿨다. 마이그레이션은 `0009_order_approval` 하나다.
 ## 원장 무결성 점검 (v1.11)
 
 `python -m ministp verify`는 저장된 원장이 이벤트를 처음부터 다시 계산한 결과와 같은지 읽기 전용으로 확인한다. 쓰기 잠금을 잡지 않으므로 `run`이 떠 있어도 실행할 수 있다. 하나라도 어긋나면 종료 코드 1을 돌려준다.

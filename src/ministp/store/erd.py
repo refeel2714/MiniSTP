@@ -194,7 +194,7 @@ LAYOUT = [
     ("증권사 응답과 대사", [["broker_snapshots"], ["recon_results"], [], []]),
     ("공통코드 · 감사 로그", [["code_groups"], ["common_codes"], ["audit_log"], []]),
     ("종목 마스터 이력", [["master_loads"], ["instrument_master"], [], []]),
-    ("주문 결재", [["app_users"], ["user_rights"], ["order_requests"], ["order_approvals"]]),
+    ("주문 결재", [["app_users"], ["user_rights"], ["order_requests", "order_request_lines"], ["order_approvals", "order_sends"]]),
 ]
 BOX_W, COL_GAP, MARGIN = 232, 84, 28
 HEAD_H, ROW_H, MORE_H, BOX_GAP, BAND_TOP, BAND_PAD = 54, 40, 28, 28, 44, 22

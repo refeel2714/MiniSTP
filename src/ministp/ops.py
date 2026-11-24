@@ -678,7 +678,7 @@ class IntradayRunner:
                                        self.day).get("ORDER_APPROVE")
             self_ok = bool(right and right.self_approve)
             prices = {} if limit or symbol not in self.books.instruments else {symbol: self.broker.get_price(symbol)}
-            (rid,), _ = approval.submit(self.books, self.day, self.day, [approval.Line(symbol, side, qty, limit)],
+            (key,), _ = approval.submit(self.books, self.day, self.day, [approval.Line(symbol, side, qty, limit)],
                                         self_approve=self_ok, now=self.now(), prices=prices)
         except OpsError as exc:
             self.out(f"주문 요청 거부: {exc}")
@@ -686,7 +686,7 @@ class IntradayRunner:
                                  detail=_order_detail(symbol, side.value, qty, limit) | {"date": self.day})
             return
         if not self_ok:
-            self.out(f"결재 요청 {rid}을 올렸어요. 승인되면 바로 보내요.")
+            self.out(f"결재 요청 {key.request_no}을 올렸어요. 승인되면 바로 보내요.")
             return
         self.send_requests()
 
@@ -696,9 +696,9 @@ class IntradayRunner:
         self._last_send = self.monotonic()
         for s in approval.send_approved(self.books, self.session, self.day, now=self.now()):
             if s.client_id:
-                self.out(f"[{self.now():%H:%M:%S}] 요청 {s.request_id} → 주문 {s.client_id} 접수. 체결되면 바로 원장에 반영해요.")
+                self.out(f"[{self.now():%H:%M:%S}] {s} → 주문 {s.client_id} 접수. 체결되면 바로 원장에 반영해요.")
             else:
-                self.out(f"[{self.now():%H:%M:%S}] 요청 {s.request_id} 전송 실패: {s.detail}")
+                self.out(f"[{self.now():%H:%M:%S}] {s} 전송 실패: {s.detail}")
 
     def cancel(self, ref: str) -> None:
         """R-45: `cancel 3` (오늘 세 번째 주문), `cancel S20261124-0003` or the broker's order number."""

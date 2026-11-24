@@ -39,8 +39,8 @@ def team(conn, broker):
     return conn
 
 
-def status(conn, rid):
-    return approval.requests(conn, ids=[rid])[0]
+def status(conn, key):
+    return approval.requests(conn, keys=[key])[0]
 
 
 def test_rights_start_from_one_admin_and_only_admins_change_them(conn, broker):
@@ -113,20 +113,25 @@ def test_pending_requests_use_up_cash_so_the_next_request_is_checked_against_the
     assert done == 3 and len(approval.requests(team)) == 3
 
 
-def test_a_batch_is_approved_rejected_or_canceled_as_a_whole(team):
+def test_a_basket_is_one_request_with_many_lines_and_numbers_restart_each_order_day(team):
     b = books(team)
     with as_("lee"):
+        (one,), _ = approval.submit(b, DAY, DAY, [Line("069500", BUY, 1, 80_000)], now=NOW)
         ids, _ = approval.submit(b, DAY, DAY, [Line("069500", BUY, 1, 80_000), Line("069500", BUY, 2, 80_000)],
-                                 batch="BK", now=NOW)
-    reqs = approval.requests(team, ids=ids)
-    assert {r.batch_id for r in reqs} == {"BK20261120-01"} and [r.line_no for r in reqs] == [1, 2]
+                                 basket=True, now=NOW)
+        singles, _ = approval.submit(b, DAY, D("2026-11-23"), [Line("069500", BUY, 1, 80_000),
+                                                                Line("069500", SELL, 1, 80_000)], now=NOW)
+    (bk,) = ids                                   # 바스켓은 요청 한 건, 번호 하나
+    r = status(team, bk)
+    assert (one.request_no, bk.request_no, str(bk)) == (1, 2, "20261120-2")
+    assert r.order_type == "BASKET" and [(ln.line_no, ln.qty) for ln in r.lines] == [(1, 1), (2, 2)]
+    assert [(k.trade_date, k.request_no) for k in singles] == [(D("2026-11-23"), 1), (D("2026-11-23"), 2)]
+    assert {status(team, k).order_type for k in singles} == {"SINGLE"}
     with as_("park"):
-        with pytest.raises(ApprovalError, match="묶음 BK20261120-01은\\(는\\) 함께 승인해야"):
-            approval.approve(b, DAY, ids[:1], now=NOW)
         with pytest.raises(ApprovalError, match="사유"):
             approval.reject(team, "A0001", DAY, ids, " ")
-        approval.reject(team, "A0001", DAY, ids, "가격 재확인")
-    assert {status(team, i).status for i in ids} == {"REJECTED"}
+        approval.reject(team, "A0001", DAY, ["2"], "가격 재확인")          # 요청 번호만 주면 그날 주문
+    assert status(team, bk).status == "REJECTED"
     with as_("lee"):
         (one,), _ = approval.submit(b, DAY, DAY, [Line("069500", BUY, 1, 80_000)], now=NOW)
     with as_("park"), pytest.raises(ApprovalError, match="작성자만"):
@@ -142,18 +147,29 @@ def test_the_database_keeps_the_order_of_the_flow(team):
     b = books(team)
     with as_("lee"):
         (rid,), _ = approval.submit(b, DAY, DAY, [Line("069500", BUY, 1, 80_000)], now=NOW)
-    with pytest.raises(psycopg.errors.CheckViolation, match="SEND after REQUEST"):
-        team.execute("insert into order_approvals (request_id, action, client_id) values (%s, 'SEND', null)", (rid,))
+    k = (rid.trade_date, rid.request_no)
+    with pytest.raises(psycopg.errors.CheckViolation, match="FAILED after REQUEST"):
+        team.execute("insert into order_sends (trade_date, request_no, line_no, outcome, reason)"
+                     " values (%s, %s, 1, 'FAILED', 'x')", k)
     with pytest.raises(psycopg.errors.CheckViolation, match="only its writer"):
-        team.execute("insert into order_approvals (request_id, action, actor) values (%s, 'CANCEL', 'kim')", (rid,))
-    team.execute("insert into order_approvals (request_id, action, actor, self_approved) values (%s, 'APPROVE', 'park', true)",
-                 (rid,))   # 셀프 승인 표시는 DB가 작성자와 비교해 다시 채워요
+        team.execute("insert into order_approvals (trade_date, request_no, action, actor) values (%s, %s, 'CANCEL', 'kim')", k)
+    with pytest.raises(psycopg.errors.CheckViolation, match="lines are fixed"):     # 요청한 뒤에는 줄을 못 더해요
+        team.execute("insert into order_request_lines (trade_date, request_no, line_no, symbol, side, qty)"
+                     " values (%s, %s, 2, '069500', 'BUY', 1)", k)
+    team.execute("insert into order_approvals (trade_date, request_no, action, actor, self_approved)"
+                 " values (%s, %s, 'APPROVE', 'park', true)", k)   # 셀프 승인 표시는 DB가 작성자와 비교해 다시 채워요
     assert status(team, rid).self_approved is False
     with pytest.raises(psycopg.errors.CheckViolation, match="REJECT after APPROVE"):
-        team.execute("insert into order_approvals (request_id, action, actor, reason) values (%s, 'REJECT', 'park', 'x')",
-                     (rid,))
-    with pytest.raises(psycopg.errors.InsufficientPrivilege):
-        team.execute("delete from order_approvals")
+        team.execute("insert into order_approvals (trade_date, request_no, action, actor, reason)"
+                     " values (%s, %s, 'REJECT', 'park', 'x')", k)
+    team.execute("insert into order_sends (trade_date, request_no, line_no, outcome, reason)"
+                 " values (%s, %s, 1, 'FAILED', '시험')", k)
+    assert status(team, rid).status == "SEND_FAILED"
+    with pytest.raises(psycopg.errors.CheckViolation, match="CANCEL after a line was sent"):
+        team.execute("insert into order_approvals (trade_date, request_no, action, actor) values (%s, %s, 'CANCEL', 'lee')", k)
+    for table in ("order_approvals", "order_sends", "order_request_lines"):
+        with pytest.raises(psycopg.errors.InsufficientPrivilege):
+            team.execute(f"delete from {table}")
 
 
 def test_run_sends_approved_requests_once_and_rechecks_the_set_right_before(team, broker):
@@ -167,17 +183,18 @@ def test_run_sends_approved_requests_once_and_rechecks_the_set_right_before(team
     place_order(b, broker, DAY, "069500", BUY, 1_150, limit_price=80_000)
     session = session_for(books(team), broker, DAY)
     sent = approval.send_approved(books(team), session, DAY, weight_limit=WIDE, now=NOW)
-    assert [(s.request_id, bool(s.client_id)) for s in sent] == [(a, True), (c, False)]
+    assert [(s.key, s.line_no, bool(s.client_id)) for s in sent] == [(a, 1, True), (c, 1, False)]
     assert "주문가능금액" in sent[1].detail
     sa, sc = status(team, a), status(team, c)
-    assert (sa.status, sa.client_id) == ("SENT", sent[0].client_id) and sc.status == "SEND_FAILED"
+    assert (sa.status, sa.lines[0].client_id) == ("SENT", sent[0].client_id) and sc.status == "SEND_FAILED"
+    assert sc.last_reason == sent[1].detail
     assert [call[3] for call in broker.calls if call[0] == "order"] == [1_150, 2]
     assert approval.send_approved(books(team), session_for(books(team), broker, DAY), DAY, now=NOW) == []  # 다시 안 나가요
     with as_("kim"):
         (d,), _ = approval.submit(books(team), DAY, DAY, [Line("069500", SELL, 1, 80_000)], self_approve=True, now=NOW)
     with pytest.raises(psycopg.errors.UniqueViolation):   # 주문 하나에 전송 기록 하나
-        team.execute("insert into order_approvals (request_id, action, client_id) values (%s, 'SEND', %s)",
-                     (d, sa.client_id))
+        team.execute("insert into order_sends (trade_date, request_no, line_no, outcome, client_id)"
+                     " values (%s, %s, 1, 'SENT', %s)", (d.trade_date, d.request_no, sa.lines[0].client_id))
 
 
 def test_unsent_requests_expire_after_their_day(team):
@@ -186,7 +203,7 @@ def test_unsent_requests_expire_after_their_day(team):
         (rid,), _ = approval.submit(b, DAY, DAY, [Line("069500", BUY, 1, 80_000)], now=NOW)
         (tomorrow,), _ = approval.submit(b, DAY, D("2026-11-23"), [Line("069500", BUY, 1, 80_000)], now=NOW)
     assert approval.expire(team, "A0001", DAY) == []
-    assert approval.expire(team, "A0001", DAY, through_today=True) == [rid]
+    assert approval.expire(team, "A0001", DAY, through_today=True) == [str(rid)]
     assert status(team, rid).status == "EXPIRED" and status(team, tomorrow).status == "PENDING"
     with as_("park"), pytest.raises(ApprovalError, match="승인할 수 없는 상태"):
         approval.approve(b, DAY, [rid], now=NOW)
@@ -218,7 +235,7 @@ def test_commands_for_users_rights_and_requests(conn, broker, capsys):
     assert "1건 한도 1,000,000원, 셀프 승인 안 됨" in out and "1건 한도 없음" in out
 
     # 장 전에 올린 요청은 오늘 주문, 장 마감 뒤에 올린 요청은 다음 영업일 주문
-    assert cli.run(["request", "add", "--line", "069500:buy:2:80000", "--line", "069500:buy:1:80000", "--batch"],
+    assert cli.run(["request", "add", "--line", "069500:buy:2:80000", "--line", "069500:buy:1:80000", "--basket"],
                    now=at(8, 30), **kw) == 0
     assert cli.run(["request", "add", "--line", "069500:buy:1:80500"], now=at(16, 0), **kw) == 0
     assert cli.run(["request", "add", "--line", "069500:buy:1"], now=at(16, 0), **kw) == 1   # 시장가인데 현재가 없음
@@ -226,19 +243,22 @@ def test_commands_for_users_rights_and_requests(conn, broker, capsys):
     assert cli.run(["request", "add", "--line", "069500:sell:5:80000"], now=at(16, 0), **kw) == 1   # 보유 1주
     assert cli.run(["request", "list"], now=at(16, 1), **kw) == 0
     out = "".join(capsys.readouterr())
-    assert "Q20261120-0001 2026-11-20 B20261120-01" in out and "Q20261120-0003 2026-11-23" in out
-    assert "@   80,500 결재 대기" in out and "현재가가 없어요" in out and "매도가능수량" in out
-    assert cli.run(["request", "approve", "Q20261120-0001", "Q20261120-0002"], now=at(8, 40), **kw) == 1  # 셀프 승인 없음
+    assert "2026-11-20 요청 1   바스켓 결재 대기" in out and "2026-11-23 요청 1   단건  결재 대기" in out
+    assert "2. 069500 매수      1주 @   80,000" in out and "@   80,500" in out
+    assert "현재가가 없어요" in out and "매도가능수량" in out
+    assert cli.run(["request", "approve", "1"], now=at(8, 40), **kw) == 1                  # 셀프 승인 없음
     assert "셀프 승인 허용이 없어" in "".join(capsys.readouterr())
+    assert cli.run(["request", "approve", "2"], now=at(8, 40), **kw) == 1                  # 11/20에는 요청 2가 없어요
+    assert "없는 요청 번호예요: 20261120-2" in "".join(capsys.readouterr())
     with pytest.raises(SystemExit):                                                              # 반려 사유는 필수
-        cli.run(["request", "reject", "Q20261120-0001"], now=at(8, 40), **kw)
-    assert cli.run(["request", "cancel", "Q20261120-0001", "Q20261120-0002", "--reason", "보류"],
-                   now=at(8, 41), **kw) == 0
+        cli.run(["request", "reject", "1"], now=at(8, 40), **kw)
+    assert cli.run(["request", "cancel", "20261120-1", "--reason", "보류"], now=at(8, 41), **kw) == 0
     with as_("lee"):
-        approval.approve(books(conn), DAY, ["Q20261120-0003"], now=NOW, prices={"069500": 80_000})
-    assert [r.status for r in approval.requests(conn)] == ["CANCELED", "CANCELED", "APPROVED"]
+        approval.approve(books(conn), DAY, ["20261123-1"], now=NOW, prices={"069500": 80_000})
+    assert [r.status for r in approval.requests(conn)] == ["CANCELED", "APPROVED"]
     kinds = [r[0] for r in conn.execute("select action from audit_log where outcome = 'REFUSED' order by id")]
-    assert kinds == ["RIGHT_GRANT", "ORDER_REQUEST", "ORDER_REQUEST", "ORDER_REQUEST", "ORDER_APPROVE"]
+    assert kinds == ["RIGHT_GRANT", "ORDER_REQUEST", "ORDER_REQUEST", "ORDER_REQUEST", "ORDER_APPROVE",
+                     "ORDER_APPROVE"]
 
 
 def test_run_sends_what_another_person_approves_and_expires_the_rest_at_the_close(team, broker):
@@ -258,7 +278,7 @@ def test_run_sends_what_another_person_approves_and_expires_the_rest_at_the_clos
         approval.approve(books(team), DAY, [a], now=NOW)
     clock[0] = 10.0
     r.step(timeout=0)                     # 승인된 요청을 집어 보내요
-    assert any(f"요청 {a} → 주문" in line for line in out)
+    assert any(f"요청 {a.request_no}-1 069500 → 주문" in line for line in out)
     assert status(team, a).status == "SENT" and broker.calls[-1] == ("order", "069500", "BUY", 2)
     r.run(dt.time(15, 20))                # 장 마감: 나가지 않은 요청은 만료
     assert status(team, b).status == "EXPIRED" and any("만료했어요" in line for line in out)

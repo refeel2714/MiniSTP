@@ -232,7 +232,7 @@ def test_commands_leave_rows_as_the_console_user_and_audit_shows_them(conn, brok
     assert cli.run(["status"], now=at(16, 1), **kw) == 0              # a read leaves nothing
     capsys.readouterr()
     cid = conn.execute("select client_id from oms_orders").fetchone()[0]
-    rid = conn.execute("select request_id from order_requests").fetchone()[0]
+    rid = "{:%Y%m%d}-{}".format(*conn.execute("select trade_date, request_no from order_requests").fetchone())
     assert log(conn)[1:] == [
         ("OPEN", "DONE", "A0001", "2026-11-20"), ("OPEN", "REFUSED", "A0001", "2026-11-20"),
         ("USER_ADD", "DONE", None, me), ("RIGHT_GRANT", "DONE", None, me), ("RIGHT_GRANT", "DONE", None, me),
@@ -274,7 +274,7 @@ def test_applying_a_migration_is_the_first_row_of_a_migrated_database(capsys):
     capsys.readouterr()
     with psycopg.connect(URL, autocommit=True) as c:
         assert list(mg.applied(c)) == [1, 2, 3, 4, 5, 6, 7, 8, 9]
-        assert log(c) == [("DB_MIGRATE", "DONE", None, "ERD v2.8")]
+        assert log(c) == [("DB_MIGRATE", "DONE", None, "ERD v2.9")]
         assert len(last(c).detail["applied"]) == 9 and last(c).channel == "CLI"
         assert codes.check(c) == [] and audit.chain_problems(c)[2] == []
 

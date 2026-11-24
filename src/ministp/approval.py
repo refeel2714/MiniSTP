@@ -3,12 +3,14 @@
 - 권한(R-99): 주문 작성, 주문 승인(1건 한도, 셀프 승인 허용), 권한 관리. 계좌마다 또는 모든 계좌에 줘요.
   권한은 부여·회수마다 한 행이 쌓이고, 오늘 적용되는 최근 행이 지금 권한이에요.
   셀프 승인은 권한에 "셀프 승인 허용"이 있는 사람만, 1건 한도 안에서만 해요. 없는 사람은 요청만 올려요.
-- 흐름(R-100): 요청 → 승인·반려·취소 → 전송·전송 실패, 그리고 만료. 순서는 DB 트리거가 지켜요.
-  묶음(바스켓, 다건 요청)은 전부 아니면 전무예요: 승인·반려·취소는 묶음 전체로만 해요.
+- 요청 번호: 키는 주문일 + 요청 번호(주문일마다 1부터, 계좌와 무관). 주문 유형은 단건(한 줄)과 바스켓(여러 줄).
+  바스켓은 요청 한 건이라 승인·반려·취소가 요청 전체로 되고, 전송 검증도 전부 아니면 전무예요.
+- 흐름(R-100): 요청 → 승인·반려·취소, 그리고 만료(요청 단위). 승인된 요청은 줄마다 전송·전송 실패가 한 번
+  남아요(줄 단위). 순서는 DB 트리거가 지켜요.
 - 묶음 검증(R-98)을 네 번 해요: 요청할 때(결재 대기와 승인 후 미전송 요청 포함), 승인할 때(고른 요청만,
   승인 후 미전송 요청 포함), `run`이 보내기 직전, 그리고 보낼 때 주문 경로가 한 줄씩 한 번 더(R-36~38).
   요청과 승인은 계좌마다 DB 잠금을 잡고 해서, 두 사람이 동시에 올려도 묶음 검증이 서로를 보고 판단해요.
-- 전송(R-101): `run`이 승인된 오늘 요청을 줄 순서대로 보내요. 주문 의도(oms_orders)와 전송 기록은 증권사에
+- 전송(R-101): `run`이 승인된 오늘 요청을 요청 번호·줄 순서대로 보내요. 주문 의도(oms_orders)와 전송 기록은 증권사에
   보내기 전에 함께 남겨서, 중간에 프로그램이 죽어도 같은 요청이 두 번 나가지 않아요. 자동 재주문은 없어요.
 - 만료: 주문일 장 마감까지 나가지 않은 요청은 만료돼요. 다음 날 내려면 새로 요청해요.
 
@@ -28,8 +30,7 @@ from .precheck import DEFAULT_WEIGHT_LIMIT, AccountState, Proposed, SetCheck, ch
 from .risk import RiskLimits
 
 RIGHTS = {"ORDER_WRITE": "주문 작성", "ORDER_APPROVE": "주문 승인", "RIGHTS_ADMIN": "권한 관리"}
-ACTIONS = {"REQUEST": "결재 요청", "APPROVE": "승인", "REJECT": "반려", "CANCEL": "요청 취소",
-           "SEND": "전송", "SEND_FAILED": "전송 실패", "EXPIRE": "만료"}
+ACTIONS = {"REQUEST": "결재 요청", "APPROVE": "승인", "REJECT": "반려", "CANCEL": "요청 취소", "EXPIRE": "만료"}
 STATUSES = {"PENDING": "결재 대기", "APPROVED": "승인", "REJECTED": "반려", "CANCELED": "취소",
             "SENT": "전송", "SEND_FAILED": "전송 실패", "EXPIRED": "만료"}
 LIVE = ("PENDING", "APPROVED")      # 아직 주문가능금액·매도가능수량을 잡고 있는 요청
@@ -134,6 +135,8 @@ def require(conn, user_id: str, right_code: str, account_id: str | None, day: dt
 
 
 # ---------- 요청 ----------
+# 요청 한 건 = 결재 한 건. 키는 주문일 + 요청 번호(주문일마다 1부터, 계좌와 무관, 11/24 사용자).
+# 단건은 종목 한 줄, 바스켓은 종목 여러 줄. 승인·반려·취소는 요청 단위, 전송은 줄 단위로 남아요.
 
 @dataclass(frozen=True)
 class Line:
@@ -144,41 +147,94 @@ class Line:
     limit_price: int | None = None   # None = 시장가
 
 
-@dataclass(frozen=True)
-class Request:
-    request_id: str
-    account_id: str
+@dataclass(frozen=True, order=True)
+class Key:
+    """요청의 키: 주문일과 그날의 요청 번호. 글자로는 `20261120-3`, 사람에게는 요청 번호만 보여요."""
     trade_date: dt.date
-    batch_id: str | None
+    request_no: int
+
+    def __str__(self) -> str:
+        return f"{self.trade_date:%Y%m%d}-{self.request_no}"
+
+
+def parse_key(text: str, default_date: dt.date) -> Key:
+    """`3`(주문일은 `default_date`) 또는 `20261120-3`."""
+    t = str(text).strip()
+    try:
+        if "-" in t:
+            day, no = t.split("-", 1)
+            return Key(dt.datetime.strptime(day, "%Y%m%d").date(), int(no))
+        return Key(default_date, int(t))
+    except ValueError:
+        raise ApprovalError(f"요청 번호는 3 또는 20261120-3 모양이에요: {text}") from None
+
+
+def parse_keys(texts, default_date: dt.date) -> list[Key]:
+    return [k if isinstance(k, Key) else parse_key(k, default_date) for k in texts]
+
+
+@dataclass(frozen=True)
+class RequestLine:
     line_no: int
     symbol: str
     side: Side
     qty: int
     limit_price: int | None
+    send_outcome: str | None = None   # SENT / FAILED, 아직 안 보냈으면 None
+    client_id: str | None = None
+    send_reason: str | None = None
+
+
+@dataclass(frozen=True)
+class Request:
+    trade_date: dt.date
+    request_no: int
+    account_id: str
+    order_type: str                   # SINGLE / BASKET
     created_by: str
     status: str
     approved_by: str | None = None
     self_approved: bool = False
-    client_id: str | None = None
     last_reason: str | None = None
+    lines: tuple[RequestLine, ...] = ()
+
+    @property
+    def key(self) -> Key:
+        return Key(self.trade_date, self.request_no)
+
+    @property
+    def unsent(self) -> tuple[RequestLine, ...]:
+        return tuple(ln for ln in self.lines if ln.send_outcome is None)
 
 
-_COLS = ("request_id, account_id, trade_date, batch_id, line_no, symbol, side, qty, limit_price, created_by,"
-         " status, approved_by, coalesce(self_approved, false), client_id, last_reason")
+ORDER_TYPES = {"SINGLE": "단건", "BASKET": "바스켓"}
+SEND_OUTCOMES = {"SENT": "전송", "FAILED": "전송 실패"}
 
 
 def requests(conn: psycopg.Connection, *, account_id: str | None = None, trade_date: dt.date | None = None,
-             from_date: dt.date | None = None, statuses=None, ids=None) -> list[Request]:
+             from_date: dt.date | None = None, statuses=None, keys=None) -> list[Request]:
     where, args = [], []
-    for cond, val in (("account_id = %s", account_id), ("trade_date = %s", trade_date),
-                      ("trade_date >= %s", from_date), ("status = any(%s)", list(statuses) if statuses else None),
-                      ("request_id = any(%s)", list(ids) if ids else None)):
+    keys = list(keys) if keys is not None else None
+    for cond, val in (("q.account_id = %s", account_id), ("q.trade_date = %s", trade_date),
+                      ("q.trade_date >= %s", from_date), ("q.status = any(%s)", list(statuses) if statuses else None)):
         if val is not None:
             where.append(cond)
             args.append(val)
-    q = f"select {_COLS} from order_requests_v" + (" where " + " and ".join(where) if where else "")
-    rows = conn.execute(q + " order by trade_date, request_id", args).fetchall()
-    return [Request(*r[:6], Side(r[6]), *r[7:]) for r in rows]
+    if keys is not None:
+        where.append("(q.trade_date, q.request_no) in (select * from unnest(%s::date[], %s::int[]))")
+        args += [[k.trade_date for k in keys], [k.request_no for k in keys]]
+    cond = (" where " + " and ".join(where)) if where else ""
+    heads = conn.execute(
+        "select q.trade_date, q.request_no, q.account_id, q.order_type, q.created_by, q.status, q.approved_by,"
+        " coalesce(q.self_approved, false), q.last_reason from order_requests_v q" + cond
+        + " order by q.trade_date, q.request_no", args).fetchall()
+    lines: dict[tuple, list[RequestLine]] = {}
+    for row in conn.execute(
+            "select l.trade_date, l.request_no, l.line_no, l.symbol, l.side, l.qty, l.limit_price, l.send_outcome,"
+            " l.client_id, l.send_reason from order_request_lines_v l join order_requests_v q"
+            " using (trade_date, request_no)" + cond + " order by l.trade_date, l.request_no, l.line_no", args):
+        lines.setdefault(row[:2], []).append(RequestLine(row[2], row[3], Side(row[4]), *row[5:]))
+    return [Request(*h, lines=tuple(lines.get(h[:2], ()))) for h in heads]
 
 
 def _lock(conn, account_id: str) -> None:
@@ -198,12 +254,19 @@ def _proposed(state: AccountState, symbol, side, qty, limit, key, group="") -> P
     return Proposed(symbol, side, qty, limit or state.prices.get(symbol), limit, key=key, group=group or "")
 
 
-def _from_request(state: AccountState, r: Request) -> Proposed:
-    return _proposed(state, r.symbol, r.side, r.qty, r.limit_price, r.request_id, r.batch_id)
+def _from_line(state: AccountState, r: Request, ln: RequestLine) -> Proposed:
+    """바스켓의 줄은 요청 번호로 묶여요: 한 줄이 막히면 요청 전체가 막혀요(전부 아니면 전무)."""
+    return _proposed(state, ln.symbol, ln.side, ln.qty, ln.limit_price, f"{r.key}:{ln.line_no}",
+                     str(r.key) if r.order_type == "BASKET" else "")
+
+
+def _held(state: AccountState, reqs: list[Request]) -> list[Proposed]:
+    """이미 잡힌 요청: 아직 보내지 않은 줄만 (보낸 줄은 미체결 주문으로 잡혀 있어요)."""
+    return [_from_line(state, r, ln) for r in reqs for ln in r.unsent]
 
 
 def snapshot(result: SetCheck) -> dict:
-    """결재 이력에 남기는 그때의 묶음 검증 결과."""
+    """결재·전송 이력에 남기는 그때의 묶음 검증 결과."""
     return {"ok": result.ok, "issues": list(result.issues), "available_cash": result.available_cash,
             "required_cash": result.required_cash,
             "lines": [{"key": ln.item.key, "alone": list(ln.alone), "together": list(ln.together),
@@ -223,25 +286,19 @@ def describe(result: SetCheck) -> str:
     return "; ".join(parts) or "통과"
 
 
-def _next_ids(conn, day: dt.date, n: int) -> list[str]:
-    last = conn.execute("select max(request_id) from order_requests where request_id like %s",
-                        (f"Q{day:%Y%m%d}-%",)).fetchone()[0]
-    start = int(last.rsplit("-", 1)[1]) if last else 0
-    return [f"Q{day:%Y%m%d}-{start + i:04d}" for i in range(1, n + 1)]
+def _next_no(conn, trade_date: dt.date) -> int:
+    """주문일의 다음 요청 번호. 계좌와 무관하게 한 줄로 세서 같은 날 번호가 겹치지 않아요."""
+    conn.execute("select pg_advisory_xact_lock(hashtext('ministp.request_no:' || %s))", (str(trade_date),))
+    return conn.execute("select coalesce(max(request_no), 0) + 1 from order_requests where trade_date = %s",
+                        (trade_date,)).fetchone()[0]
 
 
-def _next_batch(conn, prefix: str, day: dt.date) -> str:
-    last = conn.execute("select max(batch_id) from order_requests where batch_id like %s",
-                        (f"{prefix}{day:%Y%m%d}-%",)).fetchone()[0]
-    return f"{prefix}{day:%Y%m%d}-{(int(last.rsplit('-', 1)[1]) if last else 0) + 1:02d}"
-
-
-def submit(books: Books, today: dt.date, trade_date: dt.date, lines: list[Line], *, batch: str | None = None,
+def submit(books: Books, today: dt.date, trade_date: dt.date, lines: list[Line], *, basket: bool = False,
            self_approve: bool = False, limits: RiskLimits = RiskLimits(),
            weight_limit: Decimal = DEFAULT_WEIGHT_LIMIT, now: dt.datetime | None = None,
-           prices: dict[str, int] | None = None) -> tuple[list[str], SetCheck]:
-    """결재 요청. 묶음 검증(R-98)을 통과한 줄들만 요청으로 남아요. `batch`(예: "B", 바스켓은 "BK")를 주면
-    한 묶음이 돼요. `self_approve`면 같은 자리에서 셀프 승인까지 해요(권한이 있을 때만)."""
+           prices: dict[str, int] | None = None) -> tuple[list[Key], SetCheck]:
+    """결재 요청. 묶음 검증(R-98)을 통과해야 요청으로 남아요. `basket`이면 모든 줄이 요청 한 건(바스켓),
+    아니면 줄마다 단건 요청 한 건이에요. `self_approve`면 같은 자리에서 셀프 승인까지 해요(권한이 있을 때만)."""
     if not lines:
         raise ApprovalError("요청할 주문 줄이 없어요")
     conn, user = books.conn, actor()
@@ -254,204 +311,220 @@ def submit(books: Books, today: dt.date, trade_date: dt.date, lines: list[Line],
                 raise ApprovalError(f"종목 등록이 필요해요: {ln.symbol}")
         live = requests(conn, account_id=books.account_id, from_date=today, statuses=LIVE)
         state = account_state(books, today, now, prices)
-        selected = [_proposed(state, ln.symbol, ln.side, ln.qty, ln.limit_price, f"#{i}", batch or "")
+        selected = [_proposed(state, ln.symbol, ln.side, ln.qty, ln.limit_price, f"#{i}", "new" if basket else "")
                     for i, ln in enumerate(lines, 1)]
-        result = check_set(state, selected, [_from_request(state, r) for r in live], limits, weight_limit)
+        result = check_set(state, selected, _held(state, live), limits, weight_limit)
         if not result.ok:
             raise ApprovalError(f"묶음 검증에 걸려 요청하지 않았어요: {describe(result)}")
-        ids = _next_ids(conn, today, len(lines))
-        batch_id = _next_batch(conn, batch, today) if batch else None
-        for i, (rid, ln, lc) in enumerate(zip(ids, lines, result.lines), 1):
-            conn.execute(
-                "insert into order_requests (request_id, account_id, trade_date, batch_id, line_no, symbol, side,"
-                " qty, limit_price, created_by) values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
-                (rid, books.account_id, trade_date, batch_id, i, ln.symbol, ln.side.value, ln.qty,
-                 ln.limit_price, user))
-            conn.execute("insert into order_approvals (request_id, action, actor, set_check) values (%s, 'REQUEST', %s, %s)",
-                         (rid, user, Jsonb(snapshot(result) | {"line": i})))
-        audit.record(conn, "ORDER_REQUEST", account_id=books.account_id, target=",".join(ids),
-                     detail={"trade_date": trade_date, "batch_id": batch_id,
+        groups = [list(enumerate(lines, 1))] if basket else [[(1, ln)] for ln in lines]
+        keys: list[Key] = []
+        no = _next_no(conn, trade_date)
+        for group in groups:
+            key = Key(trade_date, no)
+            no += 1
+            conn.execute("insert into order_requests (trade_date, request_no, account_id, order_type, created_by)"
+                         " values (%s, %s, %s, %s, %s)",
+                         (key.trade_date, key.request_no, books.account_id, "BASKET" if basket else "SINGLE", user))
+            for line_no, ln in group:
+                conn.execute(
+                    "insert into order_request_lines (trade_date, request_no, line_no, symbol, side, qty, limit_price)"
+                    " values (%s, %s, %s, %s, %s, %s, %s)",
+                    (key.trade_date, key.request_no, line_no, ln.symbol, ln.side.value, ln.qty, ln.limit_price))
+            conn.execute("insert into order_approvals (trade_date, request_no, action, actor, set_check)"
+                         " values (%s, %s, 'REQUEST', %s, %s)", (key.trade_date, key.request_no, user,
+                                                                 Jsonb(snapshot(result))))
+            keys.append(key)
+        audit.record(conn, "ORDER_REQUEST", account_id=books.account_id, target=",".join(map(str, keys)),
+                     detail={"trade_date": trade_date, "order_type": "BASKET" if basket else "SINGLE",
                              "lines": [{"symbol": ln.symbol, "side": ln.side.value, "qty": ln.qty,
                                         "limit_price": ln.limit_price} for ln in lines]})
         if self_approve:
-            approve(books, today, ids, limits=limits, weight_limit=weight_limit, now=now, prices=prices)
-    return ids, result
+            approve(books, today, keys, limits=limits, weight_limit=weight_limit, now=now, prices=prices)
+    return keys, result
 
 
-def _whole_batches(conn, reqs: list[Request], what: str) -> None:
-    """묶음은 전부 아니면 전무: 고른 요청이 속한 묶음의 살아 있는 요청을 모두 골라야 해요."""
-    chosen = {r.request_id for r in reqs}
-    for b in sorted({r.batch_id for r in reqs if r.batch_id}):
-        rest = [r.request_id for r in requests(conn, statuses=LIVE) if r.batch_id == b and r.request_id not in chosen]
-        if rest:
-            raise ApprovalError(f"묶음 {b}은(는) 함께 {what}해야 해요. 빠진 요청: {', '.join(rest)}")
-
-
-def _load(conn, account_id: str, ids, statuses, what: str) -> list[Request]:
-    ids = list(dict.fromkeys(ids))
-    reqs = requests(conn, ids=ids)
-    missing = set(ids) - {r.request_id for r in reqs}
+def _load(conn, account_id: str, keys, statuses, what: str) -> list[Request]:
+    keys = list(dict.fromkeys(keys))
+    reqs = requests(conn, keys=keys)
+    missing = set(keys) - {r.key for r in reqs}
     if missing:
-        raise ApprovalError(f"없는 요청 번호예요: {', '.join(sorted(missing))}")
-    other = [r.request_id for r in reqs if r.account_id != account_id]
+        raise ApprovalError(f"없는 요청 번호예요: {', '.join(map(str, sorted(missing)))}")
+    other = [str(r.key) for r in reqs if r.account_id != account_id]
     if other:
         raise ApprovalError(f"계좌 {account_id}의 요청이 아니에요: {', '.join(other)}")
-    wrong = [f"{r.request_id}({STATUSES[r.status]})" for r in reqs if r.status not in statuses]
+    wrong = [f"{r.key}({STATUSES[r.status]})" for r in reqs if r.status not in statuses]
     if wrong:
         raise ApprovalError(f"{what}할 수 없는 상태예요: {', '.join(wrong)}")
-    order = {rid: i for i, rid in enumerate(ids)}
-    reqs.sort(key=lambda r: (r.trade_date, r.batch_id or "", r.line_no, order[r.request_id]))
+    order = {k: i for i, k in enumerate(keys)}
+    reqs.sort(key=lambda r: (r.trade_date, order[r.key]))
     return reqs
 
 
-def approve(books: Books, today: dt.date, ids, *, limits: RiskLimits = RiskLimits(),
+def _approval_row(conn, r: Request, action: str, user: str | None, reason=None, check=None) -> None:
+    conn.execute("insert into order_approvals (trade_date, request_no, action, actor, reason, set_check)"
+                 " values (%s, %s, %s, %s, %s, %s)",
+                 (r.trade_date, r.request_no, action, user, reason, Jsonb(check or {})))
+
+
+def approve(books: Books, today: dt.date, keys, *, limits: RiskLimits = RiskLimits(),
             weight_limit: Decimal = DEFAULT_WEIGHT_LIMIT, now: dt.datetime | None = None,
             prices: dict[str, int] | None = None) -> SetCheck:
-    """고른 요청을 승인해요. 권한(한도, 셀프 승인)과 묶음 검증(고른 요청 + 승인 후 미전송 요청)을 통과해야 해요."""
+    """고른 요청을 승인해요. 권한(한도, 셀프 승인)과 묶음 검증(고른 요청 + 승인 후 미전송 줄)을 통과해야 해요."""
     conn, user = books.conn, actor()
+    keys = parse_keys(keys, today)
     with conn.transaction():
         _lock(conn, books.account_id)
         expire(conn, books.account_id, today)
-        reqs = _load(conn, books.account_id, ids, ("PENDING",), "승인")
-        _whole_batches(conn, reqs, "승인")
+        reqs = _load(conn, books.account_id, keys, ("PENDING",), "승인")
         right = require(conn, user, "ORDER_APPROVE", books.account_id, today)
         approved = requests(conn, account_id=books.account_id, from_date=today, statuses=("APPROVED",))
         state = account_state(books, today, now, prices)
-        selected = [_from_request(state, r) for r in reqs]
-        for r, p in zip(reqs, selected):
+        selected = _held(state, reqs)
+        for r in reqs:
             if r.created_by == user and not right.self_approve:
-                raise ApprovalError(f"{r.request_id}: 본인이 쓴 요청이에요. 셀프 승인 허용이 없어 다른 승인자가 승인해야 해요")
+                raise ApprovalError(f"요청 {r.request_no}: 본인이 쓴 요청이에요. 셀프 승인 허용이 없어 다른 승인자가 승인해야 해요")
+        for p in selected:
             if right.max_order_value is not None and p.amount > right.max_order_value:
-                raise ApprovalError(f"{r.request_id}: 주문금액 {p.amount:,}원이 1건 승인 한도 "
+                raise ApprovalError(f"요청 {p.key.split(':')[0]} {p.symbol}: 주문금액 {p.amount:,}원이 1건 승인 한도 "
                                     f"{right.max_order_value:,}원을 넘어요")
-        result = check_set(state, selected, [_from_request(state, r) for r in approved], limits, weight_limit)
+        result = check_set(state, selected, _held(state, approved), limits, weight_limit)
         if not result.ok:
             raise ApprovalError(f"묶음 검증에 걸려 승인하지 않았어요: {describe(result)}")
         for r in reqs:
-            conn.execute("insert into order_approvals (request_id, action, actor, set_check) values (%s, 'APPROVE', %s, %s)",
-                         (r.request_id, user, Jsonb(snapshot(result))))
-        audit.record(conn, "ORDER_APPROVE", account_id=books.account_id, target=",".join(r.request_id for r in reqs),
-                     detail={"self": [r.request_id for r in reqs if r.created_by == user] or None})
+            _approval_row(conn, r, "APPROVE", user, check=snapshot(result))
+        audit.record(conn, "ORDER_APPROVE", account_id=books.account_id, target=",".join(str(r.key) for r in reqs),
+                     detail={"self": [str(r.key) for r in reqs if r.created_by == user] or None})
     return result
 
 
-def reject(conn: psycopg.Connection, account_id: str, today: dt.date, ids, reason: str) -> None:
+def reject(conn: psycopg.Connection, account_id: str, today: dt.date, keys, reason: str) -> None:
     if not (reason or "").strip():
         raise ApprovalError("반려 사유를 넣어 주세요")
     user = actor()
+    keys = parse_keys(keys, today)
     with conn.transaction():
         _lock(conn, account_id)
-        reqs = _load(conn, account_id, ids, ("PENDING",), "반려")
-        _whole_batches(conn, reqs, "반려")
+        reqs = _load(conn, account_id, keys, ("PENDING",), "반려")
         require(conn, user, "ORDER_APPROVE", account_id, today)
         for r in reqs:
-            conn.execute("insert into order_approvals (request_id, action, actor, reason) values (%s, 'REJECT', %s, %s)",
-                         (r.request_id, user, reason))
-        audit.record(conn, "ORDER_REJECT", account_id=account_id, target=",".join(r.request_id for r in reqs),
+            _approval_row(conn, r, "REJECT", user, reason)
+        audit.record(conn, "ORDER_REJECT", account_id=account_id, target=",".join(str(r.key) for r in reqs),
                      detail={"reason": reason})
 
 
-def cancel(conn: psycopg.Connection, account_id: str, ids, reason: str | None = None) -> None:
-    """작성자가 전송 전에 거둬요. 전송한 뒤에는 주문 취소(cancel)로 해요."""
+def cancel(conn: psycopg.Connection, account_id: str, keys, reason: str | None = None,
+           today: dt.date | None = None) -> None:
+    """작성자가 전송 전에 거둬요. 한 줄이라도 나간 요청은 주문 취소(cancel)로 해요."""
     user = actor()
+    keys = parse_keys(keys, today or dt.date.today())
     with conn.transaction():
         _lock(conn, account_id)
-        reqs = _load(conn, account_id, ids, LIVE, "취소")
-        _whole_batches(conn, reqs, "취소")
-        others = [r.request_id for r in reqs if r.created_by != user]
+        reqs = _load(conn, account_id, keys, LIVE, "취소")
+        others = [str(r.request_no) for r in reqs if r.created_by != user]
         if others:
             raise ApprovalError(f"작성자만 요청을 취소할 수 있어요: {', '.join(others)}")
+        started = [str(r.request_no) for r in reqs if len(r.unsent) < len(r.lines)]
+        if started:
+            raise ApprovalError(f"이미 나간 줄이 있어 요청 취소가 안 돼요(주문 취소로 해요): {', '.join(started)}")
         for r in reqs:
-            conn.execute("insert into order_approvals (request_id, action, actor, reason) values (%s, 'CANCEL', %s, %s)",
-                         (r.request_id, user, reason))
+            _approval_row(conn, r, "CANCEL", user, reason)
         audit.record(conn, "ORDER_REQUEST_CANCEL", account_id=account_id,
-                     target=",".join(r.request_id for r in reqs), detail={"reason": reason})
+                     target=",".join(str(r.key) for r in reqs), detail={"reason": reason})
 
 
 def expire(conn: psycopg.Connection, account_id: str, today: dt.date, *, through_today: bool = False) -> list[str]:
-    """지난 주문일(장 마감 뒤에는 오늘까지)의 결재 대기·승인 요청을 만료해요."""
+    """지난 주문일(장 마감 뒤에는 오늘까지)의 결재 대기·승인 요청을 만료해요. 한 줄이라도 나간 요청은 그대로 둬요."""
     stale = [r for r in requests(conn, account_id=account_id, statuses=LIVE)
-             if r.trade_date < today or (through_today and r.trade_date == today)]
+             if (r.trade_date < today or (through_today and r.trade_date == today)) and len(r.unsent) == len(r.lines)]
     with conn.transaction():
         for r in stale:
-            conn.execute("insert into order_approvals (request_id, action, reason) values (%s, 'EXPIRE', %s)",
-                         (r.request_id, f"주문일 {r.trade_date} 장 마감까지 전송되지 않음"))
-    return [r.request_id for r in stale]
+            _approval_row(conn, r, "EXPIRE", None, f"주문일 {r.trade_date} 장 마감까지 전송되지 않음")
+    return [str(r.key) for r in stale]
 
 
 # ---------- 전송 (R-101) ----------
 
 @dataclass(frozen=True)
 class Sent:
-    request_id: str
+    key: Key
+    line_no: int
+    symbol: str
     client_id: str | None
     detail: str = ""        # 전송 실패 이유
 
+    def __str__(self) -> str:
+        return f"요청 {self.key.request_no}-{self.line_no} {self.symbol}"
 
-def send_approved(books: Books, session, day: dt.date, *, ids=None, limits: RiskLimits = RiskLimits(),
+
+def send_approved(books: Books, session, day: dt.date, *, keys=None, limits: RiskLimits = RiskLimits(),
                   weight_limit: Decimal = DEFAULT_WEIGHT_LIMIT, now: dt.datetime | None = None) -> list[Sent]:
-    """오늘 승인된 요청을 보내요. 보내기 직전에 묶음 검증을 다시 하고(막힌 묶음은 통째로 전송 실패),
-    통과한 줄은 주문 경로(`session.submit`, R-36~38)로 한 줄씩 보내요."""
+    """오늘 승인된 요청의 보내지 않은 줄을 보내요. 보내기 직전에 묶음 검증을 다시 하고(막힌 바스켓은 통째로
+    전송 실패), 통과한 줄은 주문 경로(`session.submit`, R-36~38)로 한 줄씩 보내요."""
     from .session import failure_text
     conn = books.conn
+    keys = None if keys is None else set(parse_keys(keys, day))
     conn.execute("select pg_advisory_lock(hashtext('ministp.orders:' || %s))", (books.account_id,))
     try:
         reqs = [r for r in requests(conn, account_id=books.account_id, trade_date=day, statuses=("APPROVED",))
-                if ids is None or r.request_id in ids]
-        if not reqs:
+                if keys is None or r.key in keys]
+        todo = [(r, ln) for r in reqs for ln in r.unsent]
+        if not todo:
             return []
-        reqs.sort(key=lambda r: (r.batch_id or "", r.line_no, r.request_id))
         quoted = {}
-        for sym in {r.symbol for r in reqs if r.limit_price is None}:   # 시장가는 지금 가격으로 검증해요
+        for sym in {ln.symbol for _, ln in todo if ln.limit_price is None}:   # 시장가는 지금 가격으로 검증해요
             try:
                 quoted[sym] = session.broker.get_price(sym)
             except Exception:     # 가격을 못 받으면 저장된 현재가로, 그것도 없으면 NO_PRICE로 걸러요
                 pass
         state = account_state(books, day, now, quoted)
-        result = check_set(state, [_from_request(state, r) for r in reqs], [], limits, weight_limit)
+        result = check_set(state, [_from_line(state, r, ln) for r, ln in todo], [], limits, weight_limit)
         out: list[Sent] = []
-        current: list[Request] = []
+        current: list = []
         orig = session.on_submit
+
+        def send_row(r: Request, ln: RequestLine, outcome: str, cid=None, why=None) -> None:
+            conn.execute("insert into order_sends (trade_date, request_no, line_no, outcome, client_id, reason, set_check)"
+                         " values (%s, %s, %s, %s, %s, %s, %s)",
+                         (r.trade_date, r.request_no, ln.line_no, outcome, cid, why, Jsonb(snapshot(result))))
 
         def on_submit(cid, d, symbol, side, qty, limit_price):
             with conn.transaction():   # 주문 의도와 전송 기록을 함께, 증권사에 보내기 전에
                 if orig:
                     orig(cid, d, symbol, side, qty, limit_price)
-                conn.execute("insert into order_approvals (request_id, action, client_id, set_check)"
-                             " values (%s, 'SEND', %s, %s)", (current[0].request_id, cid, Jsonb(snapshot(result))))
+                send_row(*current, "SENT", cid)
 
-        def failed(r: Request, why: str) -> None:
+        def failed(r: Request, ln: RequestLine, why: str, refused: bool = False) -> None:
             with conn.transaction():
-                conn.execute("insert into order_approvals (request_id, action, reason, set_check)"
-                             " values (%s, 'SEND_FAILED', %s, %s)", (r.request_id, why, Jsonb(snapshot(result))))
-                audit.record(conn, "ORDER", "REFUSED", account_id=books.account_id, target=r.request_id,
-                             message=why, detail={"symbol": r.symbol, "side": r.side.value, "qty": r.qty,
-                                                  "limit_price": r.limit_price, "request_id": r.request_id})
-            out.append(Sent(r.request_id, None, why))
+                send_row(r, ln, "FAILED", why=why)
+                if refused:
+                    audit.record(conn, "ORDER", "REFUSED", account_id=books.account_id, target=f"{r.key}:{ln.line_no}",
+                                 message=why, detail={"symbol": ln.symbol, "side": ln.side.value, "qty": ln.qty,
+                                                      "limit_price": ln.limit_price, "request": str(r.key),
+                                                      "line_no": ln.line_no})
+            out.append(Sent(r.key, ln.line_no, ln.symbol, None, why))
 
         # 계좌 전체 사유 가운데 현금 합계는 줄마다 쌓아 본 결과(앞 줄을 보냈다고 친 검사)로 갈음해요:
         # 앞 줄은 나가고 모자라는 줄부터 멈춰요. 킬 스위치와 계좌 상태는 모든 줄을 막아요.
         hard = tuple(i for i in result.issues if i != "INSUFFICIENT_CASH")
         session.on_submit = on_submit
         try:
-            for r, ln in zip(reqs, result.lines):
-                if ln.blocked or hard:
-                    failed(r, f"보내기 직전 묶음 검증: {issue_text(hard + ln.together)}")
+            for (r, ln), lc in zip(todo, result.lines):
+                if lc.blocked or hard:
+                    failed(r, ln, f"보내기 직전 묶음 검증: {issue_text(hard + lc.together)}", refused=True)
                     continue
-                current[:] = [r]
+                current[:] = [r, ln]
                 before = len(session.anomalies)
-                cid = session.submit(day, r.symbol, r.side, r.qty, r.limit_price)
+                cid = session.submit(day, ln.symbol, ln.side, ln.qty, ln.limit_price)
                 if cid is not None:
-                    out.append(Sent(r.request_id, cid))
-                elif requests(conn, ids=[r.request_id])[0].status == "SENT":   # 의도는 남았고 증권사가 거부
-                    out.append(Sent(r.request_id, None, failure_text(session.anomalies[-1].detail)))
+                    out.append(Sent(r.key, ln.line_no, ln.symbol, cid))
+                    continue
+                again = conn.execute("select outcome from order_sends where trade_date = %s and request_no = %s"
+                                     " and line_no = %s", (r.trade_date, r.request_no, ln.line_no)).fetchone()
+                if again:             # 의도는 남았고 증권사가 거부
+                    out.append(Sent(r.key, ln.line_no, ln.symbol, None, failure_text(session.anomalies[-1].detail)))
                 else:
                     why = session.anomalies[-1].detail if len(session.anomalies) > before else "주문 경로 거부"
-                    with conn.transaction():
-                        conn.execute("insert into order_approvals (request_id, action, reason, set_check)"
-                                     " values (%s, 'SEND_FAILED', %s, %s)",
-                                     (r.request_id, failure_text(why), Jsonb(snapshot(result))))
-                    out.append(Sent(r.request_id, None, failure_text(why)))
+                    failed(r, ln, failure_text(why))
         finally:
             session.on_submit = orig
         return out

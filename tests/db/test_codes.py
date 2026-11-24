@@ -43,7 +43,7 @@ def run(*argv, env=ENV) -> int:
 def test_a_new_database_holds_the_seed_and_it_agrees_with_the_schema_and_the_program(conn):
     groups, rows = _rows(conn)
     want_groups, want_codes = codes.seed_rows()
-    assert groups == sorted(want_groups) and len(groups) == 29
+    assert groups == sorted(want_groups) and len(groups) == 31
     assert rows == sorted([(*c, True) for c in want_codes], key=lambda r: (r[0], r[4]))
     assert codes.check(conn) == []
     assert all(fixed for *_, fixed in groups)                      # every seeded group belongs to the program
@@ -170,7 +170,7 @@ def test_code_commands(conn, capsys):
     assert run("code", "list", "MEMO_KIND") == 0 and "[사용 안 함]" in capsys.readouterr().out
     assert run("code", "check") == 0
     seeded = sum(len(g.codes) for g in codes.SEED)
-    assert f"공통코드 30개 그룹, 코드 {seeded + 1}개가" in capsys.readouterr().out
+    assert f"공통코드 32개 그룹, 코드 {seeded + 1}개가" in capsys.readouterr().out
 
     assert run("code", "add", "RECON_STATUS", "MAYBE", "글쎄") == 1
     assert "프로그램이 정한 코드" in capsys.readouterr().out

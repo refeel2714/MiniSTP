@@ -150,7 +150,7 @@ def audited(args, today: dt.date):
             "right": args.right, "max_order_value": getattr(args, "max_value", None),
             "self_approve": getattr(args, "self_approve", None) or None, "reason": args.reason}
     if cmd == "request" and what == "add":
-        return "ORDER_REQUEST", args.account, None, {"lines": args.line, "batch": args.batch or None}
+        return "ORDER_REQUEST", args.account, None, {"lines": args.line, "basket": args.basket or None}
     if cmd == "request" and what in REQUEST_ACTIONS:
         return REQUEST_ACTIONS[what], args.account, ",".join(args.ids), {"reason": getattr(args, "reason", None)}
     if cmd == "code" and what in CODE_ACTIONS:
@@ -160,8 +160,8 @@ def audited(args, today: dt.date):
     return None
 
 
-def _approval(conn, args, today: dt.date) -> int:
-    """user, right, request list/approve/reject/cancel."""
+def _approval(conn, args, today: dt.date, day: dt.date) -> int:
+    """user, right, request list/approve/reject/cancel. `day`: 요청 번호만 주면 쓰는 주문일 (지금 요청이 나갈 날)."""
     from . import approval
     cmd, what = args.cmd, args.what
     if cmd == "user" and what == "add":
@@ -196,27 +196,33 @@ def _approval(conn, args, today: dt.date) -> int:
         if not reqs:
             print("주문 요청이 없어요.")
         for r in reqs:
-            price = f"{r.limit_price:,}" if r.limit_price else "시장가"
             who = f" 승인 {r.approved_by}{'(셀프)' if r.self_approved else ''}" if r.approved_by else ""
-            print(f"  {r.request_id} {r.trade_date} {r.batch_id or '-':14} {r.symbol} "
-                  f"{'매수' if r.side.value == 'BUY' else '매도'} {r.qty:>6,}주 @{price:>9} "
+            print(f"  {r.trade_date} 요청 {r.request_no:<3} {approval.ORDER_TYPES[r.order_type]:3} "
                   f"{approval.STATUSES[r.status]:6} 작성 {r.created_by}{who}"
-                  + (f" 주문 {r.client_id}" if r.client_id else "") + (f" ({r.last_reason})" if r.last_reason else ""))
+                  + (f" ({r.last_reason})" if r.last_reason else ""))
+            for ln in r.lines:
+                price = f"{ln.limit_price:,}" if ln.limit_price else "시장가"
+                sent = (f" 주문 {ln.client_id}" if ln.client_id else
+                        f" 전송 실패: {ln.send_reason}" if ln.send_outcome == "FAILED" else "")
+                print(f"      {ln.line_no}. {ln.symbol} {'매수' if ln.side.value == 'BUY' else '매도'} "
+                      f"{ln.qty:>6,}주 @{price:>9}{sent}")
         return 0
+    keys = approval.parse_keys(args.ids, args.date or day)
+    shown = ", ".join(str(k.request_no) for k in keys)
     if what == "approve":
         from .cli import krx_calendar
         from .fees import FeeSchedule
         from .ops import load_books
         books = load_books(conn, krx_calendar(), FeeSchedule.kis_paper(), args.account)
-        approval.approve(books, today, args.ids)
-        print(f"승인: {', '.join(args.ids)}. 장중이면 run이 바로 보내요.")
+        approval.approve(books, today, keys)
+        print(f"승인: 요청 {shown} ({keys[0].trade_date} 주문). 장중이면 run이 바로 보내요.")
         return 0
     if what == "reject":
-        approval.reject(conn, args.account, today, args.ids, args.reason)
-        print(f"반려: {', '.join(args.ids)}")
+        approval.reject(conn, args.account, today, keys, args.reason)
+        print(f"반려: 요청 {shown}")
         return 0
-    approval.cancel(conn, args.account, args.ids, args.reason)
-    print(f"요청 취소: {', '.join(args.ids)}")
+    approval.cancel(conn, args.account, keys, args.reason)
+    print(f"요청 취소: 요청 {shown}")
     return 0
 
 
@@ -243,9 +249,11 @@ def _request_add(books, args, calendar, started: dt.datetime) -> int:
     from . import approval
     lines = [_parse_line(t) for t in args.line]
     day = order_day(calendar, started)
-    ids, result = approval.submit(books, started.date(), day, lines, batch="B" if args.batch else None,
-                                  self_approve=args.approve, now=started)
-    print(f"결재 요청 ({day} 주문): {', '.join(ids)}" + (" · 셀프 승인까지 했어요" if args.approve else ""))
+    keys, result = approval.submit(books, started.date(), day, lines, basket=args.basket,
+                                   self_approve=args.approve, now=started)
+    kind = "바스켓 " if args.basket else ""
+    print(f"결재 요청 ({day} 주문): {kind}요청 {', '.join(str(k.request_no) for k in keys)}"
+          + (" · 셀프 승인까지 했어요" if args.approve else ""))
     for ln in result.lines:
         w = f", 주문 후 비중 {ln.post_weight}%" if ln.post_weight is not None else ""
         print(f"  {ln.item.symbol} {'매수' if ln.item.side is Side.BUY else '매도'} {ln.item.qty:,}주: 통과{w}")
@@ -261,16 +269,16 @@ def _order_via_approval(books, broker, today: dt.date, args, started: dt.datetim
     right = approval.rights_of(books.conn, approval.actor(), books.account_id, today).get("ORDER_APPROVE")
     self_ok = bool(right and right.self_approve)
     prices = {} if args.limit else {args.symbol: broker.get_price(args.symbol)}   # 시장가는 지금 가격으로 검증
-    (rid,), _ = approval.submit(books, today, today, [line], self_approve=self_ok, now=started, prices=prices)
+    (key,), _ = approval.submit(books, today, today, [line], self_approve=self_ok, now=started, prices=prices)
     if not self_ok:
-        print(f"결재 요청 {rid}을 올렸어요. 다른 승인자가 승인하면 장중 run이 보내요.")
+        print(f"결재 요청 {key.request_no}을 올렸어요. 다른 승인자가 승인하면 장중 run이 보내요.")
         return None, None
     session = session_for(books, broker, today)
-    sent = approval.send_approved(books, session, today, ids=[rid], now=started)[0]
+    sent = approval.send_approved(books, session, today, keys=[key], now=started)[0]
     if sent.client_id is None:
-        print(f"주문 실패 (요청 {rid}): {sent.detail}")
+        print(f"주문 실패 (요청 {key.request_no}): {sent.detail}")
         return session, None
-    print(f"요청 {rid} 셀프 승인, 주문 {sent.client_id}로 보냈어요.")
+    print(f"요청 {key.request_no} 셀프 승인, 주문 {sent.client_id}로 보냈어요.")
     return session, sent.client_id
 
 
@@ -421,13 +429,15 @@ def _run(argv, *, environ=os.environ, client_factory=KisClient, connect=psycopg.
     q = what.add_parser("add", parents=[by_account])
     q.add_argument("--line", action="append", required=True, metavar="종목:buy|sell:수량[:지정가]",
                    help="주문 한 줄. 여러 번 쓰면 여러 줄을 한꺼번에 묶음 검증해요")
-    q.add_argument("--batch", action="store_true", help="여러 줄을 한 묶음으로 (승인·반려·취소를 함께)")
+    q.add_argument("--basket", action="store_true",
+                   help="여러 줄을 요청 한 건(바스켓)으로. 없으면 줄마다 단건 요청 한 건 (승인·반려·취소는 요청 단위)")
     q.add_argument("--approve", action="store_true", help="셀프 승인까지 (셀프 승인 허용 권한이 있을 때)")
     q = what.add_parser("list", parents=[by_account])
     q.add_argument("--date", type=dt.date.fromisoformat, help="주문일 (기본: 오늘과 그 뒤)")
     for name in ("approve", "reject", "cancel"):
         q = what.add_parser(name, parents=[by_account])
-        q.add_argument("ids", nargs="+", metavar="요청번호")
+        q.add_argument("ids", nargs="+", metavar="요청번호", help="3 또는 20261120-3 (주문일-요청 번호)")
+        q.add_argument("--date", type=dt.date.fromisoformat, help="요청 번호만 줄 때의 주문일 (기본: 지금 요청이 나갈 주문일)")
         if name != "approve":
             q.add_argument("--reason", required=name == "reject", metavar="사유")
     p = sub.add_parser("code", help="공통코드: 코드와 코드명 보기, 코드명 바꾸기, 스키마·프로그램과 대조")
@@ -611,7 +621,7 @@ def _run(argv, *, environ=os.environ, client_factory=KisClient, connect=psycopg.
 
             if args.cmd in ("user", "right") or (args.cmd == "request" and args.what != "add"):
                 require_current_schema(conn)    # 결재는 원장에 쓰지 않아요: run이 떠 있어도 돼요
-                return _approval(conn, args, today)
+                return _approval(conn, args, today, order_day(calendar, started))
 
             if args.cmd in ("open", "order", "cancel", "daily", "close", "run", "resolve", "customer") or (
                     args.cmd in ("dividend", "cash", "adjust") and args.what != "list") or (

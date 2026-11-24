@@ -195,18 +195,24 @@ SEED: tuple[CodeGroup, ...] = (
                   ("APPROVE", "승인", "승인자가 승인함. 작성자 본인이면 셀프 승인"),
                   ("REJECT", "반려", "승인자가 사유와 함께 돌려보냄"),
                   ("CANCEL", "요청 취소", "작성자가 전송 전에 거둠"),
-                  ("SEND", "전송", "run이 다시 검증하고 주문으로 보냄"),
-                  ("SEND_FAILED", "전송 실패", "보내기 직전 검증에 걸리거나 주문 경로가 거부함"),
                   ("EXPIRE", "만료", "주문일 장 마감까지 나가지 않음"))),
-    CodeGroup("REQUEST_STATUS", "주문 요청 상태", "결재 이력의 마지막 행으로 정해지는 요청의 상태.",
+    CodeGroup("REQUEST_STATUS", "주문 요청 상태", "결재 이력의 마지막 행과 줄별 전송 결과로 정해지는 요청의 상태.",
               "order_requests_v.status", (
                   ("PENDING", "결재 대기", ""),
                   ("APPROVED", "승인", "전송 대기"),
                   ("REJECTED", "반려", ""),
                   ("CANCELED", "취소", ""),
-                  ("SENT", "전송", "주문 ID가 붙음"),
-                  ("SEND_FAILED", "전송 실패", ""),
+                  ("SENT", "전송", "모든 줄을 처리했고 한 줄 이상 나감"),
+                  ("SEND_FAILED", "전송 실패", "모든 줄이 전송 실패"),
                   ("EXPIRED", "만료", ""))),
+    CodeGroup("ORDER_TYPE", "주문 유형", "요청 한 건에 담긴 주문의 모양. 결재는 요청 단위로 해요 (R-99).",
+              "order_requests.order_type", (
+                  ("SINGLE", "단건", "종목 한 줄"),
+                  ("BASKET", "바스켓", "종목 여러 줄을 한 번에 결재해요. 승인·반려·취소는 요청 전체로"))),
+    CodeGroup("SEND_OUTCOME", "전송 결과", "승인된 요청의 줄마다 한 번 남는 전송 결과 (R-101).",
+              "order_sends.outcome", (
+                  ("SENT", "전송", "주문 경로로 보냄. 주문 ID가 붙어요"),
+                  ("FAILED", "전송 실패", "보내기 직전 검증에 걸리거나 주문 경로가 거부함"))),
     CodeGroup("AUDIT_CHANNEL", "감사 로그 경로", "어디로 들어온 요청인지.", "audit_log.channel", (
         ("CLI", "명령", "PC의 명령 창에서 실행"),
         ("UI", "화면", "업무화면의 처리 버튼"),
@@ -319,6 +325,8 @@ def program_codes() -> dict[str, set[str]]:
         "USER_RIGHT": set(approval.RIGHTS),
         "APPROVAL_ACTION": set(approval.ACTIONS),
         "REQUEST_STATUS": set(approval.STATUSES),
+        "ORDER_TYPE": set(approval.ORDER_TYPES),
+        "SEND_OUTCOME": set(approval.SEND_OUTCOMES),
     }
 
 
@@ -442,7 +450,7 @@ def _check_list(conn: psycopg.Connection, table: str, column: str) -> set[str] |
 
 
 # Columns that store the codes of a group whose `used_by` names another column: checked the same way.
-SAME_CODES = {"instrument_master.market": "MARKET", "order_requests.side": "ORDER_SIDE"}
+SAME_CODES = {"instrument_master.market": "MARKET", "order_request_lines.side": "ORDER_SIDE"}
 
 
 def check(conn: psycopg.Connection) -> list[str]:
