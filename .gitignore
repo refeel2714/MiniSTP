@@ -24,3 +24,6 @@ data/local/
 *.sqlite
 .venv/
 .hypothesis/
+
+# Market master files (python -m ministp master fetch)
+data/master/
