@@ -291,3 +291,32 @@ def test_daily_orders_carry_the_order_org_number_for_a_later_cancel(cfg):
          "tot_ccld_amt": "0", "cnc_cfrm_qty": "0", "rjct_qty": "0", "ord_gno_brno": "00950"}])]})
     (o,) = KisClient(cfg, fake, now=lambda: NOW, sleep=lambda s: None).daily_orders(d("11-17"))
     assert (o.order_no, o.org_no, o.side) == ("0000117057", "00950", "BUY")
+
+
+def test_a_trace_file_keeps_order_answers_and_order_list_changes_but_no_secrets(cfg, tmp_path):
+    """MINISTP_KIS_TRACE (모의 실측용): every order/cancel answer and each change of the order list, one JSON line each."""
+    import dataclasses
+    import json
+    trace = tmp_path / "trace.jsonl"
+    cfg = dataclasses.replace(cfg, trace=trace)
+    rejected = (500, {}, {"rt_cd": "1", "msg_cd": "APBK0919", "msg1": "주문가능금액을 초과 했습니다"})
+    listing = ok(output1=[{"odno": "0000000001", "pdno": "069500", "sll_buy_dvsn_cd": "02", "ord_qty": "1",
+                           "tot_ccld_qty": "0", "tot_ccld_amt": "0", "cnc_cfrm_qty": "0", "rjct_qty": "0"}])
+    fake = FakeKisRoutes({ORDER: [rejected], "/uapi/domestic-stock/v1/trading/inquire-daily-ccld": [listing] * 2})
+    c = KisClient(cfg, fake, now=lambda: NOW, sleep=lambda s: None)
+    with pytest.raises(KisError):
+        c.place_order("069500", "BUY", 1, 80_000)
+    c.daily_orders(d("11-17"))
+    c.daily_orders(d("11-17"))                     # same list: not written again
+    lines = [json.loads(x) for x in trace.read_text(encoding="utf-8").splitlines()]
+    assert [x["kind"] for x in lines] == ["post", "daily_orders"]
+    assert lines[0]["response"]["msg_cd"] == "APBK0919" and lines[0]["request"]["PDNO"] == "069500"
+    text = trace.read_text(encoding="utf-8")
+    assert cfg.account_no not in text and cfg.app_key not in text and cfg.app_secret not in text
+    assert "tok" not in json.dumps(lines[0]["request"])
+
+
+def test_the_trace_file_is_read_from_the_environment(tmp_path):
+    env = {"MINISTP_KIS_APP_KEY": "k", "MINISTP_KIS_APP_SECRET": "s", "MINISTP_KIS_ACCOUNT": "12345678-01"}
+    assert KisConfig.from_env(env).trace is None
+    assert KisConfig.from_env(env | {"MINISTP_KIS_TRACE": str(tmp_path / "t.jsonl")}).trace == tmp_path / "t.jsonl"

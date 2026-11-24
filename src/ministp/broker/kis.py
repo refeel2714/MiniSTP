@@ -70,6 +70,7 @@ class KisConfig:
     hts_id: str = field(default="", repr=False)
     env: str = "paper"                    # paper | live
     token_cache: Path = DEFAULT_TOKEN_CACHE
+    trace: Path | None = None             # MINISTP_KIS_TRACE: 주문·취소 응답과 주문내역 변화를 한 줄씩 (모의 실측용)
 
     @classmethod
     def from_env(cls, environ=os.environ, prefix: str = DEFAULT_PREFIX) -> "KisConfig":
@@ -89,7 +90,8 @@ class KisConfig:
             "token_cache": DEFAULT_TOKEN_CACHE.with_name(f"kis_token_{prefix.removeprefix('MINISTP_').lower()}.json")}
         return cls(app_key=environ[f"{prefix}_APP_KEY"], app_secret=environ[f"{prefix}_APP_SECRET"],
                    account_no=account[:8], product_code=account[8:] or "01",
-                   hts_id=environ.get(f"{prefix}_HTS_ID", ""), env=env, **extra)
+                   hts_id=environ.get(f"{prefix}_HTS_ID", ""), env=env,
+                   trace=Path(environ["MINISTP_KIS_TRACE"]) if environ.get("MINISTP_KIS_TRACE") else None, **extra)
 
     @property
     def base_url(self) -> str:
@@ -142,6 +144,19 @@ class KisClient:
         self._monotonic = monotonic
         self._last_call: float | None = None
         self._token: tuple[str, dt.datetime] | None = None
+        self._traced_orders: list | None = None
+
+    def _trace(self, kind: str, **rec) -> None:
+        """Appends one JSON line to the trace file, if one is set. Keys, tokens and the account number never go in."""
+        if self.cfg.trace is None:
+            return
+        rec = {"at": self._now().isoformat(timespec="seconds"), "kind": kind, "env": self.cfg.env} | rec
+        try:
+            self.cfg.trace.parent.mkdir(parents=True, exist_ok=True)
+            with self.cfg.trace.open("a", encoding="utf-8") as f:
+                f.write(json.dumps(rec, ensure_ascii=False, default=str) + "\n")
+        except OSError:
+            pass                      # a trace must never stop an order
 
     # ----- auth -----
 
@@ -233,10 +248,13 @@ class KisClient:
             headers = self._headers(tr_id)   # a token failure happens here, before anything is sent
         except (KisError, OSError, ValueError) as exc:
             raise KisOrderRejected(f"{tr_id}: 접속 토큰을 받지 못해 보내지 않았어요 ({exc})") from exc
+        sent = {k: v for k, v in body.items() if k not in ("CANO", "ACNT_PRDT_CD")}
         try:
             status, _, resp = self._call("POST", f"{self.cfg.base_url}{path}", headers, body, retry_rate_limit=False)
         except (OSError, ValueError) as exc:          # URLError, timeouts and broken JSON are all OSError/ValueError
+            self._trace("post", tr_id=tr_id, request=sent, error=f"{type(exc).__name__}: {exc}")
             raise OrderOutcomeUnknown(f"{tr_id}: 응답 없음 ({type(exc).__name__}: {exc})") from exc
+        self._trace("post", tr_id=tr_id, request=sent, status=status, response=resp)
         code = str(resp.get("rt_cd", "")) if isinstance(resp, dict) else ""
         if code == "0" and status == 200:
             return resp
@@ -335,4 +353,7 @@ class KisClient:
                     filled_amount=_int(r.get("tot_ccld_amt")),
                     canceled_qty=_int(r.get("cnc_cfrm_qty")), rejected_qty=_int(r.get("rjct_qty")),
                     org_no=r.get("ord_gno_brno") or ""))
+        if self.cfg.trace is not None and out != self._traced_orders:   # only when the list changed
+            self._traced_orders = list(out)
+            self._trace("daily_orders", day=ymd, orders=[o.__dict__ for o in out])
         return out

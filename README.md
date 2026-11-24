@@ -221,7 +221,7 @@ MINISTP_TEST_DATABASE_URL=postgresql://postgres:postgres@localhost:5432/ministp_
 
 앱키, 앱시크릿, 모의계좌번호(예: `12345678-01`)를 차례로 물어봅니다. 입력 내용은 화면에 표시되지 않고 저장되지 않습니다. `MINISTP_KIS_APP_KEY`, `MINISTP_KIS_APP_SECRET`, `MINISTP_KIS_ACCOUNT` 환경변수가 있으면 그 값을 씁니다.
 
-기본 연결 대상은 모의투자 서버입니다. 실전 서버는 `MINISTP_KIS_ENV=live`와 `MINISTP_ALLOW_LIVE=1`을 둘 다 설정해야 열립니다(Phase 4 전용). 토큰은 `~/.ministp/kis_token.json`에 캐시합니다(KIS 토큰 발급 1분당 1회 제한).
+기본 연결 대상은 모의투자 서버입니다. 실전 서버는 `MINISTP_KIS_ENV=live`와 `MINISTP_ALLOW_LIVE=1`을 둘 다 설정해야 열립니다(Phase 4 전용). 토큰은 `~/.ministp/kis_token.json`에 캐시합니다(KIS 토큰 발급 1분당 1회 제한). 모의 실측 때는 `MINISTP_KIS_TRACE=파일경로`를 주면 주문·취소 요청과 증권사 응답(rt_cd·msg_cd·msg1·output), 그리고 주문내역이 바뀔 때마다 한 줄씩 JSON으로 남깁니다(키·토큰·계좌번호는 넣지 않음).
 
 ### 주문 한 바퀴 확인 (장중, 모의투자 전용)
 
