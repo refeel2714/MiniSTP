@@ -64,6 +64,18 @@ def test_every_checked_column_and_program_enum_has_its_group(conn):
     assert set(codes.program_codes()) <= {g.group_id for g in codes.SEED}
 
 
+
+def test_every_snapshot_kind_the_program_writes_has_a_name():
+    """A kind added to broker_snapshots later (현재가 R-68, 취소 R-45) must get its code name too."""
+    import pathlib
+    import re
+    from ministp import ops, quotes
+    src = (pathlib.Path(ops.__file__)).read_text(encoding="utf-8")
+    literal = set(re.findall(r'_snapshot\([^,]+,[^,]+,\s*"([A-Z_]+)"', src))
+    written = literal | {ops.CANCEL_KIND, quotes.KIND, "INTRADAY_RECON"}
+    named = {c for c, *_ in next(g for g in codes.SEED if g.group_id == "SNAPSHOT_KIND").codes}
+    assert literal and written <= named, sorted(written - named)
+
 def test_the_migration_leaves_the_same_codes_as_a_new_database(conn):
     fresh = _rows(conn)
     _restore_v1_1()
