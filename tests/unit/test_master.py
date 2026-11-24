@@ -71,6 +71,14 @@ def test_a_kosdaq_line_uses_its_own_offsets():
     assert master.parse_line(KOSDAQ[0], Market.KOSDAQ).warning == "01"
 
 
+def test_listed_funds_and_the_units_found_on_the_real_file():
+    """Two rows from the 2026-11-24 file: 700천 주 × 13,645원 ≈ 95억 원."""
+    r = master.parse_line(line(Market.KOSPI, "0106J0", "대신 KOSPI200인덱스 X클래스", group="PF", base_price=13_645,
+                               listed_shares=700, market_cap=95), Market.KOSPI)
+    assert r.group_name == "상장 공모펀드"
+    assert abs(r.listed_shares * 1_000 * r.base_price - r.market_cap * 100_000_000) < 100_000_000
+
+
 def test_names_of_any_length_do_not_shift_the_fixed_block():
     long = line(Market.KOSPI, "123456", "아주아주긴한글종목명과 English Mix 2호", base_price=1_234)
     assert master.parse_line(long, Market.KOSPI).base_price == 1_234
