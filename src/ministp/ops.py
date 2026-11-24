@@ -545,6 +545,9 @@ class IntradayStats:
     quote_failures: int = 0
 
 
+UNACKED_POLL = 10.0   # 답이 없는 주문이 있으면 이 간격으로 증권사 주문내역을 봐요 (R-103)
+
+
 class IntradayRunner:
     """Main loop of `python -m ministp run`: the only ledger writer during market hours.
 
@@ -736,6 +739,9 @@ class IntradayRunner:
         from . import approval
         self._last_send = self.monotonic()
         waiting = self.session.unacked
+        if waiting and self.monotonic() - self._last_poll >= UNACKED_POLL:
+            self.poll("답 없는 주문 찾기")    # 주기 조회(1분)를 기다리지 않고 증권사 주문내역에서 먼저 찾아봐요
+            waiting = self.session.unacked
         if waiting:                       # R-103: 찾을 때까지 보내지 않아요. 같은 안내는 한 번만
             if tuple(waiting) != self._paused_for:
                 self._paused_for = tuple(waiting)
@@ -748,7 +754,7 @@ class IntradayRunner:
         for s in approval.send_approved(self.books, self.session, self.day, now=self.now()):
             if s.unknown:
                 self.out(f"[{self.now():%H:%M:%S}] {s} → 주문 {s.client_id} 증권사 답 없음. 다시 보내지 않고 "
-                         "다음 조회에서 찾아요. 그때까지 다른 요청도 멈춰요.")
+                         f"{UNACKED_POLL:.0f}초 안에 증권사 주문내역에서 찾아봐요. 그때까지 다른 요청도 멈춰요.")
             elif s.client_id:
                 self.out(f"[{self.now():%H:%M:%S}] {s} → 주문 {s.client_id} 접수. 체결되면 바로 원장에 반영해요.")
             else:

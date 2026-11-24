@@ -1,6 +1,6 @@
 """주문 결과 미확인 (R-103): 증권사가 거부한 줄과 답이 없는 줄을 나눠요.
 
-거부는 그 줄만 실패이고 다음 줄은 나가요. 답이 없으면 다시 보내지 않고, 그 주문을 증권사 주문내역에서 찾거나 사람이
+거부는 그 줄만 실패이고 다음 요청은 나가요. 바스켓은 남은 줄을 멈추고 나간 줄의 미체결분을 취소해요. 답이 없으면 다시 보내지 않고, 그 주문을 증권사 주문내역에서 찾거나 사람이
 확인할 때까지 이 계좌는 아무것도 보내지 않아요. 프로세스를 다시 띄워도 같은 상태에서 이어져요.
 """
 import pytest
@@ -47,19 +47,35 @@ def send(team, broker, session=None):
     return session, approval.send_approved(books(team), session, DAY, weight_limit=WIDE, now=NOW)
 
 
-def test_a_line_the_broker_refuses_fails_alone_and_the_rest_of_the_basket_goes(team, broker):
+def test_a_basket_line_the_broker_refuses_stops_the_basket_and_cancels_what_went(team, broker):
     key = basket(team, [1, 2, 3])
     flaky(broker, "ok", "reject")
     _, sent = send(team, broker)
     assert [(s.line_no, bool(s.client_id), s.unknown) for s in sent] == [(1, True, False), (2, False, False),
-                                                                         (3, True, False)]
-    assert "APBK0919" in sent[1].detail
+                                                                         (3, False, False)]
+    assert "APBK0919" in sent[1].detail and "1번 줄 미체결 취소 요청" in sent[1].detail
+    assert "2번 줄을 증권사가 거부" in sent[2].detail
     r = status(team, key)
-    assert r.status == "SENT" and [ln.ack_outcome for ln in r.lines] == ["ACCEPTED", "REJECTED", "ACCEPTED"]
+    assert r.status == "SENT" and [ln.ack_outcome for ln in r.lines] == ["ACCEPTED", "REJECTED", None]
+    assert [ln.send_outcome for ln in r.lines] == ["SENT", "SENT", "FAILED"]
     row = team.execute("select accepted_lines, rejected_lines, unknown_lines, last_reason from order_requests_v"
                        " where request_no = %s", (key.request_no,)).fetchone()
-    assert row[:3] == (2, 1, 0) and "APBK0919" in row[3]
-    assert [c[3] for c in broker.calls if c[0] == "order"] == [1, 3]     # 거부된 줄을 다시 보내지 않아요
+    assert row[:3] == (1, 1, 0) and "2번 줄을 증권사가 거부" in row[3]
+    assert [c[3] for c in broker.calls if c[0] == "order"] == [1]        # 거부 뒤 줄은 나가지 않아요
+    order_no = r.lines[0].order_no
+    assert broker.orders[DAY][order_no].canceled_qty == 1                # 나간 줄의 미체결분은 취소돼요
+    cancel = audit.rows(team, limit=1, action="ORDER_CANCEL")[0]
+    assert cancel.target == sent[0].client_id
+
+
+def test_a_refused_single_order_does_not_stop_the_next_request(team, broker):
+    with as_("kim"):
+        keys = [approval.submit(books(team), DAY, DAY, [Line("069500", BUY, q, 80_000)], self_approve=True,
+                                weight_limit=WIDE, now=NOW)[0][0] for q in (1, 2)]
+    flaky(broker, "reject")
+    _, sent = send(team, broker)
+    assert [(s.line_no, bool(s.client_id)) for s in sent] == [(1, False), (1, True)]
+    assert [status(team, k).status for k in keys] == ["SEND_FAILED", "SENT"]
 
 
 def test_every_line_refused_is_a_failed_send(team, broker):
@@ -96,12 +112,14 @@ def test_no_answer_stops_sending_until_the_order_is_found_in_the_brokers_list(te
     assert r.status == "SENT" and [ln.ack_outcome for ln in r.lines] == ["ACCEPTED"] * 3
 
 
-def test_an_order_that_never_arrived_is_confirmed_by_a_person_and_then_the_rest_goes(team, broker):
-    key = basket(team, [1, 2])
+def test_an_order_that_never_arrived_is_confirmed_by_a_person_and_then_the_next_request_goes(team, broker):
+    with as_("kim"):
+        keys = [approval.submit(books(team), DAY, DAY, [Line("069500", BUY, q, 80_000)], self_approve=True,
+                                weight_limit=WIDE, now=NOW)[0][0] for q in (1, 2)]
     flaky(broker, "unreachable")
     session, sent = send(team, broker)
     cid = sent[0].client_id
-    assert sent[0].unknown and session.unacked == [cid]
+    assert sent[0].unknown and session.unacked == [cid] and len(sent) == 1
     session.sync(DAY)
     assert session.unacked == [cid]                     # 증권사에 없으니 찾지 못해요
     with as_("kim"):
@@ -112,10 +130,26 @@ def test_an_order_that_never_arrived_is_confirmed_by_a_person_and_then_the_rest_
     row = audit.rows(team, limit=1, action="ORDER_CONFIRM")[0]
     assert (row.outcome, row.target, row.actor) == ("FAILED", cid, "kim")
     _, rest = send(team, broker, session)
-    assert [(s.line_no, bool(s.client_id)) for s in rest] == [(2, True)]
+    assert [(s.key, bool(s.client_id)) for s in rest] == [(keys[1], True)]
+    first = status(team, keys[0])
+    assert first.status == "SEND_FAILED" and first.lines[0].ack_outcome == "REJECTED"
+    assert "사람이 확인" in first.lines[0].ack_detail
+    assert status(team, keys[1]).status == "SENT"
+
+
+def test_a_basket_line_closed_as_never_placed_stops_the_rest_of_the_basket(team, broker):
+    key = basket(team, [1, 2, 3])
+    flaky(broker, "ok", "unreachable")
+    session, sent = send(team, broker)
+    with as_("kim"):
+        session, _, how = confirm_order(books(team), broker, DAY, sent[1].client_id, None)
+    assert how == "not_placed"
+    _, rest = send(team, broker, session)
+    assert [(s.line_no, bool(s.client_id)) for s in rest] == [(3, False)]
+    assert "2번 줄을 증권사가 거부" in rest[0].detail and "1번 줄 미체결 취소 요청" in rest[0].detail
     r = status(team, key)
-    assert r.status == "SENT" and [ln.ack_outcome for ln in r.lines] == ["REJECTED", "ACCEPTED"]
-    assert "사람이 확인" in r.lines[0].ack_detail
+    assert [ln.ack_outcome for ln in r.lines] == ["ACCEPTED", "REJECTED", None] and r.status == "SENT"
+    assert len([c for c in broker.calls if c[0] == "order"]) == 1
 
 
 def test_look_alike_orders_are_never_guessed_between(team, broker):
