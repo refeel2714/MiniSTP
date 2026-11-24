@@ -333,7 +333,7 @@ BASKET_BASES = {"현재가 지정가": "current", "현재가 +1호가": "tick1",
 
 
 def parse_basket(text: str):
-    """화면이 보내는 바스켓 `종목:편입비,종목:편입비`."""
+    """화면이 보내는 바스켓 `종목:배분 비율,종목:배분 비율`."""
     from decimal import Decimal, InvalidOperation
 
     from ..basket import Target
@@ -343,7 +343,7 @@ def parse_basket(text: str):
         try:
             out.append(Target(sym.strip(), Decimal(w.strip() or "0")))
         except InvalidOperation as e:
-            raise TxError(f"편입비가 숫자가 아니에요: {sym} {w}") from e
+            raise TxError(f"배분 비율이 숫자가 아니에요: {sym} {w}") from e
     return out
 
 
