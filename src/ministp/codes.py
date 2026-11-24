@@ -111,7 +111,9 @@ SEED: tuple[CodeGroup, ...] = (
         ("OPENING_BALANCE", "시작 잔고", "원장을 열 때 받은 잔고"),
         ("DAILY_RECON", "일일 대사", "장 마감 뒤 대사에 쓴 잔고"),
         ("INTRADAY_RECON", "장중 대사", "장중에 체결을 맞춰 본 응답"),
-        ("FILL_NOTICE", "체결통보", "실시간 체결통보 원본"))),
+        ("FILL_NOTICE", "체결통보", "실시간 체결통보 원본"),
+        ("INTRADAY_PRICE", "장중 현재가", "보유·미체결 종목의 장중 현재가 (R-68)"),
+        ("CANCEL_REQUEST", "취소 요청", "증권사가 받아들인 주문 취소 요청 (R-45)"))),
     CodeGroup("EVENT_TYPE", "원장 이벤트 유형", "원장에 쌓이는 이벤트의 종류. 모든 기록의 원천이에요.",
               "ledger_events.event_type", (
                   ("DepositEvent", "입금", "투자원금 입금"),
