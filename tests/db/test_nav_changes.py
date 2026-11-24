@@ -1,4 +1,4 @@
-"""STP-2210 기준가 내역 on a sample database: the screen's transactions and the API."""
+"""STP-2210 기준가 이력 on a sample database: the screen's transactions and the API."""
 import os
 
 import pytest
