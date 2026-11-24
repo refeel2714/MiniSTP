@@ -143,6 +143,8 @@ insert into common_codes (group_id, code, name, description, sort_order) values
     ('SNAPSHOT_KIND', 'DAILY_RECON', '일일 대사', '장 마감 뒤 대사에 쓴 잔고', 2),
     ('SNAPSHOT_KIND', 'INTRADAY_RECON', '장중 대사', '장중에 체결을 맞춰 본 응답', 3),
     ('SNAPSHOT_KIND', 'FILL_NOTICE', '체결통보', '실시간 체결통보 원본', 4),
+    ('SNAPSHOT_KIND', 'INTRADAY_PRICE', '장중 현재가', '보유·미체결 종목의 장중 현재가 (R-68)', 5),
+    ('SNAPSHOT_KIND', 'CANCEL_REQUEST', '취소 요청', '증권사가 받아들인 주문 취소 요청 (R-45)', 6),
     ('EVENT_TYPE', 'DepositEvent', '입금', '투자원금 입금', 1),
     ('EVENT_TYPE', 'OpeningPositionEvent', '시작 보유', '원장을 열 때 이미 가지고 있던 종목', 2),
     ('EVENT_TYPE', 'ExecutionEvent', '체결', '매수·매도 체결', 3),
