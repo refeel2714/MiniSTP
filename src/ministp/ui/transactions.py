@@ -326,7 +326,7 @@ TRANSACTIONS: dict[str, Tx] = {t.tx_id: t for t in [
     Tx("STP2110R02", "점검 항목의 판정과 값 비교", {"title": "text"}, _integrity_rows),
     Tx("STP2200R01", "기준가 추이", {"date_from": "date", "date_to": "date"}, _nav),
     Tx("STP2210R01", "기준가 이력", {"date_from": "date", "date_to": "date"}, _nav_changes),
-    Tx("STP2210R02", "기준일의 변동 상세 내역", {"date": "date"}, _nav_bridge),
+    Tx("STP2210R02", "기준일의 변동 상세", {"date": "date"}, _nav_bridge),
     Tx("STP2300R01", "종목별 기간 시세", {"date_from": "date", "date_to": "date"}, _price_symbols),
     Tx("STP2300R02", "종목의 기간별 종가", {"symbol": "text", "date_from": "date", "date_to": "date"}, _price_rows),
     Tx("STP2400R01", "영업일별 마감 점검 요약", {"date_from": "date", "date_to": "date"}, _close_days),

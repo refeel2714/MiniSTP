@@ -1,4 +1,4 @@
-"""STP-2210 기준가 내역: net assets counted from holdings, explained by the journal."""
+"""STP-2210 기준가 이력: net assets counted from holdings, explained by the journal."""
 import pytest
 
 from ministp import queries as q
