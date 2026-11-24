@@ -1,6 +1,6 @@
 # MiniSTP ERD
 
-ERD 버전: v2.6 · 스키마 해시: `357e80163ddb`
+ERD 버전: v2.7 · 스키마 해시: `179338d7105c`
 
 이 문서는 `scripts/gen_erd.py`가 `src/ministp/store/schema.sql`로 만든 DB에서 읽어 생성해요. 직접 고치지 말고 스키마의 한글 주석(COMMENT)을 고친 뒤 다시 생성하세요. 모든 원장 테이블은 append-only(수정·삭제 불가)예요.
 
@@ -120,6 +120,39 @@ erDiagram
         text note "메모 (취소 행은 취소 사유)"
         timestamptz registered_at "등록 시각"
     }
+    master_loads {
+        bigint load_id PK "적재 번호"
+        date base_date UK "기준일 (파일을 받은 날)"
+        timestamptz fetched_at "파일을 받은 시각"
+        text kospi_sha256 "코스피 파일 해시 (SHA-256)"
+        text kosdaq_sha256 "코스닥 파일 해시 (SHA-256)"
+        integer rows_total "그날 파일의 종목 수"
+        integer rows_new "처음 나타난 종목 수"
+        integer rows_changed "속성이 바뀐 종목 수"
+        integer rows_delisted "파일에서 빠진 종목 수 (상장폐지 등)"
+        timestamptz loaded_at "적재 시각"
+    }
+    instrument_master {
+        bigint master_id PK "이력 번호"
+        text symbol "단축코드"
+        date valid_from "적용 시작일 (이 속성이 처음 보인 기준일)"
+        bigint load_id FK "적재 번호"
+        boolean listed "상장 여부 (파일에서 빠지면 거짓인 행이 생김)"
+        text isin "표준코드 (ISIN)"
+        text name "종목명"
+        text market "시장 (KOSPI / KOSDAQ)"
+        text sec_group "증권그룹 구분 (ST 주권, EF ETF 등)"
+        integer lot "매매수량단위"
+        bigint par_value "액면가 (원)"
+        date listed_on "상장일"
+        bigint listed_shares_k "상장주수 (천 주)"
+        text preferred "우선주 구분 (0 보통주)"
+        boolean spac "스팩 여부"
+        boolean halted "거래정지 여부"
+        boolean liquidation "정리매매 여부"
+        boolean managed "관리종목 여부"
+        text warning "시장경고 구분 (00 없음, 01 투자주의, 02 투자경고, 03 투자위험)"
+    }
     oms_orders {
         text client_id PK "내부 주문번호"
         date trade_date "주문일"
@@ -199,6 +232,7 @@ erDiagram
     trading_accounts ||--o{ audit_log : "account_id"
     instruments ||--o{ corporate_actions : "symbol"
     corporate_actions ||--o{ corporate_actions : "cancels_id"
+    master_loads ||--o{ instrument_master : "load_id"
     instruments ||--o{ oms_orders : "symbol"
     trading_accounts ||--o{ oms_orders : "account_id"
     oms_orders ||--o{ oms_order_acks : "client_id"
@@ -360,6 +394,45 @@ erDiagram
 | `cancels_id` | 취소 대상 권리 번호 (취소 행일 때) | bigint |  | UK, FK → corporate_actions.action_id |
 | `note` | 메모 (취소 행은 취소 사유) | text |  |  |
 | `registered_at` | 등록 시각 | timestamp with time zone | Y |  |
+
+### master_loads — 종목 마스터 적재 기록 (KIS 마스터 파일을 DB에 넣은 날마다 한 행, 수정·삭제 불가) (테이블)
+
+| 컬럼 | 한글명 | 타입 | 필수 | 키 |
+|---|---|---|---|---|
+| `load_id` | 적재 번호 | bigint | Y | PK |
+| `base_date` | 기준일 (파일을 받은 날) | date | Y | UK |
+| `fetched_at` | 파일을 받은 시각 | timestamp with time zone | Y |  |
+| `kospi_sha256` | 코스피 파일 해시 (SHA-256) | text | Y |  |
+| `kosdaq_sha256` | 코스닥 파일 해시 (SHA-256) | text | Y |  |
+| `rows_total` | 그날 파일의 종목 수 | integer | Y |  |
+| `rows_new` | 처음 나타난 종목 수 | integer | Y |  |
+| `rows_changed` | 속성이 바뀐 종목 수 | integer | Y |  |
+| `rows_delisted` | 파일에서 빠진 종목 수 (상장폐지 등) | integer | Y |  |
+| `loaded_at` | 적재 시각 | timestamp with time zone | Y |  |
+
+### instrument_master — 종목 마스터 이력 (시장 전 종목, 속성이 바뀐 날에만 한 행, 수정·삭제 불가) (테이블)
+
+| 컬럼 | 한글명 | 타입 | 필수 | 키 |
+|---|---|---|---|---|
+| `master_id` | 이력 번호 | bigint | Y | PK |
+| `symbol` | 단축코드 | text | Y |  |
+| `valid_from` | 적용 시작일 (이 속성이 처음 보인 기준일) | date | Y |  |
+| `load_id` | 적재 번호 | bigint | Y | FK → master_loads.load_id |
+| `listed` | 상장 여부 (파일에서 빠지면 거짓인 행이 생김) | boolean | Y |  |
+| `isin` | 표준코드 (ISIN) | text | Y |  |
+| `name` | 종목명 | text | Y |  |
+| `market` | 시장 (KOSPI / KOSDAQ) | text | Y |  |
+| `sec_group` | 증권그룹 구분 (ST 주권, EF ETF 등) | text | Y |  |
+| `lot` | 매매수량단위 | integer | Y |  |
+| `par_value` | 액면가 (원) | bigint | Y |  |
+| `listed_on` | 상장일 | date |  |  |
+| `listed_shares_k` | 상장주수 (천 주) | bigint | Y |  |
+| `preferred` | 우선주 구분 (0 보통주) | text | Y |  |
+| `spac` | 스팩 여부 | boolean | Y |  |
+| `halted` | 거래정지 여부 | boolean | Y |  |
+| `liquidation` | 정리매매 여부 | boolean | Y |  |
+| `managed` | 관리종목 여부 | boolean | Y |  |
+| `warning` | 시장경고 구분 (00 없음, 01 투자주의, 02 투자경고, 03 투자위험) | text | Y |  |
 
 ### oms_orders — 주문 의도 (증권사 전송 전 기록) (테이블)
 
@@ -596,6 +669,48 @@ erDiagram
 | `canceled_on` | 취소일 (취소되지 않았으면 비움) | date |  |  |
 | `cancel_reason` | 취소 사유 | text |  |  |
 
+### instrument_master_current_v — 종목 마스터 현재 (종목마다 가장 최근 이력 행) (뷰)
+
+| 컬럼 | 한글명 | 타입 | 필수 | 키 |
+|---|---|---|---|---|
+| `symbol` | 단축코드 | text |  |  |
+| `listed` | 상장 여부 | boolean |  |  |
+| `name` | 종목명 | text |  |  |
+| `market` | 시장 | text |  |  |
+| `sec_group` | 증권그룹 구분 | text |  |  |
+| `isin` | 표준코드 (ISIN) | text |  |  |
+| `lot` | 매매수량단위 | integer |  |  |
+| `par_value` | 액면가 (원) | bigint |  |  |
+| `listed_on` | 상장일 | date |  |  |
+| `listed_shares_k` | 상장주수 (천 주) | bigint |  |  |
+| `preferred` | 우선주 구분 | text |  |  |
+| `spac` | 스팩 여부 | boolean |  |  |
+| `halted` | 거래정지 여부 | boolean |  |  |
+| `liquidation` | 정리매매 여부 | boolean |  |  |
+| `managed` | 관리종목 여부 | boolean |  |  |
+| `warning` | 시장경고 구분 | text |  |  |
+| `valid_from` | 적용 시작일 | date |  |  |
+| `load_id` | 적재 번호 | bigint |  |  |
+
+### instrument_master_match_v — 등록 종목과 종목 마스터 대조 (원장이 쓰는 종목마다 한 행) (뷰)
+
+| 컬럼 | 한글명 | 타입 | 필수 | 키 |
+|---|---|---|---|---|
+| `symbol` | 종목코드 | text |  |  |
+| `name` | 등록 종목명 | text |  |  |
+| `market` | 등록 시장 | text |  |  |
+| `asset_type` | 등록 자산 유형 | text |  |  |
+| `master_name` | 마스터 종목명 | text |  |  |
+| `master_market` | 마스터 시장 | text |  |  |
+| `master_group` | 마스터 증권그룹 구분 | text |  |  |
+| `listed` | 마스터 상장 여부 | boolean |  |  |
+| `halted` | 거래정지 여부 | boolean |  |  |
+| `liquidation` | 정리매매 여부 | boolean |  |  |
+| `managed` | 관리종목 여부 | boolean |  |  |
+| `warning` | 시장경고 구분 | text |  |  |
+| `valid_from` | 마스터 적용 시작일 | date |  |  |
+| `status` | 대조 결과 (MATCH 일치 / RENAMED 이름만 다름 / DIFFERENT 시장·구분 다름 / DELISTED 상장폐지 / MISSING 마스터에 없음) | text |  |  |
+
 ## 변경 이력
 
 | 버전 | 일자 | 변경 내용 |
@@ -609,3 +724,4 @@ erDiagram
 | v2.4 | 2026-11-23 | 권리처리: 현금배당(R-57~59). 권리 원장 `corporate_actions` 신설(마이그레이션 `0005_corporate_actions`): 종목별 배당기준일·지급일·주당 배당금을 한 번 등록하고, 잘못된 권리는 고치지 않고 취소 행으로 무효로 한다. 뷰 `corporate_actions_v`(취소 여부 포함), `dividends_v`(계좌별 인식·입금·취소 현황, 원장 이벤트에서 읽음) 추가. 배당 인식·입금·취소는 원장 이벤트로 남고 분개와 예수금 행은 기존 테이블에 들어간다. 수정·삭제·비우기 금지 테이블 16개. 공통코드 그룹 2개(권리 유형, 배당 상태)와 이벤트·전표·예수금 사유·감사 행위 코드 10개 추가. 기존 데이터는 바뀌지 않는다. |
 | v2.5 | 2026-11-23 | 입출금·대체(R-56, R-61, R-64, R-65). 테이블은 그대로다. 뷰 `cash_movements_v`(계좌에 넣거나 뺀 돈: 입금, 출금, 대체 입금, 대체 출금), `transfers_v`(계좌 간 대체의 보낸 쪽과 받은 쪽을 한 행으로) 추가, 둘 다 원장 이벤트에서 읽는다. `ledger_events`에 부분 유일 인덱스 `ledger_events_transfer_key` 추가(대체 번호 하나에 보낸 쪽 이벤트 하나, 받은 쪽 이벤트 하나). 출금과 대체는 원장 이벤트로 남고 분개와 예수금 행은 기존 테이블에 들어간다. 공통코드에 이벤트·전표·예수금 사유·감사 행위 코드 12개 추가(마이그레이션 `0006_cash_movements`). 기존 데이터는 바뀌지 않는다. |
 | v2.6 | 2026-11-23 | 수동 조정(R-66). 테이블은 그대로다. 뷰 `adjustments_v`(조정과 그 취소를 한 행으로: 사유, 금액, 세금, 예수금 변동액, 메모, 정리하는 대사 불일치 행, 취소일) 추가, 원장 이벤트에서 읽는다. `ledger_events`에 부분 유일 인덱스 `ledger_events_adjustment_key` 추가(조정 번호 하나에 조정 이벤트 하나, 취소 이벤트 하나). 계정과목 세 개 추가: 이자수익(4040), 잡이익(4090), 잡손실(5090). `accounts_chart.code`에 채번 규칙 제약 추가(첫째 자리 1~5인 숫자 4자리, 스펙 D4). 공통코드 그룹 1개(수동 조정 사유)와 이벤트·전표·예수금 사유·감사 행위·조정 사유 코드 14개 추가(마이그레이션 `0007_adjustments`). 기존 데이터는 바뀌지 않는다. |
+| v2.7 | 2026-11-24 | 종목 마스터 이력(R-94, R-95). 적재 기록 `master_loads`(KIS 마스터 파일을 넣은 기준일마다 한 행, 두 파일의 SHA-256과 신규·변경·빠짐 건수)와 종목 마스터 이력 `instrument_master`(시장 전 종목, 속성이 바뀐 날에만 한 행: 종목명, 시장, 증권그룹, 매매수량단위, 액면가, 상장주수, 거래정지·정리매매·관리종목·시장경고) 신설, 둘 다 수정·삭제·비우기 금지(테이블 18개). 파일에서 빠진 종목은 상장 여부가 거짓인 행으로 남는다. 가격(기준가, 시가총액, 거래량)은 담지 않는다. 등록 종목 `instruments`와는 FK로 묶지 않고 뷰 `instrument_master_current_v`(종목마다 최근 행), `instrument_master_match_v`(등록 종목과 마스터 대조) 추가. 공통코드 그룹 2개(증권그룹 구분, 종목 마스터 대조 결과)와 감사 행위 `MASTER_LOAD` 추가(마이그레이션 `0008_instrument_master`). 기존 데이터는 바뀌지 않는다. |

@@ -18,6 +18,7 @@
     python -m ministp audit                       # 감사 로그: 누가 언제 무엇을 했고 어떻게 끝났는지 (거부·실패 포함)
     python -m ministp master fetch                # 시장 전체 종목정보(KIS 마스터 파일) 받아 두기, 키 필요 없음
     python -m ministp master check                # 받은 종목정보 점검: 전일 대비, 등록 종목, 기준가 대조 (읽기 전용)
+    python -m ministp master load                 # 받은 종목정보를 DB 이력에 넣기: 바뀐 종목만 (ERD v2.7)
 
 Paper (모의투자) only until Phase 4. Keys are asked for and never saved.
 """
@@ -137,6 +138,8 @@ def audited(args, today: dt.date):
     if cmd == "adjust" and what == "cancel":
         return "ADJUSTMENT_CANCEL", args.account, f"ADJ-{args.adjustment_id}", {"date": args.date or today,
                                                                                 "why": args.reason}
+    if cmd == "master" and args.action == "load":
+        return "MASTER_LOAD", None, args.date.isoformat() if args.date else None, None
     if cmd == "code" and what in CODE_ACTIONS:
         target = args.group_id + (f".{args.code}" if what != "group-add" else "")
         return CODE_ACTIONS[what], None, target, {"name": getattr(args, "name", None),
@@ -277,9 +280,10 @@ def _run(argv, *, environ=os.environ, client_factory=KisClient, connect=psycopg.
     p.add_argument("--sample", action="store_true", help="샘플 DB(ministp_sample)에 실행")
     p = sub.add_parser("verify", help="원장 무결성 점검: 저장된 행이 이벤트를 다시 계산한 결과와 같은지 (읽기 전용)")
     p.add_argument("--sample", action="store_true", help="샘플 DB(ministp_sample)를 점검")
-    p = sub.add_parser("master", help="시장 전체 종목정보: KIS 마스터 파일 받기(fetch)와 점검(check). DB에 쓰지 않아요")
-    p.add_argument("action", choices=["fetch", "check"])
-    p.add_argument("--date", type=dt.date.fromisoformat, help="check: 점검할 날 (기본은 가장 최근에 받은 날)")
+    p = sub.add_parser("master", help="시장 전체 종목정보: KIS 마스터 파일 받기(fetch), 점검(check), DB 이력에 넣기(load)")
+    p.add_argument("action", choices=["fetch", "check", "load"])
+    p.add_argument("--date", type=dt.date.fromisoformat,
+                   help="check: 점검할 날 (기본은 가장 최근에 받은 날). load: 그날만 (기본은 아직 넣지 않은 날 모두, 날짜 순)")
     p.add_argument("--csv", action="store_true", help="엑셀로 열 수 있게 받은 폴더에 master.csv도 만들기")
     p.add_argument("--no-db", action="store_true", help="check: 등록 종목·기준가 대조 없이 파일만 점검")
     p = sub.add_parser("ui", help="업무화면(STP-UI)을 이 PC에서만 열기 (기본은 조회 전용)")
@@ -292,12 +296,12 @@ def _run(argv, *, environ=os.environ, client_factory=KisClient, connect=psycopg.
     today = started.date()
     calendar = krx_calendar()
     fees = FeeSchedule.kis_paper()
-    if args.cmd == "master" and (args.action == "fetch" or args.no_db):
+    if args.cmd == "master" and (args.action == "fetch" or (args.no_db and args.action == "check")):
         return _master(args, environ, None, connect, calendar, fees, started, master_download)
     url = database_url(environ)
 
     try:
-        if args.cmd == "master":
+        if args.cmd == "master" and args.action != "load":
             return _master(args, environ, url, connect, calendar, fees, started, master_download)
 
         if args.cmd == "db-init":
@@ -334,6 +338,11 @@ def _run(argv, *, environ=os.environ, client_factory=KisClient, connect=psycopg.
             if args.cmd == "audit":
                 require_current_schema(conn)
                 return _audit(conn, args)
+
+            if args.cmd == "master":   # load: reference data only, but one writer at a time all the same
+                require_current_schema(conn)
+                acquire_writer(conn)
+                return _master_load(conn, args, environ)
 
             if args.cmd == "instrument":
                 market = Market.KOSDAQ if args.kosdaq else Market.KOSPI
@@ -807,6 +816,40 @@ def _verify(url: str, connect, calendar, fees) -> int:
             return 1
         print("이상 없음: 저장된 원장이 이벤트를 처음부터 다시 계산한 결과와 같아요.")
         return 0
+
+
+def _master_load(conn, args, environ) -> int:
+    """R-94: the fetched days not yet in the history, oldest first (or the one day asked for)."""
+    from . import master, master_db
+    root = master.default_dir(environ)
+    days = master.kept_days(root)
+    last = master_db.last_load(conn)
+    if args.date:
+        if args.date not in days:
+            raise OpsError(f"{root}에 {args.date} 파일이 없어요. 먼저 python -m ministp master fetch")
+        todo = [args.date]
+    else:
+        todo = [d for d in days if last is None or d > last.base_date]
+        if not todo:
+            print(f"넣을 날이 없어요: 받은 날 {len(days)}일" + (f", 마지막 적재 {last.ref} {last.base_date}" if last else ""))
+            return 0 if days else 1
+    for day in todo:
+        try:
+            rows = master.load_day(root, day)
+            kept = master.kept_day(root, day)
+        except (master.MasterError, OSError, ValueError, KeyError) as e:
+            raise OpsError(f"{day} 파일을 읽지 못했어요: {e}") from e
+        got = master_db.load(conn, kept, rows)
+        if got.already:
+            print(f"[{day}] 이미 적재한 파일이에요 ({got.ref}, 기준일 {got.base_date})")
+            continue
+        print(f"[{day}] 적재 {got.ref}: {got.rows_total:,}종목 중 신규 {got.rows_new:,}, 변경 {got.rows_changed:,}, "
+              f"빠짐 {got.rows_delisted:,} (바뀐 종목만 이력에 들어가요)")
+    off = [m for m in master_db.matches(conn) if m[3] != "MATCH"]
+    for sym, name, mname, status in off:
+        print(f"  등록 종목 {sym} {name}: {status}" + (f" (마스터 '{mname}')" if mname and mname != name else ""))
+    print("등록 종목 대조: " + ("모두 일치" if not off else f"{len(off)}종목 확인 필요"))
+    return 0
 
 
 def _master(args, environ, url, connect, calendar, fees, started, download=None) -> int:

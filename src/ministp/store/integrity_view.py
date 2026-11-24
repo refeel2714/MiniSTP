@@ -123,6 +123,16 @@ def compare_audit(conn: psycopg.Connection) -> list[Compared]:
             Compared("해시 사슬이 이어지지 않는 줄 수", len(bad), 0, "하나도 없어야 함")]
 
 
+def compare_master(conn: psycopg.Connection) -> list[Compared]:
+    """R-95: the rows the loads say they wrote against the rows the history holds."""
+    from .. import master_db
+    written, held = conn.execute(
+        "select coalesce(sum(rows_new + rows_changed + rows_delisted), 0), (select count(*) from instrument_master)"
+        " from master_loads").fetchone()
+    return [Compared("종목 마스터 이력 행 수", held, int(written), "적재 기록의 신규·변경·빠짐 합계"),
+            Compared("적재 기록과 맞지 않는 이력 수", len(master_db.problems(conn)), 0, "하나도 없어야 함")]
+
+
 # ---------- stored rows against a replay of the events ----------
 
 def compare_journal(conn: psycopg.Connection, ledger: Ledger, account_id: str = DEFAULT_ACCOUNT) -> list[Compared]:
@@ -248,7 +258,7 @@ def compare_adjustments(conn: psycopg.Connection, ledger: Ledger, account_id: st
 
 
 PLAIN = {"events": compare_events, "guards": compare_guards, "balanced": compare_balanced, "rights": compare_rights,
-         "transfers": compare_transfers,
+         "transfers": compare_transfers, "master": compare_master,
          "audit": compare_audit}
 REPLAYED = {"journal": compare_journal, "accounts": compare_accounts, "positions": compare_positions,
             "cash": compare_cash, "closes": compare_closes, "dividends": compare_dividends, "movements": compare_movements,

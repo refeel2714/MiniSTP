@@ -24,6 +24,7 @@ import psycopg
 from psycopg import sql
 
 from . import audit
+from .master import GROUPS as MASTER_GROUPS
 from .ops import OpsError
 
 GROUP_ID_RE = re.compile(r"^[A-Z][A-Z0-9_]{1,39}$")
@@ -42,7 +43,7 @@ class CodeGroup:
 # The codes a new database gets (`init_schema`). An existing one gets the same rows from the migrations:
 # 0002 inserted the codes of ERD v2.1, 0003 the three of the day close (v2.2), 0004 the three audit groups (v2.3),
 # 0005 the dividend codes and two groups (v2.4), 0006 the cash movement codes (v2.5),
-# 0007 the adjustment codes and their reasons (v2.6).
+# 0007 the adjustment codes and their reasons (v2.6), 0008 the market master groups and match results (v2.7).
 SEED: tuple[CodeGroup, ...] = (
     CodeGroup("ACCOUNT_STATUS", "계좌 상태", "위탁계좌의 상태. 정상 계좌만 주문을 받아요 (R-39).",
               "account_status_history.status", (
@@ -173,6 +174,15 @@ SEED: tuple[CodeGroup, ...] = (
                   ("DIVIDEND", "배당금 차이", "입금으로 기록한 배당금과 실제 금액의 차이. 상대 계정은 배당수익"),
                   ("WITHHOLDING", "원천징수 차이", "배당에서 실제로 뗀 세금과 기록한 세금의 차이. 상대 계정은 법인세등"),
                   ("OTHER", "기타", "위에 없는 사유. 상대 계정은 잡이익 또는 잡손실"))),
+    CodeGroup("SECURITY_GROUP", "증권그룹 구분", "KIS 마스터 파일이 종목마다 붙이는 증권 종류.",
+              "instrument_master.sec_group", tuple((code, name, "") for code, name in MASTER_GROUPS.items())),
+    CodeGroup("MASTER_MATCH", "종목 마스터 대조 결과", "등록 종목이 시장 마스터와 같은지 (R-95).",
+              "instrument_master_match_v.status", (
+                  ("MATCH", "일치", "시장, 구분, 이름이 같음"),
+                  ("RENAMED", "이름만 다름", "띄어쓰기 말고 이름이 다름. 종목명 변경일 수 있음"),
+                  ("DIFFERENT", "시장·구분 다름", "등록할 때 시장이나 자산 유형을 잘못 넣었을 수 있음"),
+                  ("DELISTED", "상장폐지", "마스터 파일에서 빠진 종목"),
+                  ("MISSING", "마스터에 없음", "적재한 마스터에 한 번도 나온 적 없는 코드"))),
     CodeGroup("AUDIT_CHANNEL", "감사 로그 경로", "어디로 들어온 요청인지.", "audit_log.channel", (
         ("CLI", "명령", "PC의 명령 창에서 실행"),
         ("UI", "화면", "업무화면의 처리 버튼"),
@@ -204,7 +214,8 @@ SEED: tuple[CodeGroup, ...] = (
         ("CASH_WITHDRAW", "출금 기록", "증권사 계좌에서 나간 돈"),
         ("CASH_TRANSFER", "계좌 간 대체", "같은 고객의 두 계좌 사이로 옮긴 돈"),
         ("ADJUSTMENT_ADD", "수동 조정", "예탁금 이용료나 증권사와의 차이를 사유와 함께 기록"),
-        ("ADJUSTMENT_CANCEL", "수동 조정 취소", "조정을 반대 전표로 되돌림"))),
+        ("ADJUSTMENT_CANCEL", "수동 조정 취소", "조정을 반대 전표로 되돌림"),
+        ("MASTER_LOAD", "종목 마스터 적재", "받은 마스터 파일에서 바뀐 종목만 이력으로 넣음"))),
 )
 
 
@@ -249,6 +260,7 @@ def program_codes() -> dict[str, set[str]]:
     from .accounts import STATUSES
     from .instruments import AssetType, Market
     from .ledger import ADJUSTMENT_ACCOUNTS, DIVIDEND_STATUSES, Side
+    from .master_db import MATCH_STATUSES
     from .rights import ACTION_TYPES
     from .oms import OrderStatus
     from .recon import Cause, Status
@@ -270,6 +282,8 @@ def program_codes() -> dict[str, set[str]]:
         "CORPORATE_ACTION_TYPE": set(ACTION_TYPES),
         "DIVIDEND_STATUS": set(DIVIDEND_STATUSES),
         "ADJUSTMENT_REASON": set(ADJUSTMENT_ACCOUNTS),
+        "SECURITY_GROUP": set(MASTER_GROUPS),
+        "MASTER_MATCH": set(MATCH_STATUSES),
     }
 
 
@@ -392,6 +406,10 @@ def _check_list(conn: psycopg.Connection, table: str, column: str) -> set[str] |
     return None
 
 
+# Columns that store the codes of a group whose `used_by` names another column: checked the same way.
+SAME_CODES = {"instrument_master.market": "MARKET"}
+
+
 def check(conn: psycopg.Connection) -> list[str]:
     """Where the code table has drifted from the schema, the program or the stored data. Empty when it has not."""
     problems = []
@@ -412,9 +430,9 @@ def check(conn: psycopg.Connection) -> list[str]:
             problems.append(f"{gid}: 프로그램이 쓰는 코드 그룹인데 공통코드에 없어요")
         else:
             diff(gid, "프로그램", expected)
-    for gid, (_, _, used_by, _) in sorted(groups.items()):
-        if not used_by:
-            continue
+    where = [(gid, used_by) for gid, (_, _, used_by, _) in sorted(groups.items()) if used_by]
+    where += [(gid, col) for col, gid in sorted(SAME_CODES.items()) if gid in groups]
+    for gid, used_by in where:
         table, _, column = used_by.partition(".")
         exists = conn.execute(
             "select 1 from information_schema.columns where table_schema = current_schema()"

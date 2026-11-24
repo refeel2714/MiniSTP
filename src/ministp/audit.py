@@ -54,6 +54,7 @@ ACTIONS = {
     "CASH_TRANSFER": "계좌 간 대체",
     "ADJUSTMENT_ADD": "수동 조정",
     "ADJUSTMENT_CANCEL": "수동 조정 취소",
+    "MASTER_LOAD": "종목 마스터 적재",
 }
 MESSAGE_MAX = 500
 
