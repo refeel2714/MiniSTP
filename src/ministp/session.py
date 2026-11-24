@@ -168,7 +168,7 @@ class TradingSession:
     def sync(self, day: dt.date, notices=(), gap: str = "now") -> list[str]:
         """Book fills the broker reports. Returns new execution ids.
 
-        R-76 (v1.25): a fill notice carries one fill's own quantity and price, so it is booked as that
+        R-76 (v1.26): a fill notice carries one fill's own quantity and price, so it is booked as that
         fill, in the order notices arrive, once the broker's cumulative state (`daily_orders`) shows it.
         A notice the cumulative state does not show yet waits for the next sync. What the cumulative
         state shows beyond the notices (a lost notice, or no feed at all) is a gap, booked as one
