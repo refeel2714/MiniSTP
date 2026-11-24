@@ -824,10 +824,10 @@ comment on column master_loads.base_date is '기준일 (파일을 받은 날)';
 comment on column master_loads.fetched_at is '파일을 받은 시각';
 comment on column master_loads.kospi_sha256 is '코스피 파일 해시 (SHA-256)';
 comment on column master_loads.kosdaq_sha256 is '코스닥 파일 해시 (SHA-256)';
-comment on column master_loads.rows_total is '그날 파일의 종목 수';
-comment on column master_loads.rows_new is '처음 나타난 종목 수';
-comment on column master_loads.rows_changed is '속성이 바뀐 종목 수';
-comment on column master_loads.rows_delisted is '파일에서 빠진 종목 수 (상장폐지 등)';
+comment on column master_loads.rows_total is '종목 수';
+comment on column master_loads.rows_new is '신규 (처음 나타난 종목 수)';
+comment on column master_loads.rows_changed is '변경 (속성이 바뀐 종목 수)';
+comment on column master_loads.rows_delisted is '빠짐 (파일에서 빠진 종목 수)';
 comment on column master_loads.loaded_at is '적재 시각';
 
 comment on table instrument_master is '종목 마스터 이력 (시장 전 종목, 속성이 바뀐 날에만 한 행, 수정·삭제 불가)';

@@ -1,6 +1,6 @@
 # MiniSTP ERD
 
-ERD 버전: v2.7 · 스키마 해시: `179338d7105c`
+ERD 버전: v2.7 · 스키마 해시: `32b7ee77a343`
 
 이 문서는 `scripts/gen_erd.py`가 `src/ministp/store/schema.sql`로 만든 DB에서 읽어 생성해요. 직접 고치지 말고 스키마의 한글 주석(COMMENT)을 고친 뒤 다시 생성하세요. 모든 원장 테이블은 append-only(수정·삭제 불가)예요.
 
@@ -126,10 +126,10 @@ erDiagram
         timestamptz fetched_at "파일을 받은 시각"
         text kospi_sha256 "코스피 파일 해시 (SHA-256)"
         text kosdaq_sha256 "코스닥 파일 해시 (SHA-256)"
-        integer rows_total "그날 파일의 종목 수"
-        integer rows_new "처음 나타난 종목 수"
-        integer rows_changed "속성이 바뀐 종목 수"
-        integer rows_delisted "파일에서 빠진 종목 수 (상장폐지 등)"
+        integer rows_total "종목 수"
+        integer rows_new "신규 (처음 나타난 종목 수)"
+        integer rows_changed "변경 (속성이 바뀐 종목 수)"
+        integer rows_delisted "빠짐 (파일에서 빠진 종목 수)"
         timestamptz loaded_at "적재 시각"
     }
     instrument_master {
@@ -404,10 +404,10 @@ erDiagram
 | `fetched_at` | 파일을 받은 시각 | timestamp with time zone | Y |  |
 | `kospi_sha256` | 코스피 파일 해시 (SHA-256) | text | Y |  |
 | `kosdaq_sha256` | 코스닥 파일 해시 (SHA-256) | text | Y |  |
-| `rows_total` | 그날 파일의 종목 수 | integer | Y |  |
-| `rows_new` | 처음 나타난 종목 수 | integer | Y |  |
-| `rows_changed` | 속성이 바뀐 종목 수 | integer | Y |  |
-| `rows_delisted` | 파일에서 빠진 종목 수 (상장폐지 등) | integer | Y |  |
+| `rows_total` | 종목 수 | integer | Y |  |
+| `rows_new` | 신규 (처음 나타난 종목 수) | integer | Y |  |
+| `rows_changed` | 변경 (속성이 바뀐 종목 수) | integer | Y |  |
+| `rows_delisted` | 빠짐 (파일에서 빠진 종목 수) | integer | Y |  |
 | `loaded_at` | 적재 시각 | timestamp with time zone | Y |  |
 
 ### instrument_master — 종목 마스터 이력 (시장 전 종목, 속성이 바뀐 날에만 한 행, 수정·삭제 불가) (테이블)
