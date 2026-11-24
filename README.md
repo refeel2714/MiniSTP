@@ -200,6 +200,7 @@ MINISTP_TEST_DATABASE_URL=postgresql://postgres:postgres@localhost:5432/ministp_
 | `erp` | 분개를 ERP 일반전표 업로드 CSV로 내보내기(건별·일별 합계, 증빙번호, 선택 매핑 파일), 읽기 전용 | D9, R-96 |
 | `basket` | 바스켓 주문 시뮬레이션: 목표 편입비로 총 주문금액을 종목별 수량으로 나누고 검사(화면 STP-1500과 같은 계산), 읽기 전용 | D9, R-97 |
 | `precheck` | 묶음 검증: 여러 주문 줄을 계좌 단위로 보내는 순서대로 쌓아 검사(혼자 통과·같이 실패, 비중 한도, 묶음 단위), 읽기 전용 | D9, R-98 |
+| `approval` | 주문 결재: 사용자·권한(1건 한도, 셀프 승인), 요청·승인·반려·취소, 승인된 요청을 run이 재검증 후 전송, 장 마감 만료 | D9, R-99~101 |
 | `broker.kis_ws` | 실시간 체결통보 수신(접속키, 구독, AES 복호화, PINGPONG, 재연결) | D6 |
 | `rights` | 권리처리: 현금배당 권리 원장(등록·취소 행), `daily`의 인식·입금·취소 반영, 실제 입금액 기록 | R-23, R-57~59 |
 | `cash` | 입출금·대체: 증권사에서 넣거나 뺀 돈과 내 계좌끼리 옮긴 돈의 기록, 출금가능금액, 대체의 두 기록을 한 트랜잭션으로 | R-56, R-61, R-64, R-65 |
@@ -250,6 +251,19 @@ MINISTP_TEST_DATABASE_URL=postgresql://postgres:postgres@localhost:5432/ministp_
 .venv\Scripts\python -m ministp master load                   :: 받은 종목정보를 DB 이력에 넣기 (바뀐 종목만)
 .venv\Scripts\python -m ministp erp export --from 2026-11-18 :: 분개를 ERP 일반전표 업로드 CSV로 (읽기만)
 .venv\Scripts\python -m ministp basket simulate --amount 10000000 :: 바스켓 주문 시뮬레이션 (계산만, 주문 안 함)
+```
+
+주문 결재 (ERD v2.8부터, R-99~101): 모든 주문은 요청으로 먼저 남고 승인된 요청만 `run`이 보냅니다. 처음 한 번 사용자와 권한을 정합니다. 셀프 승인 허용이 있으면 `order`와 `run` 창의 buy/sell은 지금처럼 바로 나갑니다(요청, 셀프 승인, 전송이 한 번에).
+
+```bat
+.venv\Scripts\python -m ministp user add %USERNAME% "운영자"                    :: 첫 사용자 (PC 로그인 이름이 ID)
+.venv\Scripts\python -m ministp right grant %USERNAME% RIGHTS_ADMIN
+.venv\Scripts\python -m ministp right grant %USERNAME% ORDER_WRITE
+.venv\Scripts\python -m ministp right grant %USERNAME% ORDER_APPROVE --self-approve --max-value 10000000
+.venv\Scripts\python -m ministp request add --line 069500:buy:10:82950 --line 360750:buy:20:22840 --batch
+.venv\Scripts\python -m ministp request list
+.venv\Scripts\python -m ministp request approve Q20261125-0001 Q20261125-0002 :: 묶음은 함께
+.venv\Scripts\python -m ministp request reject Q20261125-0003 --reason "가격 재확인"
 ```
 
 계좌가 여러 개일 때 (ERD v2.0부터):

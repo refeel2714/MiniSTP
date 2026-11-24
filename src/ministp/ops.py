@@ -258,7 +258,10 @@ def order_capacity(books: Books, day: dt.date, symbol: str, ref_price: int,
 
 def place_order(books: Books, broker: BrokerGateway, day: dt.date, symbol: str, side: Side,
                 qty: int, limit_price: int | None = None, wait=None) -> tuple[TradingSession, str | None]:
-    """Submit one order; if `wait` is given (callable returning False to stop), poll for fills."""
+    """Submit one order; if `wait` is given (callable returning False to stop), poll for fills.
+
+    결재를 거치지 않는 낮은 단계 경로라 샘플 DB(모의 증권사)만 써요. 실제 주문(`order`, `run` 창,
+    결재 요청)은 `approval`을 거쳐 승인된 요청만 나가요 (R-100~101)."""
     if symbol not in books.instruments:
         raise OpsError(f"종목 등록이 필요해요: {symbol}")
     session = session_for(books, broker, day)
@@ -516,19 +519,20 @@ class IntradayRunner:
     def __init__(self, books: Books, broker: BrokerGateway, day: dt.date, events, *,
                  now=dt.datetime.now, monotonic=None, out=print,
                  poll_every: float = 60.0, recon_every: float = 300.0, quote_every: float = 60.0,
-                 settle_wait=None):
+                 send_every: float = 5.0, settle_wait=None):
         import time as _time
         self.books, self.broker, self.day, self.events = books, broker, day, events
         self.now, self.out = now, out
         self.monotonic = monotonic or _time.monotonic
         self.poll_every, self.recon_every, self.quote_every = poll_every, recon_every, quote_every
+        self.send_every = send_every     # 승인된 주문 요청을 집어 보내는 간격 (R-101)
         self.settle_wait = settle_wait or (lambda: _time.sleep(3))
         self.session = session_for(books, broker, day)
         self.stats = IntradayStats()
         self.feed_up = False
         self.quotes: dict[str, Quote] = latest_quotes(books.conn, day)   # 다시 띄워도 오늘 받은 가격부터
         self._quote_failing: set[str] = set()
-        self._last_poll = self._last_recon = self._last_quote = self.monotonic()
+        self._last_poll = self._last_recon = self._last_quote = self._last_send = self.monotonic()
 
     # --- handlers ---
 
@@ -649,17 +653,7 @@ class IntradayRunner:
             if cmd in ("buy", "sell") and len(parts) in (3, 4):
                 symbol, qty = parts[1], int(parts[2])
                 limit = int(parts[3]) if len(parts) == 4 else None
-                if symbol not in self.books.instruments:
-                    self.out(f"종목 등록이 필요해요: {symbol}")
-                    audit.record_refusal(self.books.conn, "ORDER", OpsError(f"종목 등록이 필요해요: {symbol}"),
-                                         account_id=self.books.account_id,
-                                         detail=_order_detail(symbol, cmd.upper(), qty, limit) | {"date": self.day})
-                    return True
-                cid = self.session.submit(self.day, symbol, Side(cmd.upper()), qty, limit)
-                if cid is None:
-                    self.out(f"주문 실패: {failure_text(self.session.anomalies[-1].detail)}")
-                else:
-                    self.out(f"주문 {cid} 접수. 체결되면 바로 원장에 반영해요.")
+                self.order(symbol, Side(cmd.upper()), qty, limit)
                 return True
             if cmd == "cancel" and len(parts) == 2:
                 self.cancel(parts[1])
@@ -675,6 +669,36 @@ class IntradayRunner:
             return True
         self.out("명령: buy 종목 수량 [지정가] | sell 종목 수량 [지정가] | cancel 주문 | status | recon | quit")
         return True
+
+    def order(self, symbol: str, side: Side, qty: int, limit: int | None) -> None:
+        """창에서 친 주문도 결재를 거쳐요(11/24): 요청을 올리고, 셀프 승인 허용이 있으면 승인해 바로 보내요."""
+        from . import approval
+        try:
+            right = approval.rights_of(self.books.conn, approval.actor(), self.books.account_id,
+                                       self.day).get("ORDER_APPROVE")
+            self_ok = bool(right and right.self_approve)
+            prices = {} if limit or symbol not in self.books.instruments else {symbol: self.broker.get_price(symbol)}
+            (rid,), _ = approval.submit(self.books, self.day, self.day, [approval.Line(symbol, side, qty, limit)],
+                                        self_approve=self_ok, now=self.now(), prices=prices)
+        except OpsError as exc:
+            self.out(f"주문 요청 거부: {exc}")
+            audit.record_refusal(self.books.conn, "ORDER", exc, account_id=self.books.account_id,
+                                 detail=_order_detail(symbol, side.value, qty, limit) | {"date": self.day})
+            return
+        if not self_ok:
+            self.out(f"결재 요청 {rid}을 올렸어요. 승인되면 바로 보내요.")
+            return
+        self.send_requests()
+
+    def send_requests(self) -> None:
+        """승인된 오늘 요청을 보내요 (R-101). 보내기 직전에 묶음 검증을 다시 해요."""
+        from . import approval
+        self._last_send = self.monotonic()
+        for s in approval.send_approved(self.books, self.session, self.day, now=self.now()):
+            if s.client_id:
+                self.out(f"[{self.now():%H:%M:%S}] 요청 {s.request_id} → 주문 {s.client_id} 접수. 체결되면 바로 원장에 반영해요.")
+            else:
+                self.out(f"[{self.now():%H:%M:%S}] 요청 {s.request_id} 전송 실패: {s.detail}")
 
     def cancel(self, ref: str) -> None:
         """R-45: `cancel 3` (오늘 세 번째 주문), `cancel S20261124-0003` or the broker's order number."""
@@ -757,14 +781,22 @@ class IntradayRunner:
             self.recon()
         if t - self._last_quote >= self.quote_every:
             self.quote()
+        if t - self._last_send >= self.send_every:
+            self.send_requests()
         return keep
 
     def run(self, until: dt.time) -> IntradayStats:
         self.out(f"[{self.now():%H:%M:%S}] 장중 실행 시작. 명령: buy/sell 종목 수량 [지정가], cancel 주문, status, recon, quit")
         self.poll("시작 시 확인")
         self.quote()
+        self.send_requests()        # 장 전에 승인된 요청부터
         while self.now().time() < until and self.step():
             pass
+        from . import approval
+        closed = self.now().time() >= until     # quit으로 일찍 끝내면 승인된 요청은 그대로 둬요
+        expired = approval.expire(self.books.conn, self.books.account_id, self.day, through_today=True) if closed else []
+        if expired:
+            self.out(f"오늘 나가지 않은 주문 요청 {len(expired)}건을 만료했어요: {', '.join(expired)}")
         self.recon(verbose=True)
         self.print_status()
         self.out("장중 실행 종료. 15:40 이후 daily를 실행해 주세요.")

@@ -14,7 +14,7 @@ from ministp.store import migrate as mg
 from ministp.store.integrity import integrity_report
 
 from db.test_multi_account import _restore_v1_1  # noqa: E402
-from db.test_ops import CAL, D, FEES, KODEX, URL, books, broker, conn  # noqa: F401, E402
+from db.test_ops import CAL, D, FEES, KODEX, URL, books, broker, conn, let_me_order  # noqa: F401, E402
 from db.test_ui_manage import press  # noqa: F401, E402
 
 psycopg = pytest.importorskip("psycopg")
@@ -219,6 +219,7 @@ def test_commands_leave_rows_as_the_console_user_and_audit_shows_them(conn, brok
     kw = dict(environ=ENV, client_factory=lambda cfg: broker, sleep=lambda s: None)
     assert cli.run(["open"], now=at(8, 0), **kw) == 0
     assert cli.run(["open"], now=at(8, 1), **kw) == 1                 # once only
+    me = let_me_order(conn)                                           # 주문은 결재를 거쳐요 (R-99~101)
     assert cli.run(["order", "069500", "buy", "1"], now=at(8, 30), **kw) == 2   # before the market opens
     broker.orders[DAY] = {}
     assert cli.run(["order", "069500", "buy", "1", "--limit", "80000"], now=at(10, 0), **kw) == 0
@@ -231,9 +232,13 @@ def test_commands_leave_rows_as_the_console_user_and_audit_shows_them(conn, brok
     assert cli.run(["status"], now=at(16, 1), **kw) == 0              # a read leaves nothing
     capsys.readouterr()
     cid = conn.execute("select client_id from oms_orders").fetchone()[0]
+    rid = conn.execute("select request_id from order_requests").fetchone()[0]
     assert log(conn)[1:] == [
         ("OPEN", "DONE", "A0001", "2026-11-20"), ("OPEN", "REFUSED", "A0001", "2026-11-20"),
-        ("ORDER", "REFUSED", "A0001", None), ("ORDER", "DONE", "A0001", cid), ("ORDER", "REFUSED", "A0001", None),
+        ("USER_ADD", "DONE", None, me), ("RIGHT_GRANT", "DONE", None, me), ("RIGHT_GRANT", "DONE", None, me),
+        ("RIGHT_GRANT", "DONE", None, me),
+        ("ORDER", "REFUSED", "A0001", None), ("ORDER_REQUEST", "DONE", "A0001", rid),
+        ("ORDER_APPROVE", "DONE", "A0001", rid), ("ORDER", "DONE", "A0001", cid), ("ORDER", "REFUSED", "A0001", None),
         ("DAILY", "REFUSED", "A0001", "2026-11-20"), ("RESOLVE", "REFUSED", None, "999"),
         ("CODE_ADD", "REFUSED", None, "RECON_STATUS.MAYBE"), ("ACCOUNT_STATUS", "REFUSED", None, "A0009"),
         ("DAILY", "DONE", "A0001", "2026-11-20")]
@@ -241,20 +246,21 @@ def test_commands_leave_rows_as_the_console_user_and_audit_shows_them(conn, brok
     assert {(r.channel, r.actor) for r in mine} == {("CLI", getpass.getuser())}
     assert audit.rows(conn, action="DAILY")[0].detail["closed"] is True
     refused = audit.rows(conn, action="ORDER", outcome="REFUSED")
-    assert refused[1].message == "장중(영업일 09:00~15:20)에만 주문해요." and "주문 검증" in refused[0].message
+    assert refused[1].message == "장중(영업일 09:00~15:20)에만 주문해요." and "묶음 검증" in refused[0].message
+    assert "매도가능수량보다 많아요" in refused[0].message                # 요청 전에 걸러서 요청도 남지 않아요
     assert "k" not in {v for r in audit.rows(conn, limit=100) for v in r.detail.values() if isinstance(v, str)}
 
     assert cli.run(["audit"], **kw) == 0
     out = capsys.readouterr().out
     assert f"명령 {getpass.getuser()}  거부  원장 시작  A0001 2026-11-20" in out and "→ 원장이 이미 시작됐어요" in out
     assert f"처리  주문  A0001 {cid}" in out and "symbol=069500  side=BUY  qty=1  limit_price=80000" in out
-    assert f"전체 11줄, 마지막 줄 11번의 해시 {audit.chain_problems(conn)[1][:16]}" in out
+    assert f"전체 17줄, 마지막 줄 17번의 해시 {audit.chain_problems(conn)[1][:16]}" in out
     assert cli.run(["audit", "--outcome", "REFUSED", "--action", "ORDER", "--limit", "1"], **kw) == 0
     out = capsys.readouterr().out
     assert out.count("거부  주문") == 1 and "원장 시작" not in out
     assert cli.run(["audit", "--account", "A0009"], **kw) == 0 and "조건에 맞는 줄이 없어요" in capsys.readouterr().out
     assert log(conn)[-1][0] == "DAILY"                                # looking at the log is not logged
-    assert cli.run(["verify"], **kw) == 0 and "감사 로그: 11줄의 번호와 해시 사슬이 이어짐" in capsys.readouterr().out
+    assert cli.run(["verify"], **kw) == 0 and "감사 로그: 17줄의 번호와 해시 사슬이 이어짐" in capsys.readouterr().out
 
 
 def test_applying_a_migration_is_the_first_row_of_a_migrated_database(capsys):
@@ -267,9 +273,9 @@ def test_applying_a_migration_is_the_first_row_of_a_migrated_database(capsys):
     assert cli.run(["db-migrate", "--apply"], environ=env) == 0
     capsys.readouterr()
     with psycopg.connect(URL, autocommit=True) as c:
-        assert list(mg.applied(c)) == [1, 2, 3, 4, 5, 6, 7, 8]
-        assert log(c) == [("DB_MIGRATE", "DONE", None, "ERD v2.7")]
-        assert len(last(c).detail["applied"]) == 8 and last(c).channel == "CLI"
+        assert list(mg.applied(c)) == [1, 2, 3, 4, 5, 6, 7, 8, 9]
+        assert log(c) == [("DB_MIGRATE", "DONE", None, "ERD v2.8")]
+        assert len(last(c).detail["applied"]) == 9 and last(c).channel == "CLI"
         assert codes.check(c) == [] and audit.chain_problems(c)[2] == []
 
 

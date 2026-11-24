@@ -212,6 +212,23 @@ Phase 2 구현(v1.4)은 위 설계를 단순화했다. 주문 생성 정보는 `
 4. **명령**: `master load [--date 날짜]`. 쓰기 잠금을 잡고, 감사 로그에 남는다(`MASTER_LOAD`, 거부된 요청 포함).
 5. **한계**: 첫 적재는 그날 파일의 전 종목(약 4천 행)이 신규로 들어간다. 그보다 앞선 날의 상태는 알 수 없다. 화면은 다음 PR.
 
+
+## 주문 결재 (v1.36, ERD v2.8, 초안)
+
+| 테이블 | 주요 컬럼 | 비고 |
+|---|---|---|
+| app_users | user_id, name, created_by, created_at | 사용자. 지금은 PC 로그인 이름이 ID(ID 체계 보류), 추가만 |
+| user_rights | right_row_id, user_id, account_id, right_code, granted, max_order_value, self_approve, effective_from, granted_by, reason | 결재 권한 이력(R-99). 부여·회수마다 한 행, 계좌가 비면 모든 계좌 |
+| order_requests | request_id, account_id, trade_date, batch_id, line_no, symbol, side, qty, limit_price, created_by | 주문 요청 한 줄. 묶음 번호가 같으면 전부 아니면 전무 |
+| order_approvals | id, request_id, action, actor, self_approved, client_id, reason, set_check, at | 결재 이력(R-100). 순서는 트리거 `ministp_order_approval_flow`가 지킴, 전송 행은 주문 ID를 가짐 |
+
+| 뷰 | 주요 컬럼 | 비고 |
+|---|---|---|
+| user_rights_v | user_id, user_name, account_id, right_code, max_order_value, self_approve, effective_from | 오늘 적용되는 권한(부여된 것만) |
+| order_requests_v | request_id, …, status, approved_by, self_approved, client_id, last_reason | 요청마다 상태(결재 이력의 마지막 행) |
+
+1. **넷 다 추가만 한다**: 고치거나 지우지 않는다. 권한 변경은 새 행, 요청의 상태 변화는 결재 이력의 새 행이다.
+2. **이중 전송 방지**: 전송 행은 주문 의도(`oms_orders`)와 같은 트랜잭션에 증권사 호출 전에 들어간다. 주문 ID 하나에 전송 행 하나(부분 유일 인덱스), 승인 다음에만 전송(트리거).
 ## 원장 무결성 점검 (v1.11)
 
 `python -m ministp verify`는 저장된 원장이 이벤트를 처음부터 다시 계산한 결과와 같은지 읽기 전용으로 확인한다. 쓰기 잠금을 잡지 않으므로 `run`이 떠 있어도 실행할 수 있다. 하나라도 어긋나면 종료 코드 1을 돌려준다.

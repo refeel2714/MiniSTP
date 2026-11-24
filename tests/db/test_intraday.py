@@ -4,7 +4,7 @@ import queue
 
 import pytest
 
-from db.test_ops import CAL, D, FEES, URL, SimBroker, books, conn, broker  # noqa: F401
+from db.test_ops import CAL, D, FEES, URL, SimBroker, books, conn, broker, let_me_order  # noqa: F401
 from ministp import __main__ as cli
 from ministp.broker.kis_ws import FillNotice
 from ministp.ops import IntradayRunner, OpsError, acquire_writer, clean_streak, daily_close, open_books
@@ -28,6 +28,7 @@ def opened(conn, broker):  # noqa: F811
     open_books(books(conn), broker, D("2026-11-20"))
     broker.set_day(DAY)
     broker.orders[DAY] = {}
+    let_me_order(conn, "system")      # 시험의 run 창은 감사 로그 기본값(system)으로 움직여요
     return conn, broker
 
 

@@ -1,6 +1,6 @@
 # MiniSTP ERD
 
-ERD 버전: v2.7 · 스키마 해시: `32b7ee77a343`
+ERD 버전: v2.8 · 스키마 해시: `a8c0d5427423`
 
 이 문서는 `scripts/gen_erd.py`가 `src/ministp/store/schema.sql`로 만든 DB에서 읽어 생성해요. 직접 고치지 말고 스키마의 한글 주석(COMMENT)을 고친 뒤 다시 생성하세요. 모든 원장 테이블은 append-only(수정·삭제 불가)예요.
 
@@ -195,6 +195,49 @@ erDiagram
         timestamptz created_at "기록 시각"
         text account_id FK "계좌 ID"
     }
+    app_users {
+        text user_id PK "사용자 ID (지금은 PC 로그인 이름)"
+        text name "이름"
+        text created_by "등록한 사람"
+        timestamptz created_at "등록 시각"
+    }
+    user_rights {
+        bigint right_row_id PK "권한 행 번호"
+        text user_id FK "사용자 ID"
+        text account_id FK "계좌 ID (비어 있으면 모든 계좌)"
+        text right_code "권한 (ORDER_WRITE 주문 작성 / ORDER_APPROVE 주문 승인 / RIGHTS_ADMIN 권한 관리)"
+        boolean granted "부여 여부 (거짓이면 회수 행)"
+        bigint max_order_value "1건 승인 한도 (원, 비어 있으면 한도 없음)"
+        boolean self_approve "셀프 승인 허용 (자기가 쓴 요청을 승인할 수 있음)"
+        date effective_from "적용 시작일"
+        text granted_by "부여·회수한 사람"
+        text reason "사유"
+        timestamptz created_at "기록 시각"
+    }
+    order_requests {
+        text request_id PK "요청 번호 (Q날짜-순번)"
+        text account_id FK "계좌 ID"
+        date trade_date "주문일 (이날 장중에만 나가고 장 마감에 만료)"
+        text batch_id "묶음 번호 (바스켓·다건 요청, 묶음은 전부 아니면 전무)"
+        integer line_no "줄 번호 (보내는 순서)"
+        text symbol FK "종목코드"
+        text side "매매 구분"
+        bigint qty "수량"
+        bigint limit_price "지정가 (비어 있으면 시장가)"
+        text created_by FK "작성자"
+        timestamptz created_at "작성 시각"
+    }
+    order_approvals {
+        bigint id PK "이력 번호"
+        text request_id FK "요청 번호"
+        text action "결재 행위 (REQUEST 요청 / APPROVE 승인 / REJECT 반려 / CANCEL 취소 / SEND 전송 / SEND_FAILED 전송 실패 / EXPIRE 만료)"
+        text actor FK "처리한 사람 (전송·만료는 비어 있음: run이 처리)"
+        boolean self_approved "셀프 승인 (작성자가 승인, DB가 채움)"
+        text client_id FK,UK "주문 ID (전송한 주문)"
+        text reason "사유 (반려·전송 실패는 필수)"
+        jsonb set_check "그때의 묶음 검증 결과 (R-98)"
+        timestamptz at "처리 시각"
+    }
     code_groups {
         text group_id PK "코드 그룹 ID"
         text name "코드 그룹명"
@@ -239,6 +282,14 @@ erDiagram
     trading_accounts ||--o{ broker_snapshots : "account_id"
     broker_snapshots ||--o{ recon_results : "run_id, account_id"
     recon_results ||--o{ recon_results : "supersedes_id"
+    app_users ||--o{ user_rights : "user_id"
+    trading_accounts ||--o{ user_rights : "account_id"
+    trading_accounts ||--o{ order_requests : "account_id"
+    instruments ||--o{ order_requests : "symbol"
+    app_users ||--o{ order_requests : "created_by"
+    order_requests ||--o{ order_approvals : "request_id"
+    app_users ||--o{ order_approvals : "actor"
+    oms_orders ||--o{ order_approvals : "client_id"
     code_groups ||--o{ common_codes : "group_id"
 ```
 
@@ -488,6 +539,61 @@ erDiagram
 | `created_at` | 기록 시각 | timestamp with time zone | Y |  |
 | `account_id` | 계좌 ID | text | Y | FK → broker_snapshots.account_id |
 
+### app_users — 사용자 (주문을 쓰고 승인하는 사람, 추가만 가능) (테이블)
+
+| 컬럼 | 한글명 | 타입 | 필수 | 키 |
+|---|---|---|---|---|
+| `user_id` | 사용자 ID (지금은 PC 로그인 이름) | text | Y | PK |
+| `name` | 이름 | text | Y |  |
+| `created_by` | 등록한 사람 | text | Y |  |
+| `created_at` | 등록 시각 | timestamp with time zone | Y |  |
+
+### user_rights — 결재 권한 이력 (부여·회수마다 한 행, 수정·삭제 불가) (테이블)
+
+| 컬럼 | 한글명 | 타입 | 필수 | 키 |
+|---|---|---|---|---|
+| `right_row_id` | 권한 행 번호 | bigint | Y | PK |
+| `user_id` | 사용자 ID | text | Y | FK → app_users.user_id |
+| `account_id` | 계좌 ID (비어 있으면 모든 계좌) | text |  | FK → trading_accounts.account_id |
+| `right_code` | 권한 (ORDER_WRITE 주문 작성 / ORDER_APPROVE 주문 승인 / RIGHTS_ADMIN 권한 관리) | text | Y |  |
+| `granted` | 부여 여부 (거짓이면 회수 행) | boolean | Y |  |
+| `max_order_value` | 1건 승인 한도 (원, 비어 있으면 한도 없음) | bigint |  |  |
+| `self_approve` | 셀프 승인 허용 (자기가 쓴 요청을 승인할 수 있음) | boolean | Y |  |
+| `effective_from` | 적용 시작일 | date | Y |  |
+| `granted_by` | 부여·회수한 사람 | text | Y |  |
+| `reason` | 사유 | text |  |  |
+| `created_at` | 기록 시각 | timestamp with time zone | Y |  |
+
+### order_requests — 주문 요청 (결재를 거쳐 나갈 주문 한 줄, 수정·삭제 불가) (테이블)
+
+| 컬럼 | 한글명 | 타입 | 필수 | 키 |
+|---|---|---|---|---|
+| `request_id` | 요청 번호 (Q날짜-순번) | text | Y | PK |
+| `account_id` | 계좌 ID | text | Y | FK → trading_accounts.account_id |
+| `trade_date` | 주문일 (이날 장중에만 나가고 장 마감에 만료) | date | Y |  |
+| `batch_id` | 묶음 번호 (바스켓·다건 요청, 묶음은 전부 아니면 전무) | text |  |  |
+| `line_no` | 줄 번호 (보내는 순서) | integer | Y |  |
+| `symbol` | 종목코드 | text | Y | FK → instruments.symbol |
+| `side` | 매매 구분 | text | Y |  |
+| `qty` | 수량 | bigint | Y |  |
+| `limit_price` | 지정가 (비어 있으면 시장가) | bigint |  |  |
+| `created_by` | 작성자 | text | Y | FK → app_users.user_id |
+| `created_at` | 작성 시각 | timestamp with time zone | Y |  |
+
+### order_approvals — 결재 이력 (요청·승인·반려·취소·전송·만료마다 한 행, 수정·삭제 불가) (테이블)
+
+| 컬럼 | 한글명 | 타입 | 필수 | 키 |
+|---|---|---|---|---|
+| `id` | 이력 번호 | bigint | Y | PK |
+| `request_id` | 요청 번호 | text | Y | FK → order_requests.request_id |
+| `action` | 결재 행위 (REQUEST 요청 / APPROVE 승인 / REJECT 반려 / CANCEL 취소 / SEND 전송 / SEND_FAILED 전송 실패 / EXPIRE 만료) | text | Y |  |
+| `actor` | 처리한 사람 (전송·만료는 비어 있음: run이 처리) | text |  | FK → app_users.user_id |
+| `self_approved` | 셀프 승인 (작성자가 승인, DB가 채움) | boolean | Y |  |
+| `client_id` | 주문 ID (전송한 주문) | text |  | UK, FK → oms_orders.client_id |
+| `reason` | 사유 (반려·전송 실패는 필수) | text |  |  |
+| `set_check` | 그때의 묶음 검증 결과 (R-98) | jsonb | Y |  |
+| `at` | 처리 시각 | timestamp with time zone | Y |  |
+
 ### code_groups — 공통코드 그룹 (테이블)
 
 | 컬럼 | 한글명 | 타입 | 필수 | 키 |
@@ -711,6 +817,44 @@ erDiagram
 | `valid_from` | 마스터 적용 시작일 | date |  |  |
 | `status` | 대조 결과 (MATCH 일치 / RENAMED 이름만 다름 / DIFFERENT 시장·구분 다름 / DELISTED 상장폐지 / MISSING 마스터에 없음) | text |  |  |
 
+### user_rights_v — 현재 결재 권한 (사용자·계좌·권한마다 오늘 적용되는 최근 행, 부여된 것만) (뷰)
+
+| 컬럼 | 한글명 | 타입 | 필수 | 키 |
+|---|---|---|---|---|
+| `user_id` | 사용자 ID | text |  |  |
+| `user_name` | 이름 | text |  |  |
+| `account_id` | 계좌 ID (비어 있으면 모든 계좌) | text |  |  |
+| `right_code` | 권한 | text |  |  |
+| `max_order_value` | 1건 승인 한도 (원) | bigint |  |  |
+| `self_approve` | 셀프 승인 허용 | boolean |  |  |
+| `effective_from` | 적용 시작일 | date |  |  |
+| `granted_by` | 부여한 사람 | text |  |  |
+| `reason` | 사유 | text |  |  |
+| `right_row_id` | 권한 행 번호 | bigint |  |  |
+
+### order_requests_v — 주문 요청 현황 (요청마다 한 행, 상태는 결재 이력의 마지막 행) (뷰)
+
+| 컬럼 | 한글명 | 타입 | 필수 | 키 |
+|---|---|---|---|---|
+| `request_id` | 요청 번호 | text |  |  |
+| `account_id` | 계좌 ID | text |  |  |
+| `trade_date` | 주문일 | date |  |  |
+| `batch_id` | 묶음 번호 | text |  |  |
+| `line_no` | 줄 번호 | integer |  |  |
+| `symbol` | 종목코드 | text |  |  |
+| `side` | 매매 구분 | text |  |  |
+| `qty` | 수량 | bigint |  |  |
+| `limit_price` | 지정가 | bigint |  |  |
+| `created_by` | 작성자 | text |  |  |
+| `created_at` | 작성 시각 | timestamp with time zone |  |  |
+| `status` | 상태 (PENDING 결재 대기 / APPROVED 승인·전송 대기 / REJECTED 반려 / CANCELED 취소 / SENT 전송 / SEND_FAILED 전송 실패 / EXPIRED 만료) | text |  |  |
+| `approved_by` | 승인자 | text |  |  |
+| `self_approved` | 셀프 승인 | boolean |  |  |
+| `approved_at` | 승인 시각 | timestamp with time zone |  |  |
+| `client_id` | 주문 ID | text |  |  |
+| `last_reason` | 마지막 사유 | text |  |  |
+| `status_at` | 상태 시각 | timestamp with time zone |  |  |
+
 ## 변경 이력
 
 | 버전 | 일자 | 변경 내용 |
@@ -725,3 +869,4 @@ erDiagram
 | v2.5 | 2026-11-23 | 입출금·대체(R-56, R-61, R-64, R-65). 테이블은 그대로다. 뷰 `cash_movements_v`(계좌에 넣거나 뺀 돈: 입금, 출금, 대체 입금, 대체 출금), `transfers_v`(계좌 간 대체의 보낸 쪽과 받은 쪽을 한 행으로) 추가, 둘 다 원장 이벤트에서 읽는다. `ledger_events`에 부분 유일 인덱스 `ledger_events_transfer_key` 추가(대체 번호 하나에 보낸 쪽 이벤트 하나, 받은 쪽 이벤트 하나). 출금과 대체는 원장 이벤트로 남고 분개와 예수금 행은 기존 테이블에 들어간다. 공통코드에 이벤트·전표·예수금 사유·감사 행위 코드 12개 추가(마이그레이션 `0006_cash_movements`). 기존 데이터는 바뀌지 않는다. |
 | v2.6 | 2026-11-23 | 수동 조정(R-66). 테이블은 그대로다. 뷰 `adjustments_v`(조정과 그 취소를 한 행으로: 사유, 금액, 세금, 예수금 변동액, 메모, 정리하는 대사 불일치 행, 취소일) 추가, 원장 이벤트에서 읽는다. `ledger_events`에 부분 유일 인덱스 `ledger_events_adjustment_key` 추가(조정 번호 하나에 조정 이벤트 하나, 취소 이벤트 하나). 계정과목 세 개 추가: 이자수익(4040), 잡이익(4090), 잡손실(5090). `accounts_chart.code`에 채번 규칙 제약 추가(첫째 자리 1~5인 숫자 4자리, 스펙 D4). 공통코드 그룹 1개(수동 조정 사유)와 이벤트·전표·예수금 사유·감사 행위·조정 사유 코드 14개 추가(마이그레이션 `0007_adjustments`). 기존 데이터는 바뀌지 않는다. |
 | v2.7 | 2026-11-24 | 종목 마스터 이력(R-94, R-95). 적재 기록 `master_loads`(KIS 마스터 파일을 넣은 기준일마다 한 행, 두 파일의 SHA-256과 신규·변경·빠짐 건수)와 종목 마스터 이력 `instrument_master`(시장 전 종목, 속성이 바뀐 날에만 한 행: 종목명, 시장, 증권그룹, 매매수량단위, 액면가, 상장주수, 거래정지·정리매매·관리종목·시장경고) 신설, 둘 다 수정·삭제·비우기 금지(테이블 18개). 파일에서 빠진 종목은 상장 여부가 거짓인 행으로 남는다. 가격(기준가, 시가총액, 거래량)은 담지 않는다. 등록 종목 `instruments`와는 FK로 묶지 않고 뷰 `instrument_master_current_v`(종목마다 최근 행), `instrument_master_match_v`(등록 종목과 마스터 대조) 추가. 공통코드 그룹 2개(증권그룹 구분, 종목 마스터 대조 결과)와 감사 행위 `MASTER_LOAD` 추가(마이그레이션 `0008_instrument_master`). 기존 데이터는 바뀌지 않는다. |
+| v2.8 | 2026-11-24 | 주문 결재(스펙 D9, R-99~101). 사용자 `app_users`(지금은 PC 로그인 이름이 ID), 결재 권한 이력 `user_rights`(주문 작성·주문 승인·권한 관리, 계좌별 또는 모든 계좌, 1건 승인 한도, 셀프 승인 허용, 적용 시작일, 부여·회수마다 한 행), 주문 요청 `order_requests`(주문일, 묶음 번호와 줄 번호, 종목·매매·수량·지정가, 작성자), 결재 이력 `order_approvals`(요청·승인·반려·취소·전송·전송 실패·만료마다 한 행, 그때의 묶음 검증 결과, 전송한 주문 ID) 신설, 넷 다 수정·삭제·비우기 금지(테이블 22개). 결재 순서는 DB 트리거 `ministp_order_approval_flow`가 지킨다(요청 다음에만 승인·반려, 승인 다음에만 전송, 요청과 취소는 작성자만, 셀프 승인 표시는 DB가 채움, 같은 요청은 잠그고 처리). 주문 ID 하나에 전송 기록 하나(부분 유일 인덱스). 뷰 `user_rights_v`(오늘 적용되는 권한), `order_requests_v`(요청마다 상태) 추가. 공통코드 그룹 3개(결재 권한, 결재 행위, 주문 요청 상태)와 감사 행위 7개 추가(마이그레이션 `0009_order_approval`). 기존 데이터는 바뀌지 않는다. |
