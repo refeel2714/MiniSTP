@@ -130,7 +130,7 @@ def _books(c: ActionContext):
     return load_books(c.conn, c.calendar, c.fees, c.account_id)
 
 
-def _picked_lines(p) -> tuple[list, str | None]:
+def _picked_lines(p) -> tuple[list, bool]:
     drafts = {d.key: d for d in parse_lines(p["lines"])}
     keys = picked_keys(p["picked"])
     missing = [k for k in keys if k not in drafts]
@@ -142,15 +142,24 @@ def _picked_lines(p) -> tuple[list, str | None]:
     groups = {d.group for d in chosen}
     if len(groups) > 1:
         raise ActionError("바스켓에서 온 줄(BK)은 바스켓 줄끼리 요청해요")
-    return [d.line for d in chosen], ("BK" if groups == {"BK"} else None)
+    return [d.line for d in chosen], groups == {"BK"}
+
+
+def _numbers(keys) -> str:
+    """사람에게는 요청 번호만 보여요. 주문일이 둘 이상 섞이면 날짜도 붙여요."""
+    days = {k.trade_date for k in keys}
+    return ", ".join(str(k.request_no) if len(days) == 1 else str(k) for k in keys)
 
 
 def _request(c: ActionContext, p, self_approve: bool) -> str:
-    lines, batch = _picked_lines(p)
+    lines, basket = _picked_lines(p)
     now = dt.datetime.combine(c.today, dt.datetime.now().time())
     day = approval.order_day(c.calendar, now)
-    ids, _ = approval.submit(_books(c), c.today, day, lines, batch=batch, self_approve=self_approve, now=now)
-    head = f"{len(ids)}건을 결재 요청했어요 ({day} 주문): {', '.join(ids)}"
+    keys, _ = approval.submit(_books(c), c.today, day, lines, basket=basket, self_approve=self_approve, now=now)
+    if basket:
+        head = f"바스켓 1건({len(lines)}종목)을 결재 요청했어요 ({day} 주문): 요청 {_numbers(keys)}"
+    else:
+        head = f"단건 {len(keys)}건을 결재 요청했어요 ({day} 주문): 요청 {_numbers(keys)}"
     if self_approve:
         return head + ". 셀프 승인까지 했어요. 장중이면 run이 다시 검증하고 바로 보내요."
     return head + ". 승인자가 STP-5100에서 승인하면 run이 보내요."
@@ -164,22 +173,29 @@ def _request_only(c: ActionContext, p) -> str:
     return _request(c, p, False)
 
 
+def _picked_requests(c: ActionContext, p) -> list:
+    keys = approval.parse_keys(picked_keys(p["picked"]), c.today)
+    if not keys:
+        raise ActionError("요청을 체크하세요")
+    return keys
+
+
 def _approve(c: ActionContext, p) -> str:
-    ids = picked_keys(p["picked"])
-    approval.approve(_books(c), c.today, ids)
-    return f"{len(ids)}건을 승인했어요: {', '.join(ids)}. 장중이면 run이 보내기 직전에 한 번 더 검증하고 보내요."
+    keys = _picked_requests(c, p)
+    approval.approve(_books(c), c.today, keys)
+    return f"{len(keys)}건을 승인했어요: 요청 {_numbers(keys)}. 장중이면 run이 보내기 직전에 한 번 더 검증하고 보내요."
 
 
 def _reject(c: ActionContext, p) -> str:
-    ids = picked_keys(p["picked"])
-    approval.reject(c.conn, c.account_id, c.today, ids, p["reason"])
-    return f"{len(ids)}건을 반려했어요: {', '.join(ids)}"
+    keys = _picked_requests(c, p)
+    approval.reject(c.conn, c.account_id, c.today, keys, p["reason"])
+    return f"{len(keys)}건을 반려했어요: 요청 {_numbers(keys)}"
 
 
 def _cancel_requests(c: ActionContext, p) -> str:
-    ids = picked_keys(p["picked"])
-    approval.cancel(c.conn, c.account_id, ids, p.get("reason"))
-    return f"{len(ids)}건의 요청을 거뒀어요: {', '.join(ids)}"
+    keys = _picked_requests(c, p)
+    approval.cancel(c.conn, c.account_id, keys, p.get("reason"), today=c.today)
+    return f"{len(keys)}건의 요청을 거뒀어요: 요청 {_numbers(keys)}"
 
 
 def _user_add(c: ActionContext, p) -> str:

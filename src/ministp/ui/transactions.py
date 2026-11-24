@@ -590,8 +590,23 @@ def _set_result(result, rows, picked_n: int, extra: str = "") -> TxResult:
                      "available": result.available_cash})
 
 
+def _committed(state, reqs, skip=()) -> list:
+    """이미 잡힌 요청의 아직 안 나간 줄 (나간 줄은 미체결 주문으로 잡혀 있어요). `skip`: 빼고 볼 요청 키."""
+    from .. import approval
+    return [approval._from_line(state, r, ln) for r in reqs if str(r.key) not in skip for ln in r.unsent]
+
+
+def _issues_of(result, prefix: str) -> tuple:
+    """묶음 검증 결과에서 한 요청(줄 키가 `요청키:`로 시작)에 걸린 사유. 계좌 전체 사유도 함께."""
+    out = list(result.issues)
+    for ln in result.lines:
+        if ln.item.key.startswith(prefix):
+            out += [i for i in ln.together if i != "GROUP_BLOCKED" or not any(ln.together[:1])]
+    return tuple(dict.fromkeys(out))
+
+
 def _drafts_checked(c: TxContext, p):
-    """화면의 주문 줄과 체크한 줄의 묶음 검증. (상태, 줄, 체크한 줄, 줄마다 단건 결과, 묶음 결과)."""
+    """화면의 주문 줄과 체크한 줄의 묶음 검증. (상태, 줄, 체크한 줄, 줄마다 단건 결과, 묶음 결과, 잡힌 요청)."""
     from .. import approval
     from ..precheck import check_set
     limits, weight = _limits_and_weight()
@@ -599,7 +614,7 @@ def _drafts_checked(c: TxContext, p):
     picked = set(picked_keys(p.get("picked")))
     state = approval.account_state(c.books, c.today)
     live = approval.requests(c.conn, account_id=c.account_id, from_date=c.today, statuses=approval.LIVE)
-    committed = [approval._from_request(state, r) for r in live]
+    committed = _committed(state, live)
     proposed = {d.key: approval._proposed(state, d.line.symbol, d.line.side, d.line.qty, d.line.limit_price,
                                           d.key, d.group) for d in drafts}
     alone = check_set(state, list(proposed.values()), committed, limits, weight)
@@ -608,8 +623,17 @@ def _drafts_checked(c: TxContext, p):
     return state, drafts, chosen, {ln.item.key: ln for ln in alone.lines}, together, live
 
 
+def _line_status(r, ln) -> str:
+    return {"SENT": "SENT", "FAILED": "SEND_FAILED"}.get(ln.send_outcome or "", r.status)
+
+
+ORDER_LINE_COLUMNS = ("key", "pickable", "symbol", "instrument_name", "asset_type", "side", "kind", "qty",
+                      "limit_price", "amount", "alone", "together", "status", "request_no", "order_type", "line_no",
+                      "request_key", "group")
+
+
 def _order_lines(c: TxContext, p) -> TxResult:
-    """STP-1210 주문 작성: 화면에서 쓴 줄(저장 전)과 이 계좌의 오늘 이후 요청. 체크한 줄의 묶음 결과도 함께."""
+    """STP-1210 주문 작성: 화면에서 쓴 줄(저장 전)과 이 계좌의 오늘 이후 요청의 줄. 체크한 줄의 묶음 결과도 함께."""
     from .. import approval
     state, drafts, chosen, alone, together, _ = _drafts_checked(c, p)
     by_key = {ln.item.key: ln for ln in together.lines}
@@ -620,20 +644,23 @@ def _order_lines(c: TxContext, p) -> TxResult:
         rows.append((d.key, True, d.line.symbol, inst.name if inst else "", inst.asset_type.value if inst else "",
                      d.line.side.value, "지정가" if d.line.limit_price else "시장가", d.line.qty, d.line.limit_price,
                      a.item.amount if a.item.ref_price else None, check_short(a.alone),
-                     check_short(t.together) if t else NOT_PICKED, DRAFT, d.group or None, None))
+                     check_short(t.together) if t else NOT_PICKED, DRAFT, None,
+                     "BASKET" if d.group else "SINGLE", None, None, d.group or None))
     for r in sorted(approval.requests(c.conn, account_id=c.account_id, from_date=c.today),
-                    key=lambda r: r.request_id, reverse=True):
-        inst = state.instruments.get(r.symbol)
-        price = r.limit_price or state.prices.get(r.symbol)
-        rows.append((r.request_id, False, r.symbol, inst.name if inst else "", inst.asset_type.value if inst else "",
-                     r.side.value, "지정가" if r.limit_price else "시장가", r.qty, r.limit_price,
-                     r.qty * price if price else None, "", "보낸 요청", r.status, r.batch_id, r.request_id))
+                    key=lambda r: r.key, reverse=True):
+        for ln in r.lines:
+            inst = state.instruments.get(ln.symbol)
+            price = ln.limit_price or state.prices.get(ln.symbol)
+            rows.append((f"{r.key}:{ln.line_no}", False, ln.symbol, inst.name if inst else "",
+                         inst.asset_type.value if inst else "", ln.side.value, "지정가" if ln.limit_price else "시장가",
+                         ln.qty, ln.limit_price, ln.qty * price if price else None, "", "보낸 요청",
+                         _line_status(r, ln), r.request_no, r.order_type, ln.line_no, str(r.key), None))
     user, rights = _who(c)
     lock = _write_lock(c, user, rights)
     if not lock and not chosen:
         lock = "결재 요청할 줄을 체크하세요"
     elif not lock and len({x.group for x in chosen}) > 1:
-        lock = "바스켓 줄(BK)은 바스켓 줄끼리 요청해요. 낱개 줄은 따로 체크하세요"
+        lock = "바스켓에서 온 줄은 바스켓 줄끼리 요청해요(요청 한 건이 돼요). 낱개 줄은 따로 체크하세요"
     elif not lock and not together.ok:
         lock = f"묶음 검증에 걸려요: {approval.describe(together)}"
     send = lock
@@ -646,9 +673,7 @@ def _order_lines(c: TxContext, p) -> TxResult:
         elif right.max_order_value is not None and any(x.amount > right.max_order_value for x in chosen):
             send = f"1건 승인 한도 {right.max_order_value:,}원을 넘는 줄이 있어요. 결재 요청만 할 수 있어요"
     day = approval.order_day(c.calendar, dt.datetime.combine(c.today, dt.datetime.now().time()))
-    return TxResult({"main": Dataset(("key", "pickable", "symbol", "instrument_name", "asset_type", "side", "kind",
-                                      "qty", "limit_price", "amount", "alone", "together", "status", "batch_id",
-                                      "request_id"), tuple(rows))},
+    return TxResult({"main": Dataset(ORDER_LINE_COLUMNS, tuple(rows))},
                     {"order_date": day.isoformat(), "user": user, "request_lock": lock, "send_lock": send})
 
 
@@ -666,25 +691,38 @@ def _order_set(c: TxContext, p) -> TxResult:
     else:
         over = right.max_order_value is not None and any(x.amount > right.max_order_value for x in chosen)
         who = (f"{user}: 셀프 승인 허용 ({_limit_text(right)})", "한도 초과, 요청만" if over else "셀프 승인 가능", None)
-    rows.append(("결재", f"묶음 {sum(x.amount for x in chosen):,}원", who[0],
-                 who[1] if chosen else NOT_PICKED, who[2]))
+    basket = any(x.group for x in chosen)
+    rows.append(("결재", f"{'바스켓 요청 1건' if basket else f'단건 요청 {len(chosen)}건'}, {sum(x.amount for x in chosen):,}원",
+                 who[0], who[1] if chosen else NOT_PICKED, who[2]))
     return _set_result(together, rows, len(chosen))
 
 
+HISTORY_COLUMNS = ("at", "action", "actor", "self_approved", "line_no", "client_id", "reason")
+
+
 def _approval_history(c: TxContext, p) -> TxResult:
-    """요청 하나의 결재·전송 이력 (append-only). 그때의 묶음 검증 결과는 감사용으로 DB에 남아 있어요."""
-    if not p.get("request_id"):
-        return TxResult({"main": Dataset(("id", "at", "action", "actor", "self_approved", "client_id", "reason"), ())})
-    return TxResult({"main": q._q(c.conn, """
-        select id, at, action, actor, case when self_approved then '셀프 승인' end as self_approved, client_id, reason
-          from order_approvals
-         where request_id = %s order by id""", (p["request_id"],))})
+    """요청 하나의 결재 이력(요청 단위)과 전송 이력(줄 단위), 시각 순. 그때의 묶음 검증 결과는 DB에 남아 있어요."""
+    from .. import approval
+    if not p.get("request_key"):
+        return TxResult({"main": Dataset(HISTORY_COLUMNS, ())})
+    k = approval.parse_key(p["request_key"], c.today)
+    rows = [(at, approval.ACTIONS.get(a, a), actor, "셀프 승인" if self_ok else None, None, None, reason, 0, i)
+            for i, at, a, actor, self_ok, reason in c.conn.execute(
+                "select id, at, action, actor, self_approved, reason from order_approvals"
+                " where trade_date = %s and request_no = %s", (k.trade_date, k.request_no))]
+    rows += [(at, approval.SEND_OUTCOMES.get(o, o), "run", None, line_no, cid, reason, 1, i)
+             for i, at, o, line_no, cid, reason in c.conn.execute(
+                 "select id, at, outcome, line_no, client_id, reason from order_sends"
+                 " where trade_date = %s and request_no = %s", (k.trade_date, k.request_no))]
+    rows.sort(key=lambda r: (r[0], r[7], r[8]))
+    return TxResult({"main": Dataset(HISTORY_COLUMNS, tuple(r[:7] for r in rows))})
 
 
 REQUEST_FILTERS = ("PENDING", "APPROVED", "REJECTED", "CANCELED", "SENT", "SEND_FAILED", "EXPIRED")
 
 
 def _approvals_checked(c: TxContext, p):
+    """STP-5100: (상태, 보이는 요청, 체크한 요청, 요청마다 혼자 본 사유, 체크한 결재 대기 요청의 묶음 결과)."""
     from .. import approval
     from ..precheck import check_set
     limits, weight = _limits_and_weight()
@@ -697,31 +735,42 @@ def _approvals_checked(c: TxContext, p):
     picked = set(picked_keys(p.get("picked")))
     state = approval.account_state(c.books, c.today)
     approved = approval.requests(c.conn, account_id=c.account_id, from_date=c.today, statuses=("APPROVED",))
-    committed = [approval._from_request(state, r) for r in approved if r.request_id not in picked]
-    pending = [r for r in reqs if r.status == "PENDING"]
-    alone = check_set(state, [approval._from_request(state, r) for r in pending], committed, limits, weight)
-    chosen_reqs = sorted([r for r in approval.requests(c.conn, account_id=c.account_id, ids=list(picked) or None)
-                          if picked and r.status in approval.LIVE],
-                         key=lambda r: (r.trade_date, r.batch_id or "", r.line_no, r.request_id))
-    chosen = [approval._from_request(state, r) for r in chosen_reqs if r.status == "PENDING"]
+    committed = _committed(state, approved, skip=picked)
+    alone = {}
+    for r in reqs:
+        if r.status == "PENDING":
+            res = check_set(state, [approval._from_line(state, r, ln) for ln in r.lines], committed, limits, weight)
+            alone[str(r.key)] = _issues_of(res, f"{r.key}:")
+    keys = approval.parse_keys(sorted(picked), c.today) if picked else []
+    chosen_reqs = [r for r in approval.requests(c.conn, account_id=c.account_id, keys=keys)
+                   if r.status in approval.LIVE] if keys else []
+    chosen = [approval._from_line(state, r, ln) for r in chosen_reqs if r.status == "PENDING" for ln in r.lines]
     together = check_set(state, chosen, committed, limits, weight)
-    return state, reqs, chosen_reqs, {ln.item.key: ln for ln in alone.lines}, together
+    return state, reqs, chosen_reqs, alone, together
+
+
+def _request_amount(state, r) -> int | None:
+    prices = [(ln.limit_price or state.prices.get(ln.symbol)) for ln in r.lines]
+    return None if None in prices else sum(ln.qty * pr for ln, pr in zip(r.lines, prices))
 
 
 def _approval_requests(c: TxContext, p) -> TxResult:
-    """STP-5100 결재할 요청: 이 계좌의 요청과, 체크한 요청을 승인하면 어떻게 되는지."""
+    """STP-5100 결재할 요청: 요청 한 건이 한 행(바스켓도 한 행). 체크한 요청을 승인하면 어떻게 되는지도."""
     from .. import approval
     state, reqs, chosen_reqs, alone, together = _approvals_checked(c, p)
-    by_key = {ln.item.key: ln for ln in together.lines}
+    picked_pending = {str(r.key) for r in chosen_reqs if r.status == "PENDING"}
     rows = []
     for r in reqs:
-        inst = state.instruments.get(r.symbol)
-        price = r.limit_price or state.prices.get(r.symbol)
-        a, t = alone.get(r.request_id), by_key.get(r.request_id)
-        rows.append((r.request_id, r.status in approval.LIVE, r.trade_date, r.batch_id, r.created_by, r.symbol,
-                     inst.name if inst else "", inst.asset_type.value if inst else "", r.side.value,
-                     "지정가" if r.limit_price else "시장가", r.qty, r.limit_price, r.qty * price if price else None,
-                     check_short(a.alone) if a else "", check_short(t.together) if t else
+        k = str(r.key)
+        first = r.lines[0]
+        inst = state.instruments.get(first.symbol)
+        name = (inst.name if inst else first.symbol) + (f" 외 {len(r.lines) - 1}종목" if len(r.lines) > 1 else "")
+        sides = {ln.side.value for ln in r.lines}
+        rows.append((k, r.status in approval.LIVE, r.trade_date, r.request_no, r.order_type, r.created_by,
+                     first.symbol, name, inst.asset_type.value if inst else "", sides.pop() if len(sides) == 1 else None,
+                     len(r.lines), _request_amount(state, r),
+                     check_short(alone[k]) if k in alone else "",
+                     check_short(_issues_of(together, f"{k}:")) if k in picked_pending else
                      (NOT_PICKED if r.status == "PENDING" else ""), r.status, r.approved_by, r.last_reason))
     user, rights = _who(c)
     right = rights.get("ORDER_APPROVE")
@@ -736,23 +785,46 @@ def _approval_requests(c: TxContext, p) -> TxResult:
         elif any(r.created_by == user for r in pending) and not right.self_approve:
             lock = f"본인이 쓴 요청이 있어요. {user}의 권한에 셀프 승인 허용이 없어 다른 승인자가 승인해야 해요"
         elif right.max_order_value is not None and any(x.item.amount > right.max_order_value for x in together.lines):
-            lock = f"{_limit_text(right)}을 넘는 요청이 있어요"
+            lock = f"{_limit_text(right)}을 넘는 줄이 있어요"
         elif not together.ok:
             lock = f"묶음 검증에 걸려요: {approval.describe(together)}"
     cancel = "" if chosen_reqs else "취소할 요청을 체크하세요"
     if not cancel and any(r.created_by != user for r in chosen_reqs):
         cancel = f"작성자만 요청을 취소할 수 있어요 ({user}가 쓰지 않은 요청이 있어요)"
-    return TxResult({"main": Dataset(("request_id", "pickable", "trade_date", "batch_id", "created_by", "symbol",
-                                      "instrument_name", "asset_type", "side", "kind", "qty", "limit_price", "amount",
+    elif not cancel and any(len(r.unsent) < len(r.lines) for r in chosen_reqs):
+        cancel = "이미 나간 줄이 있는 요청은 거둘 수 없어요 (나간 주문은 주문 취소로)"
+    return TxResult({"main": Dataset(("request_key", "pickable", "trade_date", "request_no", "order_type", "created_by",
+                                      "symbol", "instrument_name", "asset_type", "side", "line_count", "amount",
                                       "alone", "together", "status", "approved_by", "last_reason"), tuple(rows))},
                     {"user": user, "approve_lock": lock, "reject_lock": reject, "cancel_lock": cancel})
+
+
+def _request_lines(c: TxContext, p) -> TxResult:
+    """STP-5100 요청의 줄: 고른 요청의 종목 줄과 줄마다 전송 결과."""
+    from .. import approval
+    cols = ("line_no", "symbol", "instrument_name", "asset_type", "side", "kind", "qty", "limit_price", "amount",
+            "send_outcome", "client_id", "send_reason")
+    if not p.get("request_key"):
+        return TxResult({"main": Dataset(cols, ())})
+    k = approval.parse_key(p["request_key"], c.today)
+    found = approval.requests(c.conn, account_id=c.account_id, keys=[k])
+    state = approval.account_state(c.books, c.today) if found else None
+    rows = []
+    for r in found:
+        for ln in r.lines:
+            inst = state.instruments.get(ln.symbol)
+            price = ln.limit_price or state.prices.get(ln.symbol)
+            rows.append((ln.line_no, ln.symbol, inst.name if inst else "", inst.asset_type.value if inst else "",
+                         ln.side.value, "지정가" if ln.limit_price else "시장가", ln.qty, ln.limit_price,
+                         ln.qty * price if price else None, ln.send_outcome, ln.client_id, ln.send_reason))
+    return TxResult({"main": Dataset(cols, tuple(rows))})
 
 
 def _approval_set(c: TxContext, p) -> TxResult:
     """STP-5100 선택 묶음 검증: 체크한 결재 대기 요청 + 이미 승인했지만 아직 안 나간 요청. 내 승인 한도도."""
     state, reqs, chosen_reqs, alone, together = _approvals_checked(c, p)
     limits, weight = _limits_and_weight()
-    n = len(together.lines)
+    n = len([r for r in chosen_reqs if r.status == "PENDING"])
     rows = _set_rows(state, together, limits, weight, n)
     user, rights = _who(c)
     right = rights.get("ORDER_APPROVE")
@@ -762,7 +834,7 @@ def _approval_set(c: TxContext, p) -> TxResult:
     else:
         over = right.max_order_value is not None and biggest > right.max_order_value
         mine = sum(1 for r in chosen_reqs if r.created_by == user)
-        rows.append(("내 승인 한도", f"요청 1건 최대 {biggest:,}원",
+        rows.append(("내 승인 한도", f"줄 1건 최대 {biggest:,}원",
                      f"{user}: {_limit_text(right)}, 셀프 승인 {'허용' if right.self_approve else '안 됨'}"
                      + (f" (본인 요청 {mine}건)" if mine else ""),
                      NOT_PICKED if not n else ("초과" if over else ("셀프 승인 안 됨" if mine and not right.self_approve
@@ -883,11 +955,12 @@ TRANSACTIONS: dict[str, Tx] = {t.tx_id: t for t in [
     Tx("STP4600R02", "그룹의 코드", {"group_id": "text"}, _codes),
     Tx("STP1210R01", "주문 작성과 보낸 요청", {"lines": "text", "picked": "text"}, _order_lines),
     Tx("STP1210R02", "선택 묶음 검증", {"lines": "text", "picked": "text"}, _order_set),
-    Tx("STP1210R03", "결재·전송 이력", {"request_id": "text"}, _approval_history),
+    Tx("STP1210R03", "결재·전송 이력", {"request_key": "text"}, _approval_history),
     Tx("STP5100R01", "결재할 요청", {"status": "text", "trade_date": "date", "picked": "text"}, _approval_requests),
     Tx("STP5100R02", "선택 묶음 검증 (승인 기준)", {"status": "text", "trade_date": "date", "picked": "text"},
        _approval_set),
-    Tx("STP5100R03", "결재·전송 이력", {"request_id": "text"}, _approval_history),
+    Tx("STP5100R03", "결재·전송 이력", {"request_key": "text"}, _approval_history),
+    Tx("STP5100R04", "요청의 줄", {"request_key": "text"}, _request_lines),
     Tx("STP5200R01", "사용자", {}, _app_users),
     Tx("STP5200R02", "권한 이력", {"user_id": "text"}, _user_rights),
 ]}

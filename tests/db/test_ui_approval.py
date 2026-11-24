@@ -69,9 +69,12 @@ def test_the_sample_has_users_rights_and_requests_to_show(conn, sample):
     users = dict(conn.execute("select user_id, name from app_users").fetchall())
     assert {u for u, _, _ in SAMPLE_USERS} | {ME} == set(users)
     statuses = [r.status for r in approval.requests(conn, account_id=DEFAULT_ACCOUNT)]
-    assert sorted(statuses) == ["APPROVED", "PENDING", "PENDING", "PENDING", "REJECTED"]
-    assert {r.batch_id for r in approval.requests(conn, account_id=DEFAULT_ACCOUNT) if r.batch_id} == \
-        {f"BK{sample.last_day:%Y%m%d}-01"}
+    assert sorted(statuses) == ["APPROVED", "PENDING", "PENDING", "REJECTED"]
+    made = approval.requests(conn, account_id=DEFAULT_ACCOUNT)
+    # 요청 번호는 주문일마다 1부터인 순번이고, 바스켓은 종목이 둘이어도 요청 1건이에요
+    assert [(str(r.key), r.order_type, len(r.lines)) for r in made] == \
+        [(f"{sample.last_day:%Y%m%d}-{n}", t, k) for n, t, k in
+         ((1, "SINGLE", 1), (2, "SINGLE", 1), (3, "SINGLE", 1), (4, "BASKET", 2))]
 
 
 def test_order_lines_are_parsed_and_checked_strictly():
@@ -125,7 +128,7 @@ def test_buttons_lock_with_the_reason_for_someone_without_the_right(ctx):
     assert "주문 작성 권한이 없어요" in res.meta["request_lock"] == res.meta["send_lock"]
     with audit.acting_as("UI", "kim.trader"):
         pending = run_tx("STP5100R01", ctx, {"status": "PENDING"})
-        some = next(r["request_id"] for r in rows(pending) if not r["batch_id"])
+        some = next(r["request_key"] for r in rows(pending) if r["order_type"] == "SINGLE")
         res = run_tx("STP5100R01", ctx, {"status": "PENDING", "picked": some})
     assert "주문 승인 권한이 없어요" in res.meta["approve_lock"] and res.meta["cancel_lock"] == ""
     with audit.acting_as("UI", "lee.fin"):          # 남의 요청은 취소할 수 없어요
@@ -135,12 +138,17 @@ def test_buttons_lock_with_the_reason_for_someone_without_the_right(ctx):
 
 def test_approving_checks_the_set_and_the_limit_of_the_approver(ctx):
     pending = rows(run_tx("STP5100R01", ctx, {"status": "PENDING"}))
-    batch = [r["request_id"] for r in pending if r["batch_id"]]
-    assert len(batch) == 2 and all(r["together"] == "선택 안 함" for r in pending)
-    res = run_tx("STP5100R01", ctx, {"status": "PENDING", "picked": ",".join(batch)})
-    assert [r["together"] for r in rows(res) if r["batch_id"]] == ["통과", "통과"]
+    basket = [r for r in pending if r["order_type"] == "BASKET"]
+    assert len(basket) == 1 and all(r["together"] == "선택 안 함" for r in pending)
+    bk = basket[0]                     # 바스켓은 한 행: 줄 수와 "외 N종목", 금액은 줄 합계
+    assert bk["line_count"] == 2 and bk["instrument_name"].endswith("외 1종목") and bk["request_no"] == 4
+    lines = rows(run_tx("STP5100R04", ctx, {"request_key": bk["request_key"]}))
+    assert [r["line_no"] for r in lines] == [1, 2] and bk["amount"] == sum(r["amount"] for r in lines)
+    assert all(r["send_outcome"] is None for r in lines)
+    res = run_tx("STP5100R01", ctx, {"status": "PENDING", "picked": bk["request_key"]})
+    assert [r["together"] for r in rows(res) if r["order_type"] == "BASKET"] == ["통과"]
     with audit.acting_as("UI", "lee.fin"):
-        mine = run_tx("STP5100R02", ctx, {"status": "PENDING", "picked": ",".join(batch)})
+        mine = run_tx("STP5100R02", ctx, {"status": "PENDING", "picked": bk["request_key"]})
     limit_row = rows(mine)[-1]
     assert limit_row["item"] == "내 승인 한도" and "lee.fin" in limit_row["detail"] and limit_row["ok"] is True
     nothing = run_tx("STP5100R01", ctx, {"status": "PENDING"})
@@ -165,31 +173,32 @@ def test_a_request_from_the_screen_goes_through_the_same_function_and_is_audited
     before = len(approval.requests(conn, account_id=DEFAULT_ACCOUNT))
     r = client.post("/api/action/STP1210U01", json={"params": {"lines": lines, "picked": "N2"}})
     assert r.status_code == 200, r.json()
-    assert "1건을 결재 요청했어요" in r.json()["message"]
+    assert "단건 1건을 결재 요청했어요" in r.json()["message"]
     made = approval.requests(conn, account_id=DEFAULT_ACCOUNT)
     assert len(made) == before + 1
-    new = max(made, key=lambda x: x.request_id)
-    assert (new.status, new.created_by, new.symbol) == ("PENDING", ME, sym)
+    new = max(made, key=lambda x: x.key)
+    assert f"요청 {new.request_no}" in r.json()["message"]
+    assert (new.status, new.created_by, new.order_type, new.lines[0].symbol) == ("PENDING", ME, "SINGLE", sym)
     row = audit.rows(conn, limit=1, action="ORDER_REQUEST")[0]
     assert (row.channel, row.actor, row.detail["tx"]) == ("UI", ME, "STP1210U01")
     # 승인과 반려는 체크한 요청으로. 본인 요청이라도 셀프 승인 허용이 있으면 돼요
-    r = client.post("/api/action/STP5100U01", json={"params": {"picked": new.request_id}})
+    r = client.post("/api/action/STP5100U01", json={"params": {"picked": str(new.key)}})
     assert r.status_code == 200, r.json()
-    assert approval.requests(conn, ids=[new.request_id])[0].status == "APPROVED"
+    assert approval.requests(conn, keys=[new.key])[0].status == "APPROVED"
 
 
 def test_a_locked_button_pressed_anyway_is_refused_by_the_same_check(sample, conn, ctx, monkeypatch):
     client = writer(sample)
-    pending = [r for r in approval.requests(conn, account_id=DEFAULT_ACCOUNT, statuses=("PENDING",))
-               if r.created_by == "kim.trader" and r.batch_id]
+    basket = next(r for r in approval.requests(conn, account_id=DEFAULT_ACCOUNT, statuses=("PENDING",))
+                  if r.created_by == "kim.trader" and r.order_type == "BASKET")
     monkeypatch.setattr(audit, "os_user", lambda: "kim.trader")   # 작성만 있는 사람이 승인을 누르면
-    r = client.post("/api/action/STP5100U01", json={"params": {"picked": pending[0].request_id}})
-    assert r.status_code == 400 and "함께 승인해야 해요" in r.json()["error"]
-    r = client.post("/api/action/STP5100U01", json={"params": {"picked": ",".join(p.request_id for p in pending)}})
+    r = client.post("/api/action/STP5100U01", json={"params": {"picked": str(basket.key)}})
     assert r.status_code == 400 and "주문 승인 권한이 없어요" in r.json()["error"]
     refused = audit.rows(conn, limit=1, action="ORDER_APPROVE", outcome="REFUSED")[0]
     assert (refused.channel, refused.actor) == ("UI", "kim.trader")
-    assert {p.status for p in approval.requests(conn, ids=[p.request_id for p in pending])} == {"PENDING"}
+    assert approval.requests(conn, keys=[basket.key])[0].status == "PENDING"
+    r = client.post("/api/action/STP5100U01", json={"params": {"picked": "x-1"}})
+    assert r.status_code == 400 and "요청 번호는" in r.json()["error"]
 
 
 def test_mixed_basket_and_single_lines_are_refused(sample, ctx):
@@ -217,7 +226,7 @@ def test_the_screens_sit_in_the_new_area_and_split_as_drawn():
     left, right, below = split_sides(screens["STP-1210"])
     assert [g.id for g in left] == ["lines"] and [g.id for g in right] == ["set", "history"] and below == []
     left, right, _ = split_sides(screens["STP-5100"])
-    assert [g.id for g in left] == ["requests"] and [g.id for g in right] == ["set", "history"]
+    assert [g.id for g in left] == ["requests"] and [g.id for g in right] == ["set", "lines", "history"]
     assert screens["STP-1500"].grids[1].handoff["screen"] == "STP-1210"
 
 

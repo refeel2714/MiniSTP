@@ -210,7 +210,7 @@ def _sample_approvals(conn, calendar, fees, day: dt.date) -> None:
         approved, _ = approval.submit(books, day, day, [line(syms[0], Side.BUY, 2)])
         rejected, _ = approval.submit(books, day, day, [line(syms[1], Side.BUY, 3)])
         approval.submit(books, day, day, [line(syms[2], Side.BUY, 1)])
-        approval.submit(books, day, day, [line(syms[0], Side.BUY, 1), line(syms[1], Side.BUY, 1)], batch="BK")
+        approval.submit(books, day, day, [line(syms[0], Side.BUY, 1), line(syms[1], Side.BUY, 1)], basket=True)
     with audit.acting_as("SYSTEM", "lee.fin"):
         approval.approve(books, day, approved)
     with audit.acting_as("SYSTEM", "choi.cfo"):

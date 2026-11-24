@@ -253,17 +253,17 @@ MINISTP_TEST_DATABASE_URL=postgresql://postgres:postgres@localhost:5432/ministp_
 .venv\Scripts\python -m ministp basket simulate --amount 10000000 :: 바스켓 주문 시뮬레이션 (계산만, 주문 안 함)
 ```
 
-주문 결재 (ERD v2.8부터, R-99~102): 모든 주문은 요청으로 먼저 남고 승인된 요청만 `run`이 보냅니다. 화면에서는 STP-1210 주식 주문(작성·결재 요청), STP-5100 주문 결재(승인·반려), STP-5200 결재 권한(사용자·권한)에서 같은 일을 합니다. 처음 한 번 사용자와 권한을 정합니다. 셀프 승인 허용이 있으면 `order`와 `run` 창의 buy/sell은 지금처럼 바로 나갑니다(요청, 셀프 승인, 전송이 한 번에).
+주문 결재 (ERD v2.9부터, R-99~102): 모든 주문은 요청으로 먼저 남고 승인된 요청만 `run`이 보냅니다. 화면에서는 STP-1210 주식 주문(작성·결재 요청), STP-5100 주문 결재(승인·반려), STP-5200 결재 권한(사용자·권한)에서 같은 일을 합니다. 처음 한 번 사용자와 권한을 정합니다. 셀프 승인 허용이 있으면 `order`와 `run` 창의 buy/sell은 지금처럼 바로 나갑니다(요청, 셀프 승인, 전송이 한 번에).
 
 ```bat
 .venv\Scripts\python -m ministp user add %USERNAME% "운영자"                    :: 첫 사용자 (PC 로그인 이름이 ID)
 .venv\Scripts\python -m ministp right grant %USERNAME% RIGHTS_ADMIN
 .venv\Scripts\python -m ministp right grant %USERNAME% ORDER_WRITE
 .venv\Scripts\python -m ministp right grant %USERNAME% ORDER_APPROVE --self-approve --max-value 10000000
-.venv\Scripts\python -m ministp request add --line 069500:buy:10:82950 --line 360750:buy:20:22840 --batch
+.venv\Scripts\python -m ministp request add --line 069500:buy:10:82950 --line 360750:buy:20:22840 --basket  :: 바스켓 = 요청 한 건
 .venv\Scripts\python -m ministp request list
-.venv\Scripts\python -m ministp request approve Q20261125-0001 Q20261125-0002 :: 묶음은 함께
-.venv\Scripts\python -m ministp request reject Q20261125-0003 --reason "가격 재확인"
+.venv\Scripts\python -m ministp request approve 1             :: 요청 번호만 (주문일은 지금 요청이 나갈 날, 다른 날은 20261125-1)
+.venv\Scripts\python -m ministp request reject 2 --reason "가격 재확인"
 ```
 
 계좌가 여러 개일 때 (ERD v2.0부터):

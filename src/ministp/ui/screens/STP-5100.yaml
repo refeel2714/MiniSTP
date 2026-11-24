@@ -1,6 +1,6 @@
 id: STP-5100
 title: 주문 결재
-purpose: 승인을 기다리는 요청을 체크해서 한 번에 승인하거나 반려해요(R-100, R-102). 오른쪽 "선택 묶음 검증"은 체크한 요청을 모두 함께, 이미 승인했지만 아직 안 나간 요청과 미체결 주문까지 더해서 다시 본 결과예요(R-98). 묶음이 불합격이거나 내 1건 승인 한도를 넘거나, 본인이 쓴 요청인데 셀프 승인 허용이 없으면 승인 버튼이 잠겨요. 바스켓(BK)처럼 묶음 번호가 같은 요청은 함께 체크되고 함께 승인·반려돼요. 승인해도 장중 `run`이 보내기 직전에 같은 계산을 한 번 더 해요. 요청 취소는 작성자만 해요.
+purpose: 승인을 기다리는 요청을 체크해서 한 번에 승인하거나 반려해요(R-100, R-102). 오른쪽 "선택 묶음 검증"은 체크한 요청을 모두 함께, 이미 승인했지만 아직 안 나간 요청과 미체결 주문까지 더해서 다시 본 결과예요(R-98). 묶음이 불합격이거나 내 1건 승인 한도를 넘거나, 본인이 쓴 요청인데 셀프 승인 허용이 없으면 승인 버튼이 잠겨요. 요청 번호는 주문일마다 1부터 매기는 순번이고, 바스켓은 종목이 여럿이어도 요청 1건이라 한 줄로 보이고 한 번에 승인·반려돼요. 요청을 고르면 오른쪽 "요청의 줄"에 종목 줄과 줄마다 전송 결과가 나와요. 승인해도 장중 `run`이 보내기 직전에 같은 계산을 한 번 더 해요. 요청 취소는 작성자만 해요.
 layout: split
 left: 66
 conditions:
@@ -11,28 +11,27 @@ grids:
     title: 결재할 요청
     tx: STP5100R01
     load: input
-    key: request_id
+    key: request_key
     weight: 3
     live: true
     meta: {user: 사용자}
-    pick: {param: picked, when: pickable, group: batch_id}
+    pick: {param: picked, when: pickable}
     columns:
-      - {name: request_id, source: order_requests.request_id, format: code, sub: batch_id}
+      - {name: request_key, label: 요청 키, format: code, hidden: true}
       - {name: pickable, label: 체크 가능, hidden: true}
-      - {name: batch_id, source: order_requests.batch_id, format: code, hidden: true}
-      - {name: symbol, source: order_requests.symbol, format: code}
+      - {name: request_no, source: order_requests.request_no, format: number, sub: trade_date}
+      - {name: trade_date, source: order_requests.trade_date, format: date}
+      - {name: order_type, source: order_requests.order_type, format: code, sub: line_count}
+      - {name: line_count, source: order_requests_v.line_count, format: number}
+      - {name: symbol, source: order_request_lines.symbol, format: code, hidden: true}
       - {name: instrument_name, source: instruments.name, display: badge, code: symbol, shape: asset_type}
       - {name: asset_type, source: instruments.asset_type, format: code}
-      - {name: side, source: order_requests.side, format: code, color: side, sub: kind, codes: ORDER_SIDE}
-      - {name: kind, label: 주문 유형}
-      - {name: qty, source: order_requests.qty, format: number, sub: limit_price}
-      - {name: limit_price, source: order_requests.limit_price, format: money}
+      - {name: side, source: order_request_lines.side, format: code, color: side}
       - {name: amount, label: 주문금액, format: money}
       - {name: alone, label: 단건, display: pill, color: check}
       - {name: together, label: 묶음, display: pill, color: check}
       - {name: status, source: order_requests_v.status, display: pill, color: status}
       - {name: created_by, source: order_requests.created_by, sub: approved_by}
-      - {name: trade_date, source: order_requests.trade_date, format: date, hidden: true}
       - {name: approved_by, source: order_requests_v.approved_by}
       - {name: last_reason, source: order_requests_v.last_reason, hidden: true}
     actions:
@@ -67,18 +66,38 @@ grids:
       - {name: result, label: 결과, display: pill, color: verdict}
       - {name: value, label: 체크한 요청 + 이미 승인한 주문, sub: detail}
       - {name: detail, label: 기준}
+  - id: lines
+    title: 요청의 줄
+    tx: STP5100R04
+    load: master
+    master: requests
+    link: {request_key: request_key}
+    weight: 2
+    columns:
+      - {name: line_no, source: order_request_lines.line_no, format: number}
+      - {name: symbol, source: order_request_lines.symbol, format: code, hidden: true}
+      - {name: instrument_name, source: instruments.name, display: badge, code: symbol, shape: asset_type}
+      - {name: asset_type, source: instruments.asset_type, format: code}
+      - {name: side, source: order_request_lines.side, format: code, color: side, sub: kind}
+      - {name: kind, label: 주문 유형}
+      - {name: qty, source: order_request_lines.qty, format: number, sub: limit_price}
+      - {name: limit_price, source: order_request_lines.limit_price, format: money}
+      - {name: amount, label: 주문금액, format: money}
+      - {name: send_outcome, source: order_sends.outcome, format: code, sub: client_id}
+      - {name: client_id, source: order_sends.client_id, format: code}
+      - {name: send_reason, source: order_sends.reason, hidden: true}
   - id: history
     title: 결재·전송 이력
     tx: STP5100R03
     load: master
     master: requests
-    link: {request_id: request_id}
+    link: {request_key: request_key}
     weight: 2
     columns:
-      - {name: id, source: order_approvals.id, format: number, hidden: true}
       - {name: at, source: order_approvals.at, format: datetime}
-      - {name: action, source: order_approvals.action, format: code}
+      - {name: action, label: 결재 행위}
       - {name: actor, source: order_approvals.actor}
       - {name: self_approved, source: order_approvals.self_approved}
-      - {name: client_id, source: order_approvals.client_id, format: code}
+      - {name: line_no, source: order_sends.line_no, format: number}
+      - {name: client_id, source: order_sends.client_id, format: code}
       - {name: reason, source: order_approvals.reason}
