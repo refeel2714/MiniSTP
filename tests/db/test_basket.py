@@ -28,12 +28,14 @@ def test_command_prints_the_plan_saves_csv_and_writes_nothing(conn, broker, tmp_
     _a_day(conn, broker)
     before = _counts(conn)
     basket = tmp_path / "b.csv"
-    basket.write_text("종목코드,편입비\n069500,100\n", encoding="utf-8")
+    basket.write_text("종목코드,배분 비율\n069500,100\n", encoding="utf-8")
     out = tmp_path / "plan.csv"
     rc = cli.run(["basket", "simulate", str(basket), "--amount", "1000000", "--limit", "100", "--out", str(out)],
                  environ={"MINISTP_DATABASE_URL": URL}, now=lambda: dt.datetime(2026, 11, 20, 16))
     text = capsys.readouterr().out
     assert rc == 0 and out.exists() and "069500" in text and "남는 금액" in text
+    head = out.read_text(encoding="utf-8-sig").splitlines()[0].split(",")
+    assert head[2:4] == ["현재 편입비", "배분 비율"] and "배분 금액" in head and "목표 편입비" not in head
     assert _counts(conn) == before
     rc = cli.run(["basket", "simulate", "--amount", "40000000"], environ={"MINISTP_DATABASE_URL": URL},
                  now=lambda: dt.datetime(2026, 11, 20, 16))
