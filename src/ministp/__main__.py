@@ -485,7 +485,7 @@ def _master(args, environ, url, connect, calendar, fees, started, download=None)
 
     print(f"시장 종목정보 {day} (KIS 마스터 파일, 읽기만 해요)")
     for (mkt, group), n in sorted(rep.counts.items(), key=lambda kv: (kv[0][0], -kv[1])):
-        print(f"  {mkt:6} {group:10} {n:>6,}")
+        print(f"  {mkt:6} {master.ljust_wide(group, 16)} {n:>6,}")
     print("  상태: " + ", ".join(f"{k} {v:,}" for k, v in rep.flags.items()))
     if prev is None:
         print("전일 대비: 비교할 이전 파일이 없어요 (내일부터 비교해요)")
