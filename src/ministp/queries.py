@@ -372,7 +372,7 @@ def nav_series(ledger: Ledger, date_from: dt.date | None = None, date_to: dt.dat
                     "nav_per_1000"), rows)
 
 
-# ---------- STP-2210 기준가 내역 (이력과 변동 상세) ----------
+# ---------- STP-2210 기준가 이력 (날짜별 기준가와 변동 상세) ----------
 
 # What an account's movement does to net assets: equity put in or taken out, income, expense.
 # Assets and liabilities are what net assets is made of, so they explain nothing here.
@@ -803,7 +803,7 @@ def order_check(books, day: dt.date, symbol: str, side: str, qty: int, limit_pri
                               cap.max_buy_qty, cap.held_qty, cap.pending_sell_qty, cap.sellable_qty,
                               reason == "", reason, REASON_TEXT.get(reason, reason)),))
 
-# ---------- STP-4100·4300 기준정보 (조회 전용) ----------
+# ---------- STP-4100 종목정보 · STP-4300 거래 기준 (기준정보, 조회 전용) ----------
 # Reference data as the system really uses it: instruments from the DB, fee rates,
 # settlement rules, tick sizes and the holiday calendar from the objects the
 # ledger is built with. Nothing here is a second copy that could drift.
