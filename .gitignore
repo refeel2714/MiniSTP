@@ -27,3 +27,7 @@ data/local/
 
 # Market master files (python -m ministp master fetch)
 data/master/
+
+# ERP 전표 내보내기: 회사 계정 매핑과 내보낸 파일 (python -m ministp erp export)
+erp-mapping.yaml
+erp-export/
