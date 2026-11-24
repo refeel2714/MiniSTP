@@ -41,6 +41,8 @@ MAP_KEYS = MAP_NEEDS | {"tone"}     # tone: 색이 되는 열 (크기 대비 +�
 TACCOUNT_NEEDS = {"account", "debit", "credit"}       # view: taccount 에 꼭 적는 열
 TACCOUNT_KEYS = TACCOUNT_NEEDS | {"name", "entry"}     # name: 계정명 열 · entry: 전표를 가르는 열
 LOADS = {"search", "open", "master", "input"}
+EDIT_NEEDS = {"column", "base", "param"}
+EDIT_KEYS = EDIT_NEEDS | {"reset", "add"}
 LAYOUTS = {"stack", "split"}   # stack: grids one under another · split: 목록 왼쪽, 상세 오른쪽
 MAX_DETAILS = 3                # a split screen shows at most this many detail grids next to its list
 CONDITION_TYPES = {"date", "text", "select", "bool", "number"}
@@ -140,6 +142,10 @@ class Grid:
     key: str | None = None      # column that identifies a row across reloads (default: first column)
     weight: int = 1             # split layout: this grid's share of its side's height
     actions: list[Button] = field(default_factory=list)   # 처리 버튼, top right of the grid
+    # 입력 그리드: one column is typed in on the screen (nothing is saved). {column, base, param[, reset][, add]}
+    #   column 고쳐 쓰는 열 · base 되돌아갈 값이 있는 열 · param 이 열의 값들을 받는 같은 화면 트랜잭션의 조건
+    #   (`행키:값,행키:값`) · reset 모두 되돌리는 버튼 이름 · add 행을 더할 때 여는 찾기 팝업
+    edit: dict | None = None
 
 
 @dataclass
@@ -287,12 +293,23 @@ def column_comment(catalog: dict, source: str) -> str | None:
     return next((c["comment"] for c in info["columns"] if c["name"] == col), None)
 
 
+def edit_params(screen: Screen) -> set[str]:
+    return {g.edit["param"] for g in screen.grids if g.edit and "param" in g.edit}
+
+
+def follows_edit(g: Grid, screen: Screen) -> bool:
+    """A grid recomputed from what is typed into an 입력 그리드 of the same screen."""
+    return g.load == "input" and bool(edit_params(screen) & set(TRANSACTIONS[g.tx].params if g.tx in TRANSACTIONS else ()))
+
+
 def split_sides(screen: Screen) -> tuple[list[Grid], list[Grid], list[Grid]]:
-    """A split screen's grids as (left: the list with details, right: its details, below: the rest)."""
+    """A split screen's grids as (left: the list with details, right: its details, below: the rest).
+
+    An 입력 그리드 is a list too: what is typed there on the left, what it works out to on the right."""
     masters = {g.master for g in screen.grids if g.load == "master"}
-    left = [g for g in screen.grids if g.id in masters]
-    right = [g for g in screen.grids if g.load == "master"]
-    below = [g for g in screen.grids if g.id not in masters and g.load != "master"]
+    left = [g for g in screen.grids if g.id in masters or g.edit]
+    right = [g for g in screen.grids if g.load == "master" or follows_edit(g, screen)]
+    below = [g for g in screen.grids if g not in left and g not in right]
     return left, right, below
 
 
@@ -450,6 +467,36 @@ def _lookup_use_problems(name: str | None, params: dict, where: str, lookups: di
     return [f"{where}: 찾기 {name}의 {lk.tx}에 없는 조건 {p}" for p in params if tx and p not in tx.params]
 
 
+def _edit_problems(g: Grid, s: Screen, gw: str, lookups: dict[str, Lookup]) -> list[str]:
+    if not g.edit:
+        return []
+    e = g.edit
+    if not EDIT_NEEDS <= set(e) <= EDIT_KEYS:
+        return [f"{gw}: 입력 그리드는 edit에 column(고쳐 쓰는 열), base(되돌아갈 값 열), param(값을 받는 조건)을 적어요"
+                " (reset 되돌리기 버튼 이름, add 행 추가 찾기는 있으면)"]
+    errs = []
+    cols = {c.name: c for c in g.columns}
+    for role in ("column", "base"):
+        c = cols.get(e[role])
+        if c is None:
+            errs.append(f"{gw}: 입력 그리드의 {role} 열 {e[role]}가 이 그리드에 없어요")
+        elif c.format not in ("number", "rate", "money"):
+            errs.append(f"{gw}: 입력 그리드의 {role} 열 {e[role]}는 숫자 형식이어야 해요")
+    if e["column"] == e["base"]:
+        errs.append(f"{gw}: 고쳐 쓰는 열과 되돌아갈 값 열은 달라야 해요")
+    takers = [x for x in s.grids if x is not g and x.load == "input" and x.tx in TRANSACTIONS
+              and e["param"] in TRANSACTIONS[x.tx].params]
+    if not takers:
+        errs.append(f"{gw}: 입력 값을 받을 그리드가 없어요 ({e['param']}를 조건으로 받는 load: input 그리드)")
+    if e["param"] in {c.name for c in s.conditions}:
+        errs.append(f"{gw}: {e['param']}는 조회조건이 아니라 입력 그리드가 채우는 값이에요")
+    if g.view != "grid" or g.live or g.load == "master" or g.actions:
+        errs.append(f"{gw}: 입력 그리드는 표 보기, 실시간 아님, 마스터 아님, 처리 버튼 없음이어야 해요")
+    if e.get("add"):
+        errs += _lookup_use_problems(e["add"], {}, f"{gw} 행 추가", lookups)
+    return errs
+
+
 def _button_problems(g: Grid, s: Screen, gw: str, catalog: dict, lookups: dict[str, Lookup]) -> list[str]:
     errs, seen = [], set()
     cols = {c.name for c in g.columns}
@@ -558,6 +605,7 @@ def validate(screens: dict[str, Screen], catalog: dict, lookups: dict[str, Looku
             errs += _taccount_problems(g, s, gw)
             errs += _map_problems(g, gw)
             errs += _button_problems(g, s, gw, catalog, lookups)
+            errs += _edit_problems(g, s, gw, lookups)
             if not isinstance(g.weight, int) or not 1 <= g.weight <= 5:
                 errs.append(f"{gw}: weight(높이 비중)는 1~5 사이 정수")
             if g.key and g.key not in {c.name for c in g.columns}:
@@ -592,6 +640,7 @@ def validate(screens: dict[str, Screen], catalog: dict, lookups: dict[str, Looku
                     errs.append(f"{gw}: 이동할 계좌 열 {g.drill['account']}이 열에 없어요")
             if g.chart and not {g.chart.get("x"), g.chart.get("y")} <= {c.name for c in g.columns}:
                 errs.append(f"{gw}: 차트 열 {g.chart}이 열에 없어요")
+        search_params -= edit_params(s)   # filled by an 입력 그리드, not by a condition
         for c in s.conditions:
             if c.type not in CONDITION_TYPES:
                 errs.append(f"{where} 조회조건 {c.name}: 없는 형식 {c.type}")
@@ -607,7 +656,8 @@ def validate(screens: dict[str, Screen], catalog: dict, lookups: dict[str, Looku
 
 def _used_lookups(screen: Screen) -> set[str]:
     fields = [f for g in screen.grids for b in g.actions for f in b.fields]
-    return {x.lookup for x in [*screen.conditions, *fields] if x.lookup}
+    adds = {g.edit["add"] for g in screen.grids if g.edit and g.edit.get("add")}
+    return {x.lookup for x in [*screen.conditions, *fields] if x.lookup} | adds
 
 
 def resolve(screen: Screen, catalog: dict, lookups: dict[str, Lookup] | None = None) -> dict:
