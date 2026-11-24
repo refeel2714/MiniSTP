@@ -479,3 +479,40 @@ def test_a_screen_number_outside_the_classification_is_a_problem():
     twice = [MenuArea("1", "주문·잔고", "", (MenuGroup("11", "잔고"), MenuGroup("11", "보유")))]
     assert "중분류 번호 중복 11" in one(menu_problems(twice, named("STP-1100")))
     assert "대분류 번호는 1~9 한 자리" in menu_problems([MenuArea("10", "기타", "", ())], {})[0]
+
+
+def test_an_input_grid_types_one_column_and_feeds_a_grid_that_takes_its_values():
+    from ministp.ui.definitions import load_lookups, split_sides
+    shipped = load_screens()["STP-1500"]
+    left, right, below = split_sides(shipped)
+    assert [g.id for g in left] == ["basket"] and [g.id for g in right] == ["plan", "summary"] and below == []
+    assert "symbol" in resolve(shipped, {}, load_lookups())["lookups"]   # 행 추가 찾기 팝업이 화면에 실려요
+    cols = [Column("symbol", label="종목", format="code"), Column("current_weight", label="현재", format="rate"),
+            Column("target_weight", label="목표", format="rate")]
+    plan = Grid("plan", "안", "STP1500R02", [Column("symbol", label="종목", format="code")], load="input")
+
+    def errs(edit, conds=(), **kw):
+        g = Grid("basket", "바스켓", "STP1500R01", cols, load="open", edit=edit, **kw)
+        s = {"STP-1500": Screen("STP-1500", "바스켓", "", list(conds), [g, plan])}
+        return validate(s, CATALOG)
+
+    good = {"column": "target_weight", "base": "current_weight", "param": "basket", "reset": "되돌리기", "add": "symbol"}
+    assert errs(good) == []
+    assert any("column(고쳐 쓰는 열)" in e for e in errs({"column": "target_weight"}))
+    assert any("base 열 nope" in e for e in errs({**good, "base": "nope"}))
+    assert any("숫자 형식" in e for e in errs({**good, "column": "symbol"}))
+    assert any("받을 그리드가 없어요" in e for e in errs({**good, "param": "nope"}))
+    assert any("조회조건이 아니라" in e for e in errs(good, [Condition("basket", label="바스켓")]))
+    assert any("실시간 아님" in e for e in errs(good, live=True))
+    assert any("없는 찾기 팝업" in e for e in errs({**good, "add": "nope"}))
+
+
+def test_basket_text_from_the_screen():
+    from decimal import Decimal
+
+    from ministp.basket import Target
+    from ministp.ui.transactions import parse_basket
+    assert parse_basket("069500:50.5, 000660:49.5,") == [Target("069500", Decimal("50.5")), Target("000660", Decimal("49.5"))]
+    assert parse_basket("069500:") == [Target("069500", Decimal(0))]
+    with pytest.raises(TxError, match="숫자가 아니에요"):
+        parse_basket("069500:abc")
