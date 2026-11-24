@@ -18,7 +18,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .base import BrokerBalance, BrokerOrder, BrokerPosition, OrderAck
+from .base import BrokerBalance, BrokerOrder, BrokerPosition, OrderAck, OrderOutcomeUnknown, OrderRejected
 
 PAPER_URL = "https://openapivts.koreainvestment.com:29443"
 LIVE_URL = "https://openapi.koreainvestment.com:9443"
@@ -43,6 +43,14 @@ RATE_LIMIT_RETRIES = 3
 
 class KisError(RuntimeError):
     pass
+
+
+class KisOrderRejected(KisError, OrderRejected):
+    """KIS answered an order or cancel with rt_cd != 0 (R-103)."""
+
+    def __init__(self, message: str, code: str = ""):
+        KisError.__init__(self, message)
+        self.code = code
 
 
 class LiveTradingLocked(RuntimeError):
@@ -215,11 +223,27 @@ class KisClient:
         return resp_headers, body
 
     def _post(self, path: str, tr_id: str, body: dict) -> dict:
-        # Orders are never retried automatically: a retried order could double up.
-        status, _, resp = self._call("POST", f"{self.cfg.base_url}{path}",
-                                     self._headers(tr_id), body, retry_rate_limit=False)
-        self._check(tr_id, status, resp)
-        return resp
+        """Orders and cancels. Never retried automatically: a retried order could double up.
+
+        R-103 sorts the outcome. The broker answered no (a body with rt_cd other than 0, whatever the HTTP
+        status, rate limit included) -> KisOrderRejected: nothing was placed. No usable answer (network error
+        or timeout, a body without rt_cd) -> OrderOutcomeUnknown: the order may be at the broker, so MiniSTP
+        looks for it in the broker's order list instead of sending it again."""
+        try:
+            headers = self._headers(tr_id)   # a token failure happens here, before anything is sent
+        except (KisError, OSError, ValueError) as exc:
+            raise KisOrderRejected(f"{tr_id}: 접속 토큰을 받지 못해 보내지 않았어요 ({exc})") from exc
+        try:
+            status, _, resp = self._call("POST", f"{self.cfg.base_url}{path}", headers, body, retry_rate_limit=False)
+        except (OSError, ValueError) as exc:          # URLError, timeouts and broken JSON are all OSError/ValueError
+            raise OrderOutcomeUnknown(f"{tr_id}: 응답 없음 ({type(exc).__name__}: {exc})") from exc
+        code = str(resp.get("rt_cd", "")) if isinstance(resp, dict) else ""
+        if code == "0" and status == 200:
+            return resp
+        if code and code != "0":                    # KIS answers errors with a body, often with HTTP 500
+            raise KisOrderRejected(f"{tr_id} failed ({status}) {resp.get('msg_cd', '')}: {resp.get('msg1', '')}",
+                                   resp.get("msg_cd", ""))
+        raise OrderOutcomeUnknown(f"{tr_id}: 알 수 없는 응답 ({status}) {str(resp)[:120]}")
 
     def _paged(self, path: str, tr_id: str, params: dict) -> list[dict]:
         """Follow tr_cont continuation; returns every page body."""
@@ -277,8 +301,12 @@ class KisClient:
                 "ORD_QTY": str(qty), "ORD_UNPR": "0" if limit_price is None else str(limit_price),
                 "EXCG_ID_DVSN_CD": "KRX", "SLL_TYPE": "01" if side == "SELL" else "",
                 "CNDT_PRIC": ""}
-        out = self._post(ORDER_PATH, TR_ORDER[(self.cfg.env, side)], body)["output"]
-        return OrderAck(order_no=out["ODNO"], org_no=out["KRX_FWDG_ORD_ORGNO"])
+        resp = self._post(ORDER_PATH, TR_ORDER[(self.cfg.env, side)], body)
+        try:
+            out = resp["output"]
+            return OrderAck(order_no=out["ODNO"], org_no=out["KRX_FWDG_ORD_ORGNO"])
+        except (KeyError, TypeError) as exc:   # rt_cd 0 but no order number: placed, number unknown
+            raise OrderOutcomeUnknown(f"주문은 받았다는데 주문번호가 없는 응답: {exc}") from exc
 
     def cancel_order(self, ack: OrderAck) -> None:
         """잔량 전부 취소."""
@@ -305,5 +333,6 @@ class KisClient:
                     side="SELL" if r.get("sll_buy_dvsn_cd") == "01" else "BUY",
                     qty=_int(r.get("ord_qty")), filled_qty=_int(r.get("tot_ccld_qty")),
                     filled_amount=_int(r.get("tot_ccld_amt")),
-                    canceled_qty=_int(r.get("cnc_cfrm_qty")), rejected_qty=_int(r.get("rjct_qty"))))
+                    canceled_qty=_int(r.get("cnc_cfrm_qty")), rejected_qty=_int(r.get("rjct_qty")),
+                    org_no=r.get("ord_gno_brno") or ""))
         return out

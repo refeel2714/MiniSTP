@@ -85,6 +85,8 @@ grids:
       - {name: amount, label: 주문금액, format: money}
       - {name: send_outcome, source: order_sends.outcome, format: code, sub: client_id}
       - {name: client_id, source: order_sends.client_id, format: code}
+      - {name: broker_answer, label: 증권사 답, sub: order_no}
+      - {name: order_no, source: oms_order_acks.order_no, format: code}
       - {name: send_reason, source: order_sends.reason, hidden: true}
   - id: history
     title: 결재·전송 이력

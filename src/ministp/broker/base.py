@@ -39,12 +39,28 @@ class BrokerOrder:
     filled_amount: int   # 총체결금액
     canceled_qty: int
     rejected_qty: int
+    org_no: str = ""     # 주문조직번호, so an order found only in this list (R-103) can still be canceled
+
+
+class OrderRejected(Exception):
+    """The broker answered and said no: nothing was placed. Safe to send again as a new order (by a person)."""
+
+    def __init__(self, message: str, code: str = ""):
+        super().__init__(message)
+        self.code = code      # broker message code, e.g. KIS msg_cd (EGW00201 = 호출 제한)
+
+
+class OrderOutcomeUnknown(Exception):
+    """No usable answer to an order (timeout, connection drop, 5xx, unreadable body): it may or may not be
+    at the broker. Never send it again automatically; find it in the broker's order list first (R-103)."""
 
 
 class BrokerGateway(Protocol):
     def get_balance(self) -> BrokerBalance: ...
     def get_price(self, symbol: str) -> int: ...
-    def place_order(self, symbol: str, side: str, qty: int, limit_price: int | None) -> OrderAck: ...
+    def place_order(self, symbol: str, side: str, qty: int, limit_price: int | None) -> OrderAck:
+        """Raises OrderRejected when the broker said no, OrderOutcomeUnknown when there was no usable answer."""
+        ...
     def cancel_order(self, ack: OrderAck) -> None: ...
     def daily_orders(self, day: dt.date) -> list[BrokerOrder]: ...
 

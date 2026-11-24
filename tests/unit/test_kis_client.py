@@ -238,3 +238,56 @@ def test_rate_limited_order_is_not_retried(cfg):
     with pytest.raises(KisError, match="EGW00201"):
         c.place_order("069500", "BUY", 1, None)
     assert sum(1 for x in fake.calls if "order-cash" in x[1]) == 1
+
+
+ORDER = "/uapi/domestic-stock/v1/trading/order-cash"
+
+
+@pytest.mark.parametrize("answer, kind", [
+    ((500, {}, {"rt_cd": "1", "msg_cd": "APBK0919", "msg1": "주문가능금액을 초과 했습니다"}), "rejected"),
+    ((200, {}, {"rt_cd": "7", "msg_cd": "APBK1234", "msg1": "거부"}), "rejected"),
+    ((502, {}, {}), "unknown"),                                    # 게이트웨이 오류: 본문이 없어요
+    ((200, {}, {"msg1": "?"}), "unknown"),                         # rt_cd가 없는 본문
+    ((200, {}, {"rt_cd": "0", "msg_cd": "APBK0013", "msg1": "주문 전송 완료"}), "unknown"),   # 번호 없는 성공
+])
+def test_an_order_answer_is_a_refusal_or_unknown_never_a_guess(cfg, answer, kind):
+    """R-103: the broker said no (nothing placed) vs no usable answer (maybe placed). Never retried either way."""
+    from ministp.broker import OrderOutcomeUnknown, OrderRejected
+    fake = FakeKisRoutes({ORDER: [answer]})
+    c = KisClient(cfg, fake, now=lambda: NOW, sleep=lambda s: None)
+    expected = OrderRejected if kind == "rejected" else OrderOutcomeUnknown
+    with pytest.raises(expected) as e:
+        c.place_order("069500", "BUY", 1, 80_000)
+    if kind == "rejected":
+        assert isinstance(e.value, KisError) and e.value.code == answer[2]["msg_cd"]
+    assert sum(1 for x in fake.calls if ORDER in x[1]) == 1
+
+
+def test_a_timeout_on_an_order_is_unknown_and_a_token_failure_is_a_refusal(cfg):
+    import socket
+    import urllib.error
+    from ministp.broker import OrderOutcomeUnknown, OrderRejected
+
+    def timeout(method, url, headers, body):
+        if url.endswith("/oauth2/tokenP"):
+            return 200, {}, {"access_token": "tok", "access_token_token_expired": "2026-11-18 09:00:00"}
+        raise urllib.error.URLError(socket.timeout("timed out"))
+    with pytest.raises(OrderOutcomeUnknown, match="응답 없음"):
+        KisClient(cfg, timeout, now=lambda: NOW, sleep=lambda s: None).place_order("069500", "BUY", 1, 80_000)
+
+    cfg.token_cache.unlink()               # the first client cached a token; this one has none
+
+    def no_token(method, url, headers, body):
+        if url.endswith("/oauth2/tokenP"):
+            return 403, {}, {"error_description": "기간이 만료된 token"}
+        raise AssertionError("an order must not go out without a token")
+    with pytest.raises(OrderRejected, match="토큰"):
+        KisClient(cfg, no_token, now=lambda: NOW, sleep=lambda s: None).place_order("069500", "BUY", 1, 80_000)
+
+
+def test_daily_orders_carry_the_order_org_number_for_a_later_cancel(cfg):
+    fake = FakeKisRoutes({"/uapi/domestic-stock/v1/trading/inquire-daily-ccld": [ok(output1=[
+        {"odno": "0000117057", "pdno": "069500", "sll_buy_dvsn_cd": "02", "ord_qty": "1", "tot_ccld_qty": "0",
+         "tot_ccld_amt": "0", "cnc_cfrm_qty": "0", "rjct_qty": "0", "ord_gno_brno": "00950"}])]})
+    (o,) = KisClient(cfg, fake, now=lambda: NOW, sleep=lambda s: None).daily_orders(d("11-17"))
+    assert (o.order_no, o.org_no, o.side) == ("0000117057", "00950", "BUY")

@@ -799,11 +799,18 @@ def _approval_requests(c: TxContext, p) -> TxResult:
                     {"user": user, "approve_lock": lock, "reject_lock": reject, "cancel_lock": cancel})
 
 
+def _answer(ln) -> str:
+    """증권사 답 (R-103): 접수, 거부, 결과 미확인(보냈는데 답이 없음), 아직 안 보냈으면 빈칸."""
+    if ln.awaiting_ack:
+        return "결과 미확인"
+    return {"ACCEPTED": "접수", "REJECTED": "거부"}.get(ln.ack_outcome or "", "")
+
+
 def _request_lines(c: TxContext, p) -> TxResult:
     """STP-5100 요청의 줄: 고른 요청의 종목 줄과 줄마다 전송 결과."""
     from .. import approval
     cols = ("line_no", "symbol", "instrument_name", "asset_type", "side", "kind", "qty", "limit_price", "amount",
-            "send_outcome", "client_id", "send_reason")
+            "send_outcome", "client_id", "send_reason", "broker_answer", "order_no")
     if not p.get("request_key"):
         return TxResult({"main": Dataset(cols, ())})
     k = approval.parse_key(p["request_key"], c.today)
@@ -816,7 +823,9 @@ def _request_lines(c: TxContext, p) -> TxResult:
             price = ln.limit_price or state.prices.get(ln.symbol)
             rows.append((ln.line_no, ln.symbol, inst.name if inst else "", inst.asset_type.value if inst else "",
                          ln.side.value, "지정가" if ln.limit_price else "시장가", ln.qty, ln.limit_price,
-                         ln.qty * price if price else None, ln.send_outcome, ln.client_id, ln.send_reason))
+                         ln.qty * price if price else None, ln.send_outcome, ln.client_id,
+                         ln.send_reason or (ln.ack_detail if ln.ack_outcome == "REJECTED" else None),
+                         _answer(ln), ln.order_no))
     return TxResult({"main": Dataset(cols, tuple(rows))})
 
 

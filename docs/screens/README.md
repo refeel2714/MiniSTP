@@ -135,7 +135,7 @@
 | `master_loads.rows_new` | 신규 | STP-4101 loads |
 | `master_loads.rows_total` | 종목 수 | STP-4101 loads |
 | `oms_order_acks.detail` | 거부 사유 | STP-1200 order |
-| `oms_order_acks.order_no` | 증권사 주문번호 | STP-1200 order |
+| `oms_order_acks.order_no` | 증권사 주문번호 | STP-1200 order, STP-5100 lines |
 | `oms_order_acks.outcome` | 결과 | STP-1200 order |
 | `oms_orders.client_id` | 내부 주문번호 | STP-1200 orders |
 | `oms_orders.created_at` | 생성 시각 | STP-1200 orders |
