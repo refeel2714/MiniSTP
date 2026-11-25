@@ -6,7 +6,7 @@ import pytest
 
 from db.test_ops import CAL, FEES, URL, D, books, broker, conn  # noqa: F401
 from ministp import __main__ as cli
-from ministp import erp
+from ministp import erp, rights
 from ministp.ledger import Side
 from ministp.ops import daily_close, open_books, place_order
 from ministp.sample import build_sample
@@ -92,6 +92,67 @@ def test_a_day_still_open_has_no_daily_total(conn, broker):
     with pytest.raises(erp.ErpError, match="일 마감 전"):
         erp.export(conn, None, DAY, DAY, by="day")
     assert erp.export(conn, None, DAY, DAY).documents > 0              # 건별 is fine: each entry is final
+
+
+def test_daily_totals_wait_for_the_day_close_not_the_valuation(conn, broker):
+    """R-96 v1.42: 일별 합계는 일 마감(day_closes) 기준. 평가는 했지만 대사 불일치로 마감 못 한 날은 아직 열린 날."""
+    broker.set_day(DAY)
+    open_books(books(conn), broker, DAY)
+    broker.orders[DAY] = {}
+    broker.cash_skew = -5                                             # the broker shows 5 won less: a break
+    rep = daily_close(books(conn), broker, DAY)
+    assert not rep.closed and rep.nav is not None                    # valued, NAV struck, yet not closed
+    with pytest.raises(erp.ErpError, match=r"일 마감 전.*A0001 2026-11-20"):
+        erp.export(conn, None, DAY, DAY, by="day")
+    broker.cash_skew = 0
+    assert daily_close(books(conn), broker, DAY).closed               # the break is gone: daily closes the day
+    assert erp.export(conn, None, DAY, DAY, by="day").documents == 1
+
+
+def test_days_before_the_last_close_count_as_closed_for_every_account(conn):
+    s = build_sample(conn, CAL, FEES, days=3, seed=5, accounts=2)
+    first = conn.execute("select min(date) from journal_entries").fetchone()[0]
+    through = dict(conn.execute("select account_id, max(date) from day_closes group by 1").fetchall())
+    assert set(through.values()) == {s.last_day}
+    r = erp.export(conn, None, first, s.last_day, by="day", account_id=None)
+    assert {ln.account_id for ln in r.lines} == set(through)
+    n = conn.execute("select count(distinct (account_id, date)) from journal_entries").fetchone()[0]
+    assert r.documents == n                                           # every day up to the last close, 개시일 included
+
+
+def test_dividend_entries_have_a_memo_and_a_kind_name(conn, broker):
+    """새 전표 유형(배당·출금·대체·수동 조정·늦은 체결)도 적요와 전표 유형 이름이 붙는다."""
+    fri, mon, tue, wed = DAY, D("2026-11-23"), D("2026-11-24"), D("2026-11-25")
+    broker.set_day(fri)
+    open_books(books(conn), broker, fri)
+    broker.orders[fri] = {}
+    rights.add_dividend(conn, "069500", fri, wed, 450)
+    for day in (fri, mon, tue, wed):
+        broker.set_day(day)
+        broker.orders.setdefault(day, {})
+        if day == wed:
+            broker.cash += 381
+        assert daily_close(books(conn), broker, day).closed
+    r = erp.export(conn, None, fri, wed)
+    memos = {ln.memo for ln in r.lines}
+    assert "배당 인식 069500 KODEX 200 1주 (권리 1)" in memos
+    assert "배당 입금 069500 KODEX 200 (권리 1, 원천징수 69)" in memos
+    assert all(ln.symbol == "069500" for ln in r.lines if ln.memo.startswith("배당"))
+    names = erp._kind_names(conn)
+    assert names["DIVIDEND_ACCRUAL"] != "DIVIDEND_ACCRUAL" and names["DIVIDEND"] != "DIVIDEND"
+
+
+def test_every_entry_of_the_sample_gets_a_memo(conn):
+    build_sample(conn, CAL, FEES, days=12, seed=5, accounts=3)
+    first, last = conn.execute("select min(date), max(date) from journal_entries").fetchone()
+    r = erp.export(conn, None, first, last, account_id=None)
+    kinds = {k for (k,) in conn.execute("select distinct kind from journal_entries")}
+    assert {"WITHDRAWAL", "ADJUSTMENT"} <= kinds
+    assert all(ln.memo and not any(k in ln.memo for k in kinds) for ln in r.lines), {ln.memo for ln in r.lines}
+    assert any(ln.memo.startswith("투자원금 출금") for ln in r.lines)
+    assert any(ln.memo.startswith("수동 조정 ") and "(조정 1)" in ln.memo for ln in r.lines)
+    names = erp._kind_names(conn)
+    assert all(names.get(k, k) != k for k in kinds)
 
 
 def test_csv_has_korean_header_and_is_never_overwritten(conn, broker, tmp_path):
