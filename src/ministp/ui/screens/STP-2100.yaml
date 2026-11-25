@@ -1,6 +1,6 @@
 id: STP-2100
 title: 일일 대사 결과
-purpose: 왼쪽 달력에서 날마다의 대사 결과와 게이트까지 남은 날을 한눈에 보고, 날짜를 누르면 오른쪽에 그날의 항목별 내부 값과 증권사 값, 불일치와 판단 이력이 나와요. 불일치 행을 고르고 오른쪽 위 원인 판단 버튼을 누르면 판단을 기록해요 (CLI의 resolve 명령과 같은 처리). 불일치 행은 고치지 않고 판단을 새 행으로 덧붙여요.
+purpose: 왼쪽 달력에서 날마다의 대사 결과와 게이트까지 남은 날을 한눈에 보고, 날짜를 누르면 오른쪽에 그날의 항목별 내부 값과 증권사 값, 불일치와 판단 이력이 나와요. 그날 목록은 판단 전 불일치, 판단한 불일치, 일치 순이라 보유 종목이 많아도 불일치가 맨 위에 있어요. 불일치 행을 고르고 오른쪽 위 원인 판단 버튼을 누르면 판단을 기록해요 (CLI의 resolve 명령과 같은 처리). 불일치 행은 고치지 않고 판단을 새 행으로 덧붙여요.
 layout: split
 left: 32
 conditions:
@@ -34,6 +34,7 @@ grids:
     columns:
       - {name: item, source: recon_results.item, format: code}
       - {name: key, source: recon_results.key, format: code}
+      - {name: key_name, label: 종목명}
       - {name: internal_value, source: recon_results.internal_value, format: money}
       - {name: broker_value, source: recon_results.broker_value, format: money}
       - {name: diff, source: recon_results.diff, format: money}
