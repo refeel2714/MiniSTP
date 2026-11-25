@@ -575,13 +575,13 @@ class ReconLine:
     erp_name: str
     basis: str                  # "잔액" or "기간"
     ministp: int
-    erp: int | None             # None: the ERP file does not have the account
+    erp: int | None             # None: the ERP file does not have the account (counted as 0: ERPs leave out zero balances)
     broker: int | None          # None: the broker does not keep this account (or no recon that day)
     ministp_accounts: str
 
     @property
     def erp_diff(self) -> int | None:
-        return None if self.erp is None else self.erp - self.ministp
+        return (self.erp or 0) - self.ministp
 
     @property
     def broker_diff(self) -> int | None:

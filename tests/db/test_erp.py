@@ -396,6 +396,14 @@ def test_mapped_codes_period_amounts_and_what_the_erp_has_alone(conn, broker, tm
         erp.reconcile(conn, m, rows, DAY, period_from=nxt)
 
 
+def test_an_account_the_erp_leaves_out_counts_as_zero():
+    """ERP는 잔액 0인 계정을 보통 빼고 내보내요. 결제가 끝나 0이 된 매수미지급금이 파일에 없어도 일치예요."""
+    gone = erp.ReconLine("2110500", "미지급금-증권매수", "잔액", 0, None, None, "2010")
+    assert gone.ok and gone.erp_diff == 0
+    left = erp.ReconLine("2110500", "미지급금-증권매수", "잔액", -9_888_160, None, None, "2010")
+    assert not left.ok and left.erp_diff == 9_888_160
+
+
 def test_the_erp_file_is_read_plainly(tmp_path):
     p = tmp_path / "dc.csv"
     p.write_text("ERP계정,계정명,차변,대변\n1110300,예치금,\"1,000\",0\n1110300,예치금,0,300\n2110500,미지급,,500\n",
