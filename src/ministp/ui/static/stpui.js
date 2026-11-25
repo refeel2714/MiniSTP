@@ -1137,11 +1137,12 @@
       })));
     }
 
-    // 전표 보기: the same blocks as T계정, but each 전표 written the way a journal is: its lines down the page,
-    // 계정 · 차변 · 대변, the debit lines first in the order they were recorded, then the credit lines; then both sums.
+    // 전표 보기: the way a 전표 is printed in an ERP. One table for the whole event: 차변계정 · 차변과목 · 차변금액 next to
+    // 대변계정 · 대변과목 · 대변금액, the k-th debit line beside the k-th credit line, a dotted line between 전표.
+    // A thin row above each 전표 carries its facts (번호, 유형, 원천); the foot row carries both sums.
     function renderVouchers() {
       if (!rows.length) return body.replaceChildren(h("div", { class: "empty", text: "조회된 내역이 없어요" }));
-      const t = g.taccount, col = n => g.columns.find(c => c.name === n);
+      const t = g.taccount;
       const facts = g.columns.filter(c => ![t.account, t.name, t.debit, t.credit].includes(c.name));
       const blocks = new Map();
       for (const r of view) {
@@ -1149,23 +1150,32 @@
         if (!blocks.has(k)) blocks.set(k, []);
         blocks.get(k).push(r);
       }
-      const amount = v => Number(v) ? fmt(v, "money") : "";
-      const isCredit = r => !!Number(r[t.credit]) && !Number(r[t.debit]);   // 차변 줄 먼저, 대변 줄은 아래에 들여서
-      body.replaceChildren(h("div", { class: "tview" }, [...blocks.values()].map(lines => {
-        const dr = lines.reduce((a, r) => a + (Number(r[t.debit]) || 0), 0);
-        const cr = lines.reduce((a, r) => a + (Number(r[t.credit]) || 0), 0);
+      const money = v => fmt(v, "money");
+      const sum = (rs, c) => rs.reduce((a, r) => a + (Number(r[c]) || 0), 0);
+      const side = (r, c) => {           // the credit half starts with a rule on its left
+        const edge = c === t.credit ? " vsplit" : "";
+        return r ? [h("td", { class: "vcode" + edge, text: r[t.account] }), h("td", { class: "vname", text: t.name ? r[t.name] : "" }),
+          h("td", { class: "num", text: money(r[c]) })] : [h("td", { class: edge.trim() || null }), h("td", {}), h("td", {})];
+      };
+      let DR = 0, CR = 0;
+      const groups = [...blocks.values()].map(lines => {
+        const drs = lines.filter(r => Number(r[t.debit])), crs = lines.filter(r => Number(r[t.credit]));
+        const dr = sum(lines, t.debit), cr = sum(lines, t.credit);
+        DR += dr; CR += cr;
         const shown = facts.filter(c => lines[0][c.name] !== null && lines[0][c.name] !== undefined && lines[0][c.name] !== "");
-        return h("section", { class: "tentry", "aria-label": t.entry ? `${col(t.entry).label} ${lines[0][t.entry]}` : g.title },
-          shown.length ? h("div", { class: "tfacts" }, shown.map(c => h("span", {}, c.label, h("b", { text: fmt(lines[0][c.name], c.format) })))) : null,
-          h("table", { class: "vtable" },
-            h("thead", {}, h("tr", {}, h("th", { text: "계정" }), h("th", { class: "num", text: "차변" }), h("th", { class: "num", text: "대변" }))),
-            h("tbody", {}, [...lines.filter(r => !isCredit(r)), ...lines.filter(isCredit)].map(r => h("tr", { class: isCredit(r) ? "cr" : "dr" },
-              h("td", {}, t.name ? r[t.name] : r[t.account], t.name ? h("span", { class: "vcode", text: r[t.account] }) : null),
-              h("td", { class: "num", text: amount(r[t.debit]) }), h("td", { class: "num", text: amount(r[t.credit]) })))),
-            h("tfoot", {}, h("tr", {}, h("td", {}, "합계", h("span", { class: "pill " + (dr === cr ? "st-ok" : "st-bad"),
-              text: dr === cr ? "차대 일치" : `차대 불일치 ${fmt(dr - cr, "money")}` })),
-              h("td", { class: "num", text: fmt(dr, "money") }), h("td", { class: "num", text: fmt(cr, "money") })))));
-      })));
+        const head = h("tr", { class: "vhead" }, h("td", { colspan: "6" },
+          shown.map(c => h("span", {}, c.label, h("b", { text: fmt(lines[0][c.name], c.format) }))),
+          dr === cr ? null : h("span", { class: "pill st-bad", text: `차대 불일치 ${money(dr - cr)}` })));
+        const n = Math.max(drs.length, crs.length, 1);
+        return h("tbody", {}, head, Array.from({ length: n }, (_, i) => h("tr", {}, side(drs[i], t.debit), side(crs[i], t.credit))));
+      });
+      body.replaceChildren(h("div", { class: "vwrap" }, h("table", { class: "vtable" },
+        h("thead", {}, h("tr", {}, ["차변계정", "차변과목", "차변금액", "대변계정", "대변과목", "대변금액"].map((x, i) =>
+          h("th", { class: i % 3 === 2 ? "num" : i === 3 ? "vsplit" : null, text: x })))),
+        groups,
+        h("tfoot", {}, h("tr", {}, h("td", { colspan: "2" }, "합계", h("span", { class: "pill " + (DR === CR ? "st-ok" : "st-bad"),
+          text: DR === CR ? "차대 일치" : `차대 불일치 ${money(DR - CR)}` })), h("td", { class: "num", text: money(DR) }),
+          h("td", { colspan: "2", class: "vsplit" }), h("td", { class: "num", text: money(CR) }))))));
     }
 
     function flashed(r, col) {
