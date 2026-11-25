@@ -34,7 +34,7 @@
 | 화면번호 | 화면명 | 그리드 | 트랜잭션 |
 |---|---|---|---|
 | [STP-1100](STP-1100.md) | 실시간 잔고 | 2 | `STP1100R02`, `STP1100R01` |
-| [STP-1200](STP-1200.md) | 주문·체결 블로터 | 3 | `STP1200R01`, `STP1200R02` |
+| [STP-1200](STP-1200.md) | 주문·체결 블로터 | 4 | `STP1200R01`, `STP1200R02` |
 | [STP-1210](STP-1210.md) | 주식 주문 | 3 | `STP1210R01`, `STP1210R02`, `STP1210R03`, `STP1210U01`, `STP1210U02` |
 | [STP-1300](STP-1300.md) | 주문가능 조회 | 2 | `STP1300R02`, `STP1300R01` |
 | [STP-1400](STP-1400.md) | 고객별 보유 | 3 | `STP1400R01`, `STP1400R02`, `STP1400R03`, `STP1400U01` |
@@ -112,9 +112,9 @@
 | `instrument_master.symbol` | 단축코드 | STP-4100 instruments, STP-4101 changes |
 | `instrument_master.valid_from` | 적용 시작일 | STP-4100 history |
 | `instrument_master_match_v.status` | 대조 결과 | STP-4100 instruments |
-| `instruments.asset_type` | 자산 유형 | STP-1100 holdings, STP-1200 orders, STP-1210 lines, STP-1300 symbols, STP-1400 positions, STP-1500 basket, STP-1500 plan, STP-2300 symbols, STP-3400 settlements, STP-4300 fees, STP-4300 ticks, STP-5100 requests, STP-5100 lines |
+| `instruments.asset_type` | 자산 유형 | STP-1100 holdings, STP-1200 orders, STP-1200 lines, STP-1210 lines, STP-1300 symbols, STP-1400 positions, STP-1500 basket, STP-1500 plan, STP-2300 symbols, STP-3400 settlements, STP-4300 fees, STP-4300 ticks, STP-5100 requests, STP-5100 lines |
 | `instruments.market` | 시장 | STP-4100 조회조건, STP-4300 fees |
-| `instruments.name` | 종목명 | STP-1100 holdings, STP-1200 orders, STP-1210 lines, STP-1300 symbols, STP-1400 positions, STP-1500 basket, STP-1500 plan, STP-2300 symbols, STP-3400 settlements, STP-5100 requests, STP-5100 lines |
+| `instruments.name` | 종목명 | STP-1100 holdings, STP-1200 orders, STP-1200 lines, STP-1210 lines, STP-1300 symbols, STP-1400 positions, STP-1500 basket, STP-1500 plan, STP-2300 symbols, STP-3400 settlements, STP-5100 requests, STP-5100 lines |
 | `instruments.symbol` | 종목코드 | STP-1100 holdings, STP-1300 symbols, STP-1300 조회조건, STP-1500 basket, STP-1500 plan, STP-2300 symbols, STP-3100 events, STP-3100 조회조건, STP-3200 events, STP-3200 조회조건, STP-3400 settlements |
 | `journal_entries.date` | 회계일 | STP-3200 journal |
 | `journal_entries.entry_id` | 전표 번호 | STP-3200 journal |
@@ -135,9 +135,9 @@
 | `master_loads.rows_new` | 신규 | STP-4101 loads |
 | `master_loads.rows_total` | 종목 수 | STP-4101 loads |
 | `oms_order_acks.detail` | 거부 사유 | STP-1200 order |
-| `oms_order_acks.order_no` | 증권사 주문번호 | STP-1200 order, STP-5100 lines |
+| `oms_order_acks.order_no` | 증권사 주문번호 | STP-1200 order, STP-1200 lines, STP-5100 lines |
 | `oms_order_acks.outcome` | 결과 | STP-1200 order |
-| `oms_orders.client_id` | 내부 주문번호 | STP-1200 orders |
+| `oms_orders.client_id` | 내부 주문번호 | STP-1200 orders, STP-1200 lines |
 | `oms_orders.created_at` | 생성 시각 | STP-1200 orders |
 | `oms_orders.limit_price` | 지정가 | STP-1200 order, STP-1300 조회조건 |
 | `oms_orders.qty` | 주문수량 | STP-1200 orders, STP-1300 조회조건 |
@@ -149,13 +149,13 @@
 | `order_approvals.reason` | 사유 | STP-1210 history, STP-5100 requests 버튼 reject, STP-5100 requests 버튼 cancel, STP-5100 history |
 | `order_approvals.self_approved` | 셀프 승인 | STP-1210 history, STP-5100 history |
 | `order_request_lines.limit_price` | 지정가 | STP-1210 lines, STP-5100 lines |
-| `order_request_lines.line_no` | 줄 번호 | STP-1210 lines, STP-5100 lines |
-| `order_request_lines.qty` | 수량 | STP-1210 lines, STP-5100 lines |
-| `order_request_lines.side` | 매매 구분 | STP-1210 lines, STP-5100 requests, STP-5100 lines |
-| `order_request_lines.symbol` | 종목코드 | STP-1210 lines, STP-5100 requests, STP-5100 lines |
+| `order_request_lines.line_no` | 줄 번호 | STP-1200 lines, STP-1210 lines, STP-5100 lines |
+| `order_request_lines.qty` | 수량 | STP-1200 lines, STP-1210 lines, STP-5100 lines |
+| `order_request_lines.side` | 매매 구분 | STP-1200 lines, STP-1210 lines, STP-5100 requests, STP-5100 lines |
+| `order_request_lines.symbol` | 종목코드 | STP-1200 lines, STP-1210 lines, STP-5100 requests, STP-5100 lines |
 | `order_requests.created_by` | 작성자 | STP-5100 requests |
-| `order_requests.order_type` | 주문 유형 | STP-1210 lines, STP-5100 requests |
-| `order_requests.request_no` | 요청 번호 | STP-1210 lines, STP-5100 requests |
+| `order_requests.order_type` | 주문 유형 | STP-1200 order, STP-1210 lines, STP-5100 requests |
+| `order_requests.request_no` | 요청 번호 | STP-1200 order, STP-1210 lines, STP-5100 requests |
 | `order_requests.trade_date` | 주문일 | STP-5100 requests, STP-5100 조회조건 |
 | `order_requests_v.approved_by` | 승인자 | STP-5100 requests |
 | `order_requests_v.last_reason` | 마지막 사유 | STP-5100 requests |

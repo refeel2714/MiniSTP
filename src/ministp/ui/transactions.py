@@ -95,7 +95,12 @@ def _order(c: TxContext, p) -> TxResult:
         d = q.order_detail(c.conn, c.books.ledger, p["client_id"], c.today, c.account_id)
     except KeyError as e:
         raise TxError(e.args[0]) from e
-    return TxResult({"order": d.order, "fills": d.fills})
+    r = q.order_request(c.conn, c.books.ledger, p["client_id"], c.today, c.account_id)
+    head = r.request.records()[0] if r.request.rows else {}
+    extra = (head.get("request_no"), head.get("order_type"), head.get("status"), head.get("amount"), head.get("fill_rate"))
+    order = Dataset((*d.order.columns, "request_no", "order_type", "request_status", "request_amount", "fill_rate"),
+                    tuple((*row, *extra) for row in d.order.rows))
+    return TxResult({"order": order, "fills": d.fills, "lines": r.lines})
 
 
 def _recon(c: TxContext, p) -> TxResult:
@@ -921,7 +926,7 @@ TRANSACTIONS: dict[str, Tx] = {t.tx_id: t for t in [
     Tx("STP1500R02", "종목별 주문안", {"amount": "int", "side": "text", "basis": "text", "limit": "int",
                                    "basket": "text"}, _basket_plan),
     Tx("STP1200R01", "주문·체결 블로터", {"day": "date"}, _blotter),
-    Tx("STP1200R02", "주문의 접수와 체결별 결제", {"client_id": "text"}, _order),
+    Tx("STP1200R02", "주문의 접수와 체결별 결제, 나간 요청과 그 줄", {"client_id": "text"}, _order),
     Tx("STP2100R01", "대사 결과", {"date_from": "date", "date_to": "date", "kind": "text", "only_breaks": "bool"},
        _recon),
     Tx("STP2100R02", "날짜별 대사 요약", {"date_from": "date", "date_to": "date", "kind": "text"}, _recon_days),

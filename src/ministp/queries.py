@@ -8,6 +8,7 @@ need (화면 기획서: 조회 트랜잭션 하나 = 조회 서비스 하나).
 """
 import datetime as dt
 from dataclasses import dataclass
+from decimal import Decimal
 
 import psycopg
 
@@ -258,17 +259,23 @@ def recon_calendar(conn: psycopg.Connection, calendar, today: dt.date, date_from
 # ---------- STP-1200 주문·체결 블로터 ----------
 
 def order_blotter(conn: psycopg.Connection, day: dt.date, account_id: str = DEFAULT_ACCOUNT) -> Dataset:
-    """One account's orders of the day: 의도 → 접수 → 반영된 체결, 체결통보 반영 지연.
+    """One account's orders of the day: 의도 → 접수 → 반영된 체결, 체결통보 반영 지연, and the request it was sent
+    for (R-101; orders from before ERD v2.9 or from `place_order` have none).
 
     Brokers number orders per account, so fills and notices are matched inside the order's account."""
     return _q(conn, """
         select o.client_id, o.trade_date, o.created_at, o.symbol, i.name as instrument_name, i.asset_type,
                o.side, o.qty, o.limit_price, a.outcome, a.order_no, a.detail,
                coalesce(f.filled_qty, 0) as filled_qty, f.filled_amount,
-               n.notices, n.max_booking_ms
+               n.notices, n.max_booking_ms, s.request_no, s.line_no, r.order_type,
+               exists (select 1 from broker_snapshots c
+                        where c.kind = 'CANCEL_REQUEST' and c.date = o.trade_date and c.account_id = o.account_id
+                          and c.payload->>'client_id' = o.client_id) as cancel_requested
           from oms_orders o
           join instruments i on i.symbol = o.symbol
           left join oms_order_acks a using (client_id)
+          left join order_sends s on s.client_id = o.client_id
+          left join order_requests r on r.trade_date = s.trade_date and r.request_no = s.request_no
           left join lateral (select sum((e.payload->>'qty')::bigint) as filled_qty,
                                     sum((e.payload->>'qty')::bigint * (e.payload->>'price')::bigint) as filled_amount
                                from ledger_events e
@@ -289,12 +296,17 @@ ORDER_STEPS = ("의도", "접수", "체결", "결제")
 
 
 def order_progress(outcome: str | None, qty: int, filled: int, settled: int, day_over: bool,
-                   overdue: bool) -> tuple[tuple[str, ...], str]:
+                   overdue: bool, canceled: bool = False) -> tuple[tuple[str, ...], str]:
     """The state of each of ORDER_STEPS and one phrase for the whole order.
 
     `day_over`: the order's trade date has passed, so whatever was not filled never will be
     (orders are day orders). `overdue`: a fill is past its settlement date and still unsettled.
+    `canceled`: the broker took a cancel of the rest (R-45, also the basket stop of R-103), so the rest will not fill
+    either: nothing filled reads 취소 요청, a part filled goes on to settlement like a day that is over.
     """
+    if canceled and outcome == "ACCEPTED" and filled == 0:
+        return ("done", "done", "stop", "wait"), "취소 요청"
+    day_over = day_over or canceled
     if outcome is None:        # intent stored, no answer recorded: the broker's order list has to be checked
         return ("done", "now", "wait", "wait"), "접수 기록 없음"
     if outcome != "ACCEPTED":
@@ -338,9 +350,64 @@ def blotter_view(base: Dataset, ledger: Ledger, today: dt.date) -> Dataset:
         mine = fills.get(_order_key(r["trade_date"], r["order_no"]), []) if r["order_no"] else []
         settled = sum(e.qty for e in mine if e.exec_id in settled_on)
         overdue = any(pending.get(e.exec_id, today) < today for e in mine)
-        steps, stage = order_progress(r["outcome"], r["qty"], r["filled_qty"], settled, r["trade_date"] < today, overdue)
-        rows.append((*r.values(), settled, list(steps), stage))
-    return Dataset((*base.columns, "settled_qty", "progress", "stage"), tuple(rows))
+        steps, stage = order_progress(r["outcome"], r["qty"], r["filled_qty"], settled, r["trade_date"] < today, overdue,
+                                      bool(r.get("cancel_requested")))
+        rows.append((*r.values(), settled, list(steps), stage, request_label(r)))
+    return Dataset((*base.columns, "settled_qty", "progress", "stage", "request"), tuple(rows))
+
+
+def request_label(r: dict) -> str | None:
+    """요청 번호를 화면에 쓰는 모양: 단건은 3, 바스켓의 줄은 3-2 (R-99 요청 번호는 주문일마다 1부터)."""
+    if r.get("request_no") is None:
+        return None
+    return f"{r['request_no']}-{r['line_no']}" if r.get("order_type") == "BASKET" else str(r["request_no"])
+
+
+@dataclass(frozen=True)
+class OrderRequest:
+    request: Dataset   # the request the order was sent for (one row, none if it came from no request)
+    lines: Dataset     # every line of that request: what went, what the broker said, how much filled
+
+
+def order_request(conn: psycopg.Connection, ledger: Ledger, client_id: str, today: dt.date,
+                  account_id: str = DEFAULT_ACCOUNT) -> OrderRequest:
+    """STP-1200 오른쪽 아래: 고른 주문이 나간 요청과 그 요청의 모든 줄 (C-21).
+
+    바스켓은 줄마다 주문이 따로 나가요. 체결률은 요청 금액(수량 × 지정가) 가운데 체결된 금액이에요.
+    나가지 않은 줄(바스켓 중단, 보내기 직전 검증)과 결과를 모르는 줄도 함께 보여요."""
+    head = ("trade_date", "request_no", "order_type", "status", "line_count", "amount", "filled_amount", "fill_rate",
+            "accepted_lines", "rejected_lines", "unknown_lines", "created_by", "approved_by", "last_reason")
+    cols = ("line_no", "symbol", "instrument_name", "asset_type", "side", "qty", "limit_price", "amount", "send_outcome",
+            "broker_answer", "order_no", "filled_qty", "filled_amount", "stage", "client_id", "reason")
+    key = conn.execute("select s.trade_date, s.request_no from order_sends s join order_requests r"
+                       " using (trade_date, request_no) where s.client_id = %s and r.account_id = %s",
+                       (client_id, account_id)).fetchone()
+    if key is None:
+        return OrderRequest(Dataset(head, ()), Dataset(cols, ()))
+    day, no = key
+    blotter = {r["client_id"]: r for r in blotter_view(order_blotter(conn, day, account_id), ledger, today).records()}
+    lines = []
+    for ln in _q(conn, """
+            select l.line_no, l.symbol, i.name as instrument_name, i.asset_type, l.side, l.qty, l.limit_price, l.amount,
+                   l.send_outcome, l.ack_outcome, l.awaiting_ack, l.order_no, l.client_id,
+                   coalesce(l.send_reason, case when l.ack_outcome = 'REJECTED' then l.ack_detail end) as reason
+              from order_request_lines_v l join instruments i on i.symbol = l.symbol
+             where l.trade_date = %s and l.request_no = %s order by l.line_no""", (day, no)).records():
+        b = blotter.get(ln["client_id"]) or {}
+        answer = "결과 미확인" if ln["awaiting_ack"] else {"ACCEPTED": "접수", "REJECTED": "거부"}.get(ln["ack_outcome"] or "", "")
+        stage = b.get("stage") or ("전송 실패" if ln["send_outcome"] == "FAILED" else "보내기 전")
+        lines.append((ln["line_no"], ln["symbol"], ln["instrument_name"], ln["asset_type"], ln["side"], ln["qty"], ln["limit_price"],
+                      ln["amount"], ln["send_outcome"], answer, ln["order_no"], b.get("filled_qty", 0),
+                      b.get("filled_amount") or 0, stage, ln["client_id"], ln["reason"]))
+    q = _q(conn, """select trade_date, request_no, order_type, status, line_count, amount, accepted_lines,
+                           rejected_lines, unknown_lines, created_by, approved_by, last_reason
+                      from order_requests_v where trade_date = %s and request_no = %s""", (day, no)).records()[0]
+    filled = sum(x[12] for x in lines)
+    rate = round(Decimal(filled) * 100 / Decimal(q["amount"]), 2) if q["amount"] else None
+    row = (q["trade_date"], q["request_no"], q["order_type"], q["status"], q["line_count"], q["amount"], filled, rate,
+           q["accepted_lines"], q["rejected_lines"], q["unknown_lines"], q["created_by"], q["approved_by"],
+           q["last_reason"])
+    return OrderRequest(Dataset(head, (row,)), Dataset(cols, tuple(lines)))
 
 
 @dataclass(frozen=True)

@@ -94,11 +94,11 @@ class Column:
 
 def code_group(x) -> str | None:
     """The 공통코드 group a column or a 조회조건 is named from: the one it says, or the one stored in its source."""
-    from ..codes import SEED
+    from ..codes import SAME_CODES, SEED
     explicit = getattr(x, "codes", None)
     if explicit:
         return explicit
-    return next((g.group_id for g in SEED if g.used_by and g.used_by == x.source), None)
+    return next((g.group_id for g in SEED if g.used_by and g.used_by == x.source), None) or SAME_CODES.get(x.source)
 
 
 @dataclass

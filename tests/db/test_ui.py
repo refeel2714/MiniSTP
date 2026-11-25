@@ -468,13 +468,14 @@ def test_recon_screen_is_a_calendar_with_that_days_results_next_to_it(client):
 
 def test_blotter_shows_where_each_order_stands_and_its_settlements(client, conn, sample):
     screen = client.get("/api/screen/STP-1200").json()
-    orders, order, fills = screen["grids"]
+    orders, order, fills, lines = screen["grids"]
     cols = {c["name"]: c for c in orders["columns"]}
     assert screen["layout"] == "split" and (order["view"], order["dataset"], fills["dataset"]) == ("cards", "order", "fills")
     assert cols["progress"]["steps"] == ["의도", "접수", "체결", "결제"] and cols["qty"]["inside"] == "filled_qty"
     assert cols["client_id"]["hidden"] and orders["key"] == "client_id"
-    # 그림을 더한 만큼 열을 줄여요: 열네 열이던 주문 목록이 여섯 열로 보여요
-    assert len([c for c in orders["columns"] if not c["inside"] and not c["hidden"]]) == 6
+    # 그림을 더한 만큼 열을 줄여요: 열네 열이던 주문 목록이 일곱 열로 보여요 (요청 번호가 더해짐, C-21)
+    assert len([c for c in orders["columns"] if not c["inside"] and not c["hidden"]]) == 7
+    assert lines["dataset"] == "lines" and lines["master"] == "orders"
     day = conn.execute("select min(trade_date) from oms_orders").fetchone()[0]     # 샘플의 첫 주문일: 결제까지 끝난 날
     rows, _ = _rows(client, "STP1200R01", {"day": day.isoformat()})
     assert rows and all(len(r["progress"]) == 4 and r["stage"] for r in rows)
