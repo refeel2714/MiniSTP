@@ -91,7 +91,7 @@ def test_the_period_summary_reads_each_symbol_from_the_close_before_the_period(l
     close(ledger, "11-02", {"A": 10_000, "E": 10_000})
     close(ledger, "11-03", {"A": 12_000, "E": 10_003})
     close(ledger, "11-04", {"A": 11_000, "E": 10_005})
-    a, e = q.price_trend_symbols(ledger).records()
+    e, a = q.price_trend_symbols(ledger).records()                          # the worse level first (BAD, then WARN)
     assert (a["symbol"], a["instrument_name"], a["asset_type"], a["days"]) == ("A", "가상종목A", "STOCK", 3)
     assert (a["base_close"], a["last_close"], a["last_date"], a["change"]) == (10_000, 11_000, d("11-04"), 10.0)
     assert (a["high"], a["low"], a["trend"], a["level"]) == (12_000, 10_000, [10_000, 12_000, 11_000], WARN)
