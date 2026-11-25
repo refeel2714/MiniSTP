@@ -1,8 +1,8 @@
 id: STP-5100
 title: 주문 결재
-purpose: 승인을 기다리는 요청을 체크해서 한 번에 승인하거나 반려해요(R-100, R-102). 오른쪽 "선택 묶음 검증"은 체크한 요청을 모두 함께, 이미 승인했지만 아직 안 나간 요청과 미체결 주문까지 더해서 다시 본 결과예요(R-98). 묶음이 불합격이거나 내 1건 승인 한도를 넘거나, 본인이 쓴 요청인데 셀프 승인 허용이 없으면 승인 버튼이 잠겨요. 요청 번호는 주문일마다 1부터 매기는 순번이고, 바스켓은 종목이 여럿이어도 요청 1건이라 한 줄로 보이고 한 번에 승인·반려돼요. 요청을 고르면 오른쪽 "요청의 줄"에 종목 줄과 줄마다 전송 결과가 나와요. 승인해도 장중 `run`이 보내기 직전에 같은 계산을 한 번 더 해요. 요청 취소는 작성자만 해요.
+purpose: 승인을 기다리는 요청을 체크해서 한 번에 승인하거나 반려해요(R-100, R-102). 오른쪽 "선택 묶음 검증"은 체크한 요청을 모두 함께, 이미 승인했지만 아직 안 나간 요청과 미체결 주문까지 더해서 다시 본 결과예요(R-98). 묶음이 불합격이거나 내 1건 승인 한도를 넘거나, 본인이 쓴 요청인데 셀프 승인 허용이 없으면 승인 버튼이 잠겨요. 요청 번호는 주문일마다 1부터 매기는 순번이고, 바스켓은 종목이 여럿이어도 요청 1건이라 한 줄로 보이고 한 번에 승인·반려돼요. 요청을 고르면 오른쪽 "요청의 줄"에 종목·수량·금액이 나오고, 요청을 두 번 누르면 줄의 주문가·비중·전송 결과·증권사 답과 결재·전송 이력까지 넓게 펼친 요청의 줄(STP-5101)로 가요. 승인해도 장중 `run`이 보내기 직전에 같은 계산을 한 번 더 해요. 요청 취소는 작성자만 해요.
 layout: split
-left: 66
+left: 60
 conditions:
   - {name: status, type: select, source: order_requests_v.status, options: [PENDING, APPROVED, REJECTED, CANCELED, SENT, SEND_FAILED, EXPIRED], default: PENDING}
   - {name: trade_date, type: date, source: order_requests.trade_date}
@@ -16,6 +16,7 @@ grids:
     live: true
     meta: {user: 사용자}
     pick: {param: picked, when: pickable}
+    drill: {screen: STP-5101, params: {request_key: request_key}}
     columns:
       - {name: request_key, label: 요청 키, format: code, hidden: true}
       - {name: pickable, label: 체크 가능, hidden: true}
@@ -72,34 +73,14 @@ grids:
     load: master
     master: requests
     link: {request_key: request_key}
-    weight: 2
+    weight: 3
+    totals: [amount]
     columns:
-      - {name: line_no, source: order_request_lines.line_no, format: number}
+      - {name: line_no, source: order_request_lines.line_no, format: number, hidden: true}
       - {name: symbol, source: order_request_lines.symbol, format: code, hidden: true}
       - {name: instrument_name, source: instruments.name, display: badge, code: symbol, shape: asset_type}
       - {name: asset_type, source: instruments.asset_type, format: code}
-      - {name: side, source: order_request_lines.side, format: code, color: side, sub: kind}
-      - {name: kind, label: 주문 유형}
-      - {name: qty, source: order_request_lines.qty, format: number, sub: limit_price}
-      - {name: limit_price, source: order_request_lines.limit_price, format: money}
-      - {name: amount, label: 주문금액, format: money}
-      - {name: send_outcome, source: order_sends.outcome, format: code, sub: client_id}
-      - {name: client_id, source: order_sends.client_id, format: code}
-      - {name: broker_answer, label: 증권사 답, sub: order_no}
-      - {name: order_no, source: oms_order_acks.order_no, format: code}
-      - {name: send_reason, source: order_sends.reason, hidden: true}
-  - id: history
-    title: 결재·전송 이력
-    tx: STP5100R03
-    load: master
-    master: requests
-    link: {request_key: request_key}
-    weight: 2
-    columns:
-      - {name: at, source: order_approvals.at, format: datetime}
-      - {name: action, label: 결재 행위}
-      - {name: actor, source: order_approvals.actor}
-      - {name: self_approved, source: order_approvals.self_approved}
-      - {name: line_no, source: order_sends.line_no, format: number}
-      - {name: client_id, source: order_sends.client_id, format: code}
-      - {name: reason, source: order_approvals.reason}
+      - {name: side, source: order_request_lines.side, format: code, color: side, sub: qty}
+      - {name: qty, source: order_request_lines.qty, format: number}
+      - {name: amount, label: 주문금액, format: money, sub: send_outcome}
+      - {name: send_outcome, source: order_sends.outcome, format: code}

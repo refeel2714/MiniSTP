@@ -140,7 +140,8 @@ def event_trace(conn: psycopg.Connection, seq: int, account_id: str = DEFAULT_AC
 
 def trial_balance(conn: psycopg.Connection, account_id: str = DEFAULT_ACCOUNT) -> tuple[Dataset, bool]:
     """One account's 시산표 and whether its total debits equal its total credits."""
-    ds = _q(conn, "select code, name, normal_side, balance from account_balances_v"
+    ds = _q(conn, "select code, name, normal_side, balance,"
+                  " case when code in ('1100', '1110') then 'STP-3301' end as opens from account_balances_v"
                   " where account_id = %s and balance <> 0 order by code", (account_id,))
     dr, cr = conn.execute(
         "select coalesce(sum(l.debit), 0), coalesce(sum(l.credit), 0)"
@@ -1439,3 +1440,63 @@ def master_load_changes(conn: psycopg.Connection, load_id: int, kind: str | None
             continue
         out += [(change, r["symbol"], r["name"], r["sec_group"], item, before, after) for item, before, after in items]
     return Dataset(("change", "symbol", "name", "sec_group", "item", "before", "after"), tuple(out))
+
+
+# ---------- STP-3301 종목별 보조원장 ----------
+
+def fvpl_subledger(ledger: Ledger, conn: psycopg.Connection) -> tuple[Dataset, dict]:
+    """1100 FVPL 금융자산과 1110 평가조정을 종목으로 나눠요. 총계정원장(시산표) 잔액과 합계가 같아야 해요.
+
+    1100의 종목 몫은 지금 보유의 장부금액이에요. 1110은 마지막 평가 이벤트 한 장의 금액이라(앞 평가는 역분개로 지워요),
+    그 이벤트 때의 보유 수량 × 그날 종가 - 장부금액을 종목마다 다시 계산해요. 평가 뒤에 매매가 있으면 두 값의
+    기준 시점이 달라서, 그 종목에 "평가 뒤 매매" 표시를 해요."""
+    from .accounting import Account
+    from .ledger import RevaluationEvent
+    events = ledger.events
+    last = max((n for n, ev in enumerate(events) if isinstance(ev, RevaluationEvent)), default=None)
+    at_val: dict[str, tuple[int, int, int]] = {}
+    val_date = None
+    if last is not None:
+        ev = events[last]
+        val_date, closes = ev.date, dict(ev.closes)
+        then = Ledger.replay(events[:last + 1], ledger.calendar, ledger.fees, ledger.instruments,
+                             ledger.settlement_cycle).positions()
+        at_val = {s: (p.qty, closes[s], p.qty * closes[s] - p.book_cost) for s, p in then.items()}
+    now = ledger.positions()
+    names = dict((s, (n, a)) for s, n, a in conn.execute("select symbol, name, asset_type from instruments"))
+    rows = []
+    for s in sorted(set(now) | set(at_val)):
+        p = now.get(s)
+        vq, close, adj = at_val.get(s, (0, None, 0))
+        cost = p.book_cost if p else 0
+        qty = p.qty if p else 0
+        n, a = names.get(s, (s, None))
+        rows.append((s, n, a, qty, cost, vq, close, vq * close if close else None, adj, cost + adj,
+                     f"{adj / (cost or 1) * 100:+.2f}%" if cost else None,
+                     "평가 뒤 매매" if qty != vq else ""))
+    rows.sort(key=lambda r: -r[9])
+    gl_cost, gl_val = ledger.account_balance(Account.FVPL_STOCK), ledger.account_balance(Account.FVPL_VALUATION)
+    sub_cost, sub_val = sum(r[4] for r in rows), sum(r[8] for r in rows)
+    def tie(gl, sub):
+        return f"일치 {gl:,}" if gl == sub else f"차이 {gl - sub:,}"
+    meta = {"tie_1100": tie(gl_cost, sub_cost), "tie_1110": tie(gl_val, sub_val),
+            "val_date": val_date.isoformat() if val_date else "평가 전",
+            "after": f"{sum(1 for r in rows if r[11])}종목"}
+    tie = Dataset(("account", "name", "gl", "sub", "diff", "result"), (
+        ("1100", "FVPL 금융자산", gl_cost, sub_cost, gl_cost - sub_cost, "일치" if gl_cost == sub_cost else "불일치"),
+        ("1110", "FVPL 금융자산 평가조정", gl_val, sub_val, gl_val - sub_val, "일치" if gl_val == sub_val else "불일치"),
+        ("", "장부금액 합계", gl_cost + gl_val, sub_cost + sub_val, gl_cost + gl_val - sub_cost - sub_val,
+         "일치" if (gl_cost, gl_val) == (sub_cost, sub_val) else "불일치")))
+    return Dataset(("symbol", "instrument_name", "asset_type", "qty", "book_cost", "val_qty", "close", "val_value",
+                    "valuation", "carrying", "val_rate", "note"), tuple(rows)), {"tie": tie, **meta}
+
+
+def symbol_cost_moves(conn: psycopg.Connection, symbol: str, account_id: str = DEFAULT_ACCOUNT) -> Dataset:
+    """한 종목의 1100 변동: 매매일마다 수량과 장부금액이 얼마나 늘고 줄었는지, 쌓인 잔액까지."""
+    return _q(conn, """
+        select x.trade_date, x.event_seq as seq, e.event_type, x.qty_delta, x.cost_delta,
+               sum(x.qty_delta) over w as qty_after, sum(x.cost_delta) over w as cost_after, x.realized_pnl
+          from position_ledger x join ledger_events e on e.seq = x.event_seq
+         where x.symbol = %(s)s and x.account_id = %(a)s
+        window w as (order by x.event_seq, x.id)
+         order by x.event_seq desc, x.id desc""", {"s": symbol, "a": account_id})

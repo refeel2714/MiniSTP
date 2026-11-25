@@ -1,0 +1,55 @@
+id: STP-5101
+title: 요청의 줄
+purpose: 주문 결재(STP-5100)에 딸린 화면이에요. 결재 화면 오른쪽 칸은 좁아서 바스켓 30줄을 다 보기 어려워, 요청 한 건의 줄을 화면 전체 너비로 펼쳐요. 줄마다 주문가·수량·금액, 요청 안에서 차지하는 금액 비중, 전송 결과와 증권사 답이 나와요. 결재 문서처럼 위에 결재·전송 이력을 두고 그 아래에 줄을 펼쳐요. 승인·반려는 결재 화면에서 해요.
+conditions:
+  - {name: request_key, type: text, label: 요청 키, required: true}
+grids:
+  - id: head
+    title: 요청
+    tx: STP5101R01
+    dataset: head
+    load: input
+    view: cards
+    columns:
+      - {name: request_key, label: 요청 키, format: code}
+      - {name: order_type, source: order_requests.order_type, format: code}
+      - {name: status, source: order_requests_v.status, color: status}
+      - {name: line_count, source: order_requests_v.line_count, format: number}
+      - {name: total, label: 주문금액 합계, format: money}
+      - {name: sent, label: 나간 줄}
+      - {name: people, label: 작성자 → 승인자}
+  - id: history
+    title: 결재·전송 이력
+    tx: STP5101R02
+    load: input
+    weight: 2
+    columns:
+      - {name: at, source: order_approvals.at, format: datetime}
+      - {name: action, label: 결재 행위}
+      - {name: actor, source: order_approvals.actor}
+      - {name: self_approved, source: order_approvals.self_approved}
+      - {name: line_no, source: order_sends.line_no, format: number}
+      - {name: client_id, source: order_sends.client_id, format: code}
+      - {name: reason, source: order_approvals.reason}
+  - id: lines
+    title: 줄
+    tx: STP5101R01
+    load: input
+    key: line_no
+    totals: [amount]
+    columns:
+      - {name: line_no, source: order_request_lines.line_no, format: number}
+      - {name: symbol, source: order_request_lines.symbol, format: code, hidden: true}
+      - {name: instrument_name, source: instruments.name, display: badge, code: symbol, shape: asset_type}
+      - {name: asset_type, source: instruments.asset_type, format: code}
+      - {name: side, source: order_request_lines.side, format: code, color: side}
+      - {name: kind, label: 주문 유형}
+      - {name: limit_price, source: order_request_lines.limit_price, format: money}
+      - {name: qty, source: order_request_lines.qty, format: number}
+      - {name: amount, label: 주문금액, format: money}
+      - {name: share, label: 요청 안 비중, format: rate, display: meter}
+      - {name: send_outcome, source: order_sends.outcome, format: code}
+      - {name: client_id, source: order_sends.client_id, format: code}
+      - {name: broker_answer, label: 증권사 답}
+      - {name: order_no, source: oms_order_acks.order_no, format: code}
+      - {name: send_reason, label: 사유}

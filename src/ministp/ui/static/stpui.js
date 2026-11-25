@@ -747,7 +747,12 @@
     function search() {
       const list = def.grids.filter(g => g.load !== "master");
       def.grids.filter(g => g.load === "master").forEach(g => grids[g.id].clear("목록에서 행을 고르세요"));
-      return load(list, searchParams);
+      const typed = list.filter(g => g.edit);
+      if (!typed.length) return load(list, searchParams);
+      // 조회는 입력 그리드를 새로 채워요: 고친 값을 버리고, 새 행이 온 뒤에 그 행으로 오른쪽을 계산해요
+      typed.forEach(g => grids[g.id].forget());
+      return load(list.filter(g => g.load !== "input"), searchParams)
+        .then(() => load(list.filter(g => g.load === "input"), searchParams));
     }
 
     function onSelect(master, row) {
@@ -1634,7 +1639,7 @@
       return out;
     }
     return { el, fill, clear, busy, fail, skeleton, about, given, dropPicked, pickedKeys: () => [...picked],
-      editValue: () => (ed ? editValue() : undefined) };
+      editValue: () => (ed ? editValue() : undefined), forget: () => { edits = new Map(); added = []; } };
   }
 
   // The tree starts shut where the viewer shut it, and on a narrow window (it would push the screen down).

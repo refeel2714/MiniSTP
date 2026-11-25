@@ -1,0 +1,44 @@
+id: STP-3301
+title: 종목별 보조원장
+purpose: 시산표(STP-3300)에 딸린 화면이에요. 1100 FVPL 금융자산과 1110 평가조정 잔액을 종목으로 나눠 보여 주고, 종목 합계가 시산표 잔액과 같은지 위에서 맞춰 봐요. 1100의 종목 몫은 지금 장부금액이고, 1110은 마지막 평가 전표가 한 장이라 그날 보유 수량 × 종가 - 장부금액을 종목마다 다시 계산해요. 평가 뒤에 사거나 판 종목은 두 값의 기준 시점이 달라서 "평가 뒤 매매"로 표시해요. 종목을 고르면 오른쪽에 그 종목의 장부금액 변동이 나오고, 두 번 누르면 그 이벤트의 분개(STP-3200)로 가요.
+layout: split
+left: 64
+grids:
+  - id: symbols
+    title: 종목별 잔액
+    tx: STP3301R01
+    load: open
+    key: symbol
+    weight: 4
+    meta: {tie_1100: 1100 시산표 대 종목 합계, tie_1110: 1110 시산표 대 종목 합계, val_date: 평가 기준일}
+    totals: [book_cost, valuation, carrying]
+    columns:
+      - {name: symbol, source: instruments.symbol, format: code, hidden: true}
+      - {name: instrument_name, source: instruments.name, display: badge, code: symbol, shape: asset_type}
+      - {name: asset_type, source: instruments.asset_type, format: code}
+      - {name: qty, source: positions_v.qty, format: number, sub: val_qty}
+      - {name: val_qty, label: 평가일 수량, format: number}
+      - {name: book_cost, label: 1100 장부금액, format: money}
+      - {name: close, label: 평가 종가, format: money}
+      - {name: val_value, label: 평가금액, format: money, hidden: true}
+      - {name: valuation, label: 1110 평가조정, format: money, color: sign, sub: val_rate}
+      - {name: val_rate, label: 평가율}
+      - {name: carrying, label: 장부금액 합계, format: money, display: bar}
+      - {name: note, label: 비고, display: pill, color: status}
+  - id: moves
+    title: 종목의 장부금액 변동 (1100)
+    tx: STP3301R02
+    load: master
+    master: symbols
+    link: {symbol: symbol}
+    weight: 4
+    drill: {screen: STP-3200, params: {seq: seq}}
+    columns:
+      - {name: trade_date, source: position_ledger.trade_date, format: date}
+      - {name: seq, source: position_ledger.event_seq, format: number, hidden: true}
+      - {name: event_type, source: ledger_events.event_type, format: code}
+      - {name: qty_delta, source: position_ledger.qty_delta, format: number, color: sign, sub: qty_after}
+      - {name: qty_after, label: 수량 잔고, format: number}
+      - {name: cost_delta, source: position_ledger.cost_delta, format: money, color: sign}
+      - {name: cost_after, label: 장부금액 잔고, format: money}
+      - {name: realized_pnl, source: position_ledger.realized_pnl, format: money, color: sign, hidden: true}

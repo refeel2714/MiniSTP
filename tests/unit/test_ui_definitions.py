@@ -455,7 +455,7 @@ def test_every_shipped_screen_has_its_place_in_the_classification():
     placed = [s["id"] for a in tree for g in a["groups"] for s in g["screens"]]
     subs = [x["id"] for a in tree for g in a["groups"] for s in g["screens"] for x in s["subs"]]
     assert placed == sorted(i for i in screens if i.endswith("0"))               # every screen once, in number order
-    assert subs == sorted(i for i in screens if not i.endswith("0")) == ["STP-4101"]   # 딸린 화면 under their parent
+    assert subs == sorted(i for i in screens if not i.endswith("0")) == ["STP-3301", "STP-4101", "STP-5101"]   # 딸린 화면 under their parent
     for a in tree:
         for g in a["groups"]:                                                    # the number says where a screen is
             assert g["id"].startswith(a["id"]) and all(s["id"][4:6] == g["id"] for s in g["screens"])

@@ -272,6 +272,16 @@ def _trial(c: TxContext, p) -> TxResult:
     return TxResult({"main": ds}, {"balanced": balanced})
 
 
+def _subledger(c: TxContext, p) -> TxResult:
+    ds, meta = q.fvpl_subledger(c.books.ledger, c.conn)
+    meta.pop("tie")
+    return TxResult({"main": ds}, meta)
+
+
+def _subledger_moves(c: TxContext, p) -> TxResult:
+    return TxResult({"main": q.symbol_cost_moves(c.conn, p["symbol"], c.account_id)})
+
+
 def _instruments(c: TxContext, p) -> TxResult:
     return TxResult({"main": q.instrument_master(c.books)})
 
@@ -361,13 +371,15 @@ def _basket_portfolio(c: TxContext):
 
 def _basket_current(c: TxContext, p) -> TxResult:
     """바스켓의 첫 모습: 보유 종목을 현재 편입비 그대로 (R-97)."""
-    from ..basket import current_weights
+    from ..basket import current_weights, starting_targets
     pf = _basket_portfolio(c)
-    rows = tuple((s, pf.instruments[s].name if s in pf.instruments else "",
-                  pf.instruments[s].asset_type.value if s in pf.instruments else "", w, w, pf.prices.get(s))
-                 for s, w in current_weights(pf).items())
+    now = current_weights(pf)
+    rows = tuple((t.symbol, pf.instruments[t.symbol].name if t.symbol in pf.instruments else "",
+                  pf.instruments[t.symbol].asset_type.value if t.symbol in pf.instruments else "",
+                  now.get(t.symbol), t.weight, pf.prices.get(t.symbol), t.weight)
+                 for t in starting_targets(pf, p.get("start") or "보유 전체"))
     return TxResult({"main": Dataset(("symbol", "instrument_name", "asset_type", "current_weight", "target_weight",
-                                      "price"), rows)}, {"basis": pf.price_basis or "가격 없음"})
+                                      "price", "start_weight"), rows)}, {"basis": pf.price_basis or "가격 없음"})
 
 
 BASKET_SIDES = {"BUY": "BUY", "SELL": "SELL"}
@@ -389,14 +401,23 @@ def parse_basket(text: str):
     return out
 
 
+PLAN_COLUMNS = ("symbol", "instrument_name", "asset_type", "order_price", "tick_text", "order_kind", "target_amount",
+                "qty", "amount", "actual_weight", "weight_gap", "costs", "post_weight", "ok", "check_text", "line")
+SUMMARY_COLUMNS = ("total_amount", "allocated", "leftover", "costs", "required_cash", "available_cash", "ok", "verdict")
+
+
 def _basket_plan(c: TxContext, p) -> TxResult:
     """종목별 주문안과 요약 (R-97). 계산만 하고 DB에는 쓰지 않아요."""
     from decimal import Decimal
 
-    from ..basket import BasketError, PriceBasis, default_targets, issue_text, simulate
+    from ..basket import BasketError, PriceBasis, issue_text, simulate, starting_targets
     from ..ledger import Side
     pf = _basket_portfolio(c)
-    targets = parse_basket(p["basket"]) if p.get("basket") else default_targets(pf)
+    targets = parse_basket(p["basket"]) if p.get("basket") else starting_targets(pf, p.get("start") or "보유 전체")
+    if not targets:   # 빈 바스켓: 종목을 담기 전에는 계산할 게 없어요
+        return TxResult({"main": Dataset(PLAN_COLUMNS, ()), "summary": Dataset(SUMMARY_COLUMNS, (
+            (p.get("amount") or 0, 0, p.get("amount") or 0, 0, 0, pf.available_cash, False, "왼쪽에서 종목을 추가해 주세요"),))},
+            {"basis": pf.price_basis or "가격 없음", "ok": False, "limit": f"{p.get('limit', 30)}%", "zero": "없음"})
     side = (p.get("side") or "BUY").upper()
     if side not in BASKET_SIDES:
         raise TxError(f"매매구분은 BUY 또는 SELL이에요: {side}")
@@ -414,14 +435,12 @@ def _basket_plan(c: TxContext, p) -> TxResult:
                    not ln.blocked, issue_text(ln.issues),
                    f"{ln.symbol}:{side}:{ln.qty}:{ln.limit_price or ''}:BK" if ln.qty > 0 else None)
              for ln in r.lines)
+    zero = [ln for ln in r.lines if ln.qty == 0 and ln.weight > 0]
     summary = ((r.total_amount, r.allocated, r.leftover, r.commission + r.taxes, r.required_cash, r.available_cash,
                 r.ok, issue_text(r.issues) if r.issues else ("결재로 넘길 수 있어요" if r.ok else "검사에 걸린 종목이 있어요")),)
-    return TxResult({"main": Dataset(("symbol", "instrument_name", "asset_type", "order_price", "tick_text",
-                                      "order_kind", "target_amount", "qty", "amount", "actual_weight", "weight_gap",
-                                      "costs", "post_weight", "ok", "check_text", "line"), lines),
-                     "summary": Dataset(("total_amount", "allocated", "leftover", "costs", "required_cash",
-                                         "available_cash", "ok", "verdict"), summary)},
-                    {"basis": pf.price_basis or "가격 없음", "ok": r.ok, "limit": f"{r.weight_limit}%"})
+    return TxResult({"main": Dataset(PLAN_COLUMNS, lines), "summary": Dataset(SUMMARY_COLUMNS, summary)},
+                    {"basis": pf.price_basis or "가격 없음", "ok": r.ok, "limit": f"{r.weight_limit}%",
+                     "zero": f"{len(zero)}종목, 배분 금액 {sum(ln.target_amount for ln in zero):,}원" if zero else "없음"})
 
 
 def _risk(c: TxContext, p) -> TxResult:
@@ -838,6 +857,25 @@ def _request_lines(c: TxContext, p) -> TxResult:
     return TxResult({"main": Dataset(cols, tuple(rows))})
 
 
+def _request_wide(c: TxContext, p) -> TxResult:
+    """STP-5101 요청의 줄 (넓게): 5100과 같은 줄에 요청 안 금액 비중, 위에 요청 요약."""
+    from .. import approval
+    base = _request_lines(c, p).datasets["main"]
+    amt = base.columns.index("amount")
+    total = sum(r[amt] or 0 for r in base.rows)
+    rows = tuple((*r, round((r[amt] or 0) / total, 4) if total else None) for r in base.rows)
+    lines = Dataset((*base.columns, "share"), rows)
+    head = ()
+    if p.get("request_key"):
+        k = approval.parse_key(p["request_key"], c.today)
+        for r in approval.requests(c.conn, account_id=c.account_id, keys=[k]):
+            sent = sum(1 for ln in r.lines if ln.send_outcome == "SENT")
+            head = ((f"{r.trade_date:%Y%m%d}-{r.request_no}", approval.ORDER_TYPES.get(r.order_type, r.order_type),
+                     r.status, len(r.lines), total, f"{sent} / {len(r.lines)}", f"{r.created_by} → {r.approved_by or '승인 전'}"),)
+    return TxResult({"main": lines, "head": Dataset(("request_key", "order_type", "status", "line_count", "total",
+                                                     "sent", "people"), head)})
+
+
 def _approval_set(c: TxContext, p) -> TxResult:
     """STP-5100 선택 묶음 검증: 체크한 결재 대기 요청 + 이미 승인했지만 아직 안 나간 요청. 내 승인 한도도."""
     from .. import approval
@@ -922,9 +960,9 @@ TRANSACTIONS: dict[str, Tx] = {t.tx_id: t for t in [
     Tx("STP1300R01", "종목별 주문가능", {}, _capacities),
     Tx("STP1300R02", "주문가능 판단", {"symbol": "text", "side": "text", "qty": "int", "limit_price": "int"},
        _order_check),
-    Tx("STP1500R01", "바스켓 (현재 편입비)", {}, _basket_current),
+    Tx("STP1500R01", "바스켓 (첫 구성)", {"start": "text"}, _basket_current),
     Tx("STP1500R02", "종목별 주문안", {"amount": "int", "side": "text", "basis": "text", "limit": "int",
-                                   "basket": "text"}, _basket_plan),
+                                   "basket": "text", "start": "text"}, _basket_plan),
     Tx("STP1200R01", "주문·체결 블로터", {"day": "date"}, _blotter),
     Tx("STP1200R02", "주문의 접수와 체결별 결제, 나간 요청과 그 줄", {"client_id": "text"}, _order),
     Tx("STP2100R01", "대사 결과", {"date_from": "date", "date_to": "date", "kind": "text", "only_breaks": "bool"},
@@ -948,6 +986,8 @@ TRANSACTIONS: dict[str, Tx] = {t.tx_id: t for t in [
                                             "symbol": "text", "seq": "int"}, _journal_events),
     Tx("STP3200R02", "이벤트의 분개", {"seq": "int"}, _journal),
     Tx("STP3300R01", "시산표", {}, _trial),
+    Tx("STP3301R01", "종목별 보조원장 (1100·1110)", {}, _subledger),
+    Tx("STP3301R02", "종목의 장부금액 변동", {"symbol": "text"}, _subledger_moves),
     Tx("STP3400R01", "계좌 요약", {}, _account),
     Tx("STP3400R02", "예수금 D+n", {}, _ladder),
     Tx("STP3400R03", "결제 예정", {}, _settlements),
@@ -980,6 +1020,8 @@ TRANSACTIONS: dict[str, Tx] = {t.tx_id: t for t in [
        _approval_set),
     Tx("STP5100R03", "결재·전송 이력", {"request_key": "text"}, _approval_history),
     Tx("STP5100R04", "요청의 줄", {"request_key": "text"}, _request_lines),
+    Tx("STP5101R01", "요청의 줄 (넓게)", {"request_key": "text"}, _request_wide),
+    Tx("STP5101R02", "결재·전송 이력", {"request_key": "text"}, _approval_history),
     Tx("STP5200R01", "사용자", {}, _app_users),
     Tx("STP5200R02", "권한 이력", {"user_id": "text"}, _user_rights),
 ]}

@@ -1,6 +1,6 @@
 id: STP-3300
 title: 시산표
-purpose: 계정과목별 잔액을 한 표로 보여줘요. 장부 전체의 차변 합계와 대변 합계가 같은지를 표 위에 함께 보여줘요. 어느 이벤트가 그 잔액을 만들었는지는 분개 조회(STP-3200)에서 따라가요.
+purpose: 계정과목별 잔액을 한 표로 보여줘요. 장부 전체의 차변 합계와 대변 합계가 같은지를 표 위에 함께 보여줘요. 어느 이벤트가 그 잔액을 만들었는지는 분개 조회(STP-3200)에서 따라가요. 1100·1110 줄을 두 번 누르면 종목별 보조원장(STP-3301)에서 종목으로 나눠 봐요.
 grids:
   - id: trial
     title: 시산표
@@ -8,8 +8,10 @@ grids:
     tx: STP3300R01
     load: open
     meta: {balanced: 차대 일치}
+    drill: {by: opens, screens: [STP-3301]}
     columns:
       - {name: code, source: accounts_chart.code, format: code}
       - {name: name, source: accounts_chart.name}
       - {name: normal_side, source: accounts_chart.normal_side, format: code}
       - {name: balance, source: account_balances_v.balance, format: money}
+      - {name: opens, label: 열 화면, hidden: true}

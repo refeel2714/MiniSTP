@@ -184,6 +184,26 @@ def default_targets(pf: Portfolio) -> list[Target]:
     return [Target(s, w) for s, w in current_weights(pf).items()]
 
 
+START_OPTIONS = ("보유 전체", "비중 상위 20종목", "빈 바스켓")
+
+
+def starting_targets(pf: Portfolio, start: str = "보유 전체") -> list[Target]:
+    """바스켓의 첫 구성. 보유 전체는 현재 편입비 그대로, 상위 20종목은 그 20종목 안에서 다시 100%로, 빈 바스켓은 없음."""
+    if start == "빈 바스켓":
+        return []
+    w = current_weights(pf)
+    if start == "비중 상위 20종목":
+        top = dict(list(w.items())[:20])
+        whole = sum(top.values())
+        exact = {s: v * HUNDRED / whole for s, v in top.items()}
+        floor = {s: x.quantize(CENT, rounding=ROUND_DOWN) for s, x in exact.items()}
+        short = int((HUNDRED - sum(floor.values())) / CENT)
+        for s in sorted(exact, key=lambda s: floor[s] - exact[s])[:short]:
+            floor[s] += CENT
+        return [Target(s, floor[s]) for s in top]
+    return [Target(s, v) for s, v in w.items()]
+
+
 def _order_price(price: int, inst: Instrument, side: Side, basis: PriceBasis) -> tuple[int, int | None, int]:
     """(계산 단가, 지정가 또는 None, 호가단위)."""
     buy = side is Side.BUY
