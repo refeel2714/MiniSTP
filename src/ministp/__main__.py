@@ -305,17 +305,18 @@ def _erp_export(url: str, connect, args, today: dt.date) -> int:
     try:
         mapping = erp.load_mapping(args.mapping) if args.mapping else None
         with connect(url) as conn:
-            result = erp.export(conn, mapping, date_from, date_to, args.by)
+            account_id = None if args.all_accounts else args.account
+            result = erp.export(conn, mapping, date_from, date_to, args.by, account_id)
             conn.rollback()
         if not result.lines:
-            print(f"{date_from}~{date_to}에 내보낼 분개가 없어요.")
+            print(f"{date_from}~{date_to}에 {account_id or '모든 계좌'}의 내보낼 분개가 없어요.")
             return 0
-        path = erp.write_csv(result, args.out or erp.default_out(date_from, date_to, args.by))
+        path = erp.write_csv(result, args.out or erp.default_out(date_from, date_to, args.by, account_id))
     except erp.ErpError as e:
         print(f"내보내지 않았어요: {e}")
         return 1
     kind = "건별" if args.by == "entry" else "일별 합계"
-    print(f"{path} ({kind}): 전표 {result.documents}건, 줄 {len(result.lines)}개, "
+    print(f"{path} ({kind}, {account_id or '모든 계좌'}): 전표 {result.documents}건, 줄 {len(result.lines)}개, "
           f"차변 {result.debit:,} = 대변 {result.credit:,}")
     print("계정별 합계 (ERP 총계정원장과 맞춰 볼 값):")
     for code, name, dr, cr in result.by_account():
@@ -536,8 +537,10 @@ def _run(argv, *, environ=os.environ, client_factory=KisClient, connect=psycopg.
                    help="check: 점검할 날 (기본은 가장 최근에 받은 날). load: 그날만 (기본은 아직 넣지 않은 날 모두, 날짜 순)")
     p.add_argument("--csv", action="store_true", help="엑셀로 열 수 있게 받은 폴더에 master.csv도 만들기")
     p.add_argument("--no-db", action="store_true", help="check: 등록 종목·기준가 대조 없이 파일만 점검")
-    p = sub.add_parser("erp", help="분개를 ERP 일반전표 업로드 파일(CSV)로 내보내기. DB에 쓰지 않아요 (R-96)")
+    p = sub.add_parser("erp", parents=[by_account],
+                       help="분개를 ERP 일반전표 업로드 파일(CSV)로 내보내기. 계좌 하나씩(--account), DB에 쓰지 않아요 (R-96)")
     p.add_argument("action", choices=["export"])
+    p.add_argument("--all-accounts", action="store_true", help="모든 계좌를 한 파일로 (줄마다 계좌 열로 나눠요)")
     p.add_argument("--from", dest="date_from", type=dt.date.fromisoformat, help="시작일 (기본은 오늘)")
     p.add_argument("--to", dest="date_to", type=dt.date.fromisoformat, help="종료일 (기본은 시작일)")
     p.add_argument("--by", choices=["entry", "day"], default="entry", help="entry: 분개 1건 = 전표 1건, day: 하루 합계 (일 마감한 날만)")
