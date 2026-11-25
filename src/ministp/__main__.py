@@ -312,6 +312,8 @@ def _erp_export(url: str, connect, args, today: dt.date) -> int:
             print(f"{erp.export_ref(no):8} {acct or '모든 계좌':8} {span:23} {'건별' if unit == 'ENTRY' else '일별 합계':5}"
                   f" 전표 {docs:>4}건 차변 {debit:>15,}  {name}  {by} {at:%Y-%m-%d %H:%M}  {state}")
         return 0
+    if args.action == "recon":
+        return _erp_recon(url, connect, args, today)
     if args.action == "void":
         if args.export_id is None:
             print("무효로 할 내보내기 번호를 주세요: erp void 3 --reason \"ERP 업로드 오류\"")
@@ -361,6 +363,44 @@ def _erp_export(url: str, connect, args, today: dt.date) -> int:
     for code, name, dr, cr in result.by_account():
         print(f"  {code:10} {name:24} 차변 {dr:>15,}  대변 {cr:>15,}")
     return 0
+
+
+def _erp_recon(url: str, connect, args, today: dt.date) -> int:
+    """`erp recon`: per ERP account, MiniSTP against the ERP and the broker (R-106). Exit 3 when they differ."""
+    from . import erp
+    if not args.file:
+        print("ERP에서 받은 계정별 금액 파일을 주세요: erp recon --file erp잔액.csv --as-of 2026-11-25")
+        return 2
+    as_of = args.as_of or today
+    try:
+        mapping = erp.load_mapping(args.mapping) if args.mapping else None
+        rows = erp.load_erp_balances(args.file)
+        with connect(url) as conn:
+            account_id = None if args.all_accounts else args.account
+            r = erp.reconcile(conn, mapping, rows, as_of, args.date_from, account_id)
+            conn.rollback()
+        if args.out:
+            erp.write_recon_csv(r, args.out)
+    except erp.ErpError as e:
+        print(f"대사하지 않았어요: {e}")
+        return 1
+    who = r.account_id or "모든 계좌"
+    print(f"ERP 3자 대사 {who}, 잔액은 {r.as_of} 기준, 기간은 {r.period_from}~{r.as_of} (차변 +, 대변 −)")
+    print(f"증권사: {r.broker_note}")
+
+    def amt(v):
+        return "-" if v is None else f"{v:,}"
+    for ln in r.lines:
+        print(f"  {'OK  ' if ln.ok else '차이'} {ln.erp_code:10} {ln.erp_name:22} {ln.basis}  MiniSTP {ln.ministp:>14,}"
+              f"  ERP {amt(ln.erp):>14} (차이 {amt(ln.erp_diff)})"
+              + (f"  증권사 {amt(ln.broker):>14} (차이 {amt(ln.broker_diff)})" if ln.broker is not None else ""))
+    for code, name, a in r.erp_only:
+        print(f"  참고 {code:10} {name:22} ERP에만 {a:,} (MiniSTP 금액 없음)")
+    bad = sum(not ln.ok for ln in r.lines)
+    if args.out:
+        print(f"결과 파일: {args.out}")
+    print("세 장부가 모두 같아요." if not bad else f"맞지 않는 ERP 계정 {bad}개. ERP 쪽 누락·중복 전표나 매핑을 먼저 보세요.")
+    return 0 if not bad else 3
 
 
 def _basket(url: str, connect, calendar, fees, args, now: dt.datetime) -> int:
@@ -596,15 +636,18 @@ def _run(argv, *, environ=os.environ, client_factory=KisClient, connect=psycopg.
     p = sub.add_parser("erp", parents=[by_account],
                        help="분개를 ERP 일반전표 업로드 파일(CSV)과 통제 파일로 내보내기. 계좌 하나씩(--account), "
                             "낸 전표는 전송 이력에 남고 다시 내지 않아요 (R-96, R-104)")
-    p.add_argument("action", choices=["export", "history", "void"],
-                   help="export: 파일 만들기, history: 전송 이력, void: ERP가 받지 않은 파일을 무효로")
+    p.add_argument("action", choices=["export", "history", "void", "recon"],
+                   help="export: 파일 만들기, history: 전송 이력, void: ERP가 받지 않은 파일을 무효로, "
+                        "recon: ERP 계정별 금액 파일과 MiniSTP·증권사를 맞춰 보기 (R-106)")
+    p.add_argument("--file", help="recon: ERP에서 받은 계정별 금액 CSV (계정코드, 잔액 또는 차변·대변)")
+    p.add_argument("--as-of", type=dt.date.fromisoformat, help="recon: 기준일 (기본: 오늘)")
     p.add_argument("export_id", nargs="?", type=int, help="void: 무효로 할 내보내기 번호 (history의 ERP-번호)")
     p.add_argument("--reason", help="void: 무효 사유")
     p.add_argument("--new-only", action="store_true", help="export: 이미 내보낸 전표는 빼고 새 전표만")
     p.add_argument("--preview", action="store_true", help="export: 합계와 겹치는 전표만 보기 (파일·이력 없음)")
     p.add_argument("--limit", type=int, default=20, help="history: 보여 줄 건수")
     p.add_argument("--all-accounts", action="store_true", help="모든 계좌를 한 파일로 (줄마다 계좌 열로 나눠요)")
-    p.add_argument("--from", dest="date_from", type=dt.date.fromisoformat, help="시작일 (기본은 오늘)")
+    p.add_argument("--from", dest="date_from", type=dt.date.fromisoformat, help="시작일 (기본은 오늘). recon: 기간 시작일 (기본은 그해 1월 1일)")
     p.add_argument("--to", dest="date_to", type=dt.date.fromisoformat, help="종료일 (기본은 시작일)")
     p.add_argument("--by", choices=["entry", "day"], default="entry", help="entry: 분개 1건 = 전표 1건, day: 하루 합계 (일 마감한 날만)")
     p.add_argument("--mapping", help="회사 계정코드 매핑 YAML (없으면 MiniSTP 계정 그대로). 예시: docs/erp/mapping.example.yaml")

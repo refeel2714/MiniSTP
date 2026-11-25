@@ -341,3 +341,86 @@ def test_history_void_and_preview_commands(conn, broker, tmp_path, capsys):
     capsys.readouterr()
     assert cli.run(["erp", "history"], environ=env) == 0 and "무효 (ERP 반려)" in capsys.readouterr().out
     assert cli.run(["verify"], environ=env) == 0 and "ERP 전송 이력" in capsys.readouterr().out
+
+
+# ---------- ERP 3자 대사 (R-106) ----------
+
+def _erp_file(tmp_path, rows, name="erp.csv"):
+    p = tmp_path / name
+    p.write_text("계정코드,계정명,잔액\n" + "".join(f"{c},{n},{a}\n" for c, n, a in rows), encoding="utf-8-sig")
+    return p
+
+
+def _as_erp_keeps_it(r):
+    return [(ln.erp_code, ln.erp_name, ln.ministp) for ln in r.lines]
+
+
+def test_the_three_books_agree_account_by_account(conn, broker, tmp_path):
+    _a_day(conn, broker)
+    first = erp.reconcile(conn, None, {}, DAY)
+    assert {ln.erp_code: ln.basis for ln in first.lines}["1010"] == "잔액" and not first.ok   # nothing from the ERP
+    rows = erp.load_erp_balances(_erp_file(tmp_path, _as_erp_keeps_it(first)))
+    r = erp.reconcile(conn, None, rows, DAY)
+    assert r.ok and r.erp_only == []
+    lines = {ln.erp_code: ln for ln in r.lines}
+    cash = books(conn).ledger.cash_balance()
+    assert (lines["1010"].ministp, lines["1010"].broker) == (cash, broker.get_balance().cash_d0)    # 예수금 three ways
+    assert lines["1100"].ministp == lines["1100"].broker == 80_540 + 2 * 80_000   # the opening share and the two bought
+    assert lines["3010"].basis == "기간" and lines["3010"].broker is None
+    assert lines["2010"].ministp < 0                                            # 매수미지급금: credit, so negative
+    # the ERP missed the fill: its FVPL and payable are short, and the broker sides with MiniSTP
+    short = dict(rows)
+    short["1100"] = ("FVPL 금융자산", rows["1100"][1] - 160_000)
+    r = erp.reconcile(conn, None, short, DAY)
+    bad = [ln for ln in r.lines if not ln.ok]
+    assert [(ln.erp_code, ln.erp_diff, ln.broker_diff) for ln in bad] == [("1100", -160_000, 0)]
+
+
+def test_mapped_codes_period_amounts_and_what_the_erp_has_alone(conn, broker, tmp_path):
+    _a_day(conn, broker)
+    m = erp.load_mapping(EXAMPLE)
+    r = erp.reconcile(conn, m, {}, DAY)
+    codes = {ln.erp_code: ln for ln in r.lines}
+    assert "1130100" in codes and codes["1110100"].basis == "기간"              # 3010 → 보통예금 이체, a period amount
+    rows = {ln.erp_code: (ln.erp_name, ln.ministp) for ln in r.lines}
+    rows["8110300"] = ("배당금수익", 500)                                       # mapped, but MiniSTP booked none
+    rows["9999999"] = ("다른 계정", 1)                                         # not ours at all: ignored
+    r = erp.reconcile(conn, m, rows, DAY)
+    assert r.ok and r.erp_only == [("8110300", "배당금수익", 500)]
+    nxt = CAL.add_business_days(DAY, 1)
+    later = erp.reconcile(conn, m, rows, nxt, period_from=nxt)               # a period after the day: no flows
+    assert {ln.erp_code: ln.ministp for ln in later.lines if ln.basis == "기간"} == {
+        ln.erp_code: 0 for ln in later.lines if ln.basis == "기간"}
+    assert later.lines and later.broker_note.endswith("증권사 쪽은 비워 뒀어요.")   # no daily recon that day
+    with pytest.raises(erp.ErpError, match="늦어요"):
+        erp.reconcile(conn, m, rows, DAY, period_from=nxt)
+
+
+def test_the_erp_file_is_read_plainly(tmp_path):
+    p = tmp_path / "dc.csv"
+    p.write_text("ERP계정,계정명,차변,대변\n1110300,예치금,\"1,000\",0\n1110300,예치금,0,300\n2110500,미지급,,500\n",
+                 encoding="utf-8")
+    assert erp.load_erp_balances(p) == {"1110300": ("예치금", 700), "2110500": ("미지급", -500)}
+    bad = tmp_path / "bad.csv"
+    bad.write_text("코드,값\n1,2\n", encoding="utf-8")
+    with pytest.raises(erp.ErpError, match="머리글"):
+        erp.load_erp_balances(bad)
+    bad.write_text("계정코드,잔액\n1110300,12.5\n", encoding="utf-8")
+    with pytest.raises(erp.ErpError, match="원 단위 정수"):
+        erp.load_erp_balances(bad)
+
+
+def test_recon_command(conn, broker, tmp_path, capsys):
+    _a_day(conn, broker)
+    env = {"MINISTP_DATABASE_URL": URL}
+    rows = _as_erp_keeps_it(erp.reconcile(conn, None, {}, DAY))
+    f = _erp_file(tmp_path, rows)
+    out = tmp_path / "recon.csv"
+    assert cli.run(["erp", "recon", "--file", str(f), "--as-of", DAY.isoformat(), "--out", str(out)], environ=env) == 0
+    text = capsys.readouterr().out
+    assert "세 장부가 모두 같아요" in text and "증권사" in text and out.exists()
+    assert list(csv.reader(out.read_text(encoding="utf-8-sig").splitlines()))[0] == erp.RECON_HEADER
+    f2 = _erp_file(tmp_path, [(c, n, a + (1 if c == "1010" else 0)) for c, n, a in rows], "erp2.csv")
+    assert cli.run(["erp", "recon", "--file", str(f2), "--as-of", DAY.isoformat()], environ=env) == 3
+    assert "맞지 않는 ERP 계정 1개" in capsys.readouterr().out
+    assert cli.run(["erp", "recon"], environ=env) == 2
