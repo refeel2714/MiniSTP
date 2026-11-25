@@ -1,4 +1,6 @@
 """STP-2400 마감 점검: a day's steps read back from what the day left behind."""
+from dataclasses import replace
+
 from ministp import closeboard as cb
 from ministp.ledger import Side
 from ministp.ops import ReconDay
@@ -32,9 +34,9 @@ def test_a_finished_day_has_every_step_done_and_says_what_each_found(ledger, cal
     board = cb.board(ledger, calendar, d("11-02"), outside(orders, {d("11-02"): CLEAN}))
     assert list(board) == [d("11-02")]
     day = board[d("11-02")]
-    assert [(s.no, s.name, s.screen) for s in day] == list(zip(range(1, 8), cb.STEPS, cb.SCREENS))
-    assert [s.state for s in day] == [cb.NONE, cb.DONE, cb.DONE, cb.DONE, cb.DONE, cb.DONE, cb.DONE]
-    assert (cb.day_state(day), cb.finished(day), cb.needing(day)) == (cb.DAY_DONE, 7, 0)
+    assert [(s.no, s.name, s.screen) for s in day] == [(i + 1, d.name, d.screen or "") for i, d in enumerate(cb.STEP_DEFAULTS)]
+    assert [s.state for s in day] == [cb.NONE, cb.DONE, cb.NONE, cb.DONE, cb.DONE, cb.DONE, cb.DONE, cb.WAIT, cb.DONE]
+    assert (cb.day_state(day), cb.finished(day), cb.required(day), cb.needing(day)) == (cb.DAY_DONE, 8, 8, 0)
     said = {s.name: s.detail for s in day}
     assert said["주문·체결"] == "주문 1건: 결제 대기 1건" and "종가 1개가 모두 정상" in said["시세"]
     assert "모두 분개로 설명" in said["기준가"] and "5개 항목이 모두 일치" in said["증권사 대사"]
@@ -44,8 +46,8 @@ def test_a_finished_day_has_every_step_done_and_says_what_each_found(ledger, cal
 def test_today_waits_for_what_daily_has_not_done_yet(ledger, calendar):
     orders = traded(ledger)
     got = steps(ledger, calendar, "11-03", "11-03", outside(orders, {d("11-02"): CLEAN}))
-    assert [got[n].state for n in cb.STEPS] == [cb.NONE, cb.NONE, cb.WAIT, cb.WAIT, cb.WAIT, cb.WAIT, cb.DONE]
-    assert cb.day_state(list(got.values())) == cb.DAY_OPEN and cb.finished(list(got.values())) == 3
+    assert [got[n].state for n in cb.STEPS] == [cb.NONE, cb.NONE, cb.NONE, cb.WAIT, cb.WAIT, cb.WAIT, cb.WAIT, cb.WAIT, cb.DONE]
+    assert cb.day_state(list(got.values())) == cb.DAY_OPEN and cb.finished(list(got.values())) == 4
     # the fill of 11-02 is due on 11-04: waiting on that day, late the day after
     assert steps(ledger, calendar, "11-04", "11-04", outside(orders))["결제"].state == cb.WAIT
     late = steps(ledger, calendar, "11-05", "11-04", outside(orders))["결제"]
@@ -73,7 +75,7 @@ def test_each_step_can_stop_the_day(ledger, calendar):
     orders[d("11-03")] = [(10, "ACCEPTED", "0002"), (5, None, None)]
     recon = {d("11-02"): ReconDay(1, 5, 2, 0), d("11-03"): ReconDay(2, 6, 2, 1)}
     got = steps(ledger, calendar, "11-03", "11-03", outside(orders, recon, breaks=2))
-    assert [got[n].state for n in cb.STEPS] == [cb.NONE, cb.BAD, cb.BAD, cb.BAD, cb.BAD, cb.WAIT, cb.BAD]
+    assert [got[n].state for n in cb.STEPS] == [cb.NONE, cb.BAD, cb.NONE, cb.BAD, cb.BAD, cb.BAD, cb.WAIT, cb.WAIT, cb.BAD]
     assert "접수 기록 없음 1건" in got["주문·체결"].detail and "증권사 주문내역" in got["주문·체결"].detail
     assert "1개는 확인이 필요해요" in got["시세"].detail          # valuation and NAV took different closes
     assert "분개로 설명되지 않아요" in got["기준가"].detail
@@ -108,6 +110,41 @@ def test_only_business_days_since_the_books_started_are_listed_newest_first(ledg
     assert days == [d("11-10"), d("11-09"), d("11-06"), d("11-05")]           # no weekend, nothing before the start
     a_day = cb.board(ledger, calendar, d("11-10"), outside())[d("11-06")]
     assert a_day[1].detail == "낸 주문이 없어요" and a_day[1].state == cb.NONE
+
+
+# ---------- 단계 기준 (R-105): the steps come from the database, the checks from the code ----------
+
+def test_the_steps_follow_their_definitions_order_use_and_requirement(ledger, calendar):
+    orders = traded(ledger)
+    ledger.close_day(d("11-02"))
+    defs = {s.code: s for s in cb.STEP_DEFAULTS}
+    mine = (replace(defs["DAY_CLOSE"], sort_order=1, name="장부 마감"), defs["SETTLEMENT"],
+            replace(defs["PRICES"], in_use=False), replace(defs["ERP_EXPORT"], required=True),
+            replace(defs["DIVIDENDS"], asset_type="STOCK"), defs["INTEGRITY"])
+    mine = tuple(sorted(mine, key=lambda s: s.sort_order))
+    day = cb.board(ledger, calendar, d("11-02"), outside(orders, {d("11-02"): CLEAN}), mine)[d("11-02")]
+    assert [(s.no, s.code) for s in day] == [(1, "DAY_CLOSE"), (2, "SETTLEMENT"), (3, "DIVIDENDS"), (4, "ERP_EXPORT"),
+                                             (5, "INTEGRITY")]           # 시세 switched off
+    assert day[0].name == "장부 마감" and day[3].state == cb.WAIT and day[3].required
+    assert cb.day_state(day) == cb.DAY_OPEN                              # a required ERP step holds the day
+    etf_only = replace(outside(orders, {d("11-02"): CLEAN}), asset_types=frozenset({"ETF"}))
+    day = cb.board(ledger, calendar, d("11-02"), etf_only, mine)[d("11-02")]
+    assert "DIVIDENDS" not in [s.code for s in day]                      # a stock step for an ETF-only account
+
+
+def test_dividends_due_and_erp_days_are_steps_of_their_own(ledger, calendar):
+    orders = traded(ledger)
+    ledger.close_day(d("11-02"))
+    due = [(d("11-02"), d("11-04"), None, "ACCRUED")]
+    got = steps(ledger, calendar, "11-02", "11-02", replace(outside(orders, {d("11-02"): CLEAN}), dividends=due,
+                                                            erp_days=frozenset({d("11-02")})))
+    assert (got["배당"].state, got["배당"].detail) == (cb.DONE, "배당 인식 1건을 기록했어요")
+    assert (got["ERP 전송"].state, got["ERP 전송"].detail) == (cb.DONE, "이날 전표를 ERP로 내보냈어요")
+    late = steps(ledger, calendar, "11-05", "11-04", replace(outside(orders), dividends=due))["배당"]
+    assert late.state == cb.BAD and "입금이 아직 기록되지 않았어요" in late.detail
+    paid = [(d("11-02"), d("11-04"), d("11-04"), "PAID")]
+    assert steps(ledger, calendar, "11-05", "11-04", replace(outside(orders), dividends=paid))["배당"].detail == (
+        "배당 입금 1건을 기록했어요")
 
 
 # ---------- 화면 이동: the row names the screen ----------

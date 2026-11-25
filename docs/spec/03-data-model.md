@@ -250,6 +250,18 @@ Phase 2 구현(v1.4)은 위 설계를 단순화했다. 주문 생성 정보는 `
 2. **파일과 이력은 함께**: 이력 행과 파일은 한 트랜잭션 안에서 만들고, 파일을 쓰지 못하면 이력도 남지 않는다. 파일은 `.tmp`로 쓴 뒤 이름을 바꾸고(덮어쓰지 않음), 그다음 통제 파일(`.ctl`)을 쓴다.
 3. **적용 전에 손으로 올린 전표는 모른다**: 적용 직후 이력은 비어 있다. 첫 내보내기는 아직 ERP에 없는 날부터 한다.
 
+## 마감 점검 단계 기준과 점검 이력 (v1.44, ERD v2.12, 초안)
+
+| 테이블 | 주요 컬럼 | 비고 |
+|---|---|---|
+| close_steps | **step_code**, name, sort_order, in_use, required, screen, asset_type, description, updated_at | 마감 점검 단계 기준(R-105). 고칠 수 있지만 지우거나 코드를 바꾸지 못함(트리거 `ministp_guard_close_steps`). 코드마다 프로그램의 점검 로직이 짝 |
+| close_checks | check_id, account_id, check_date, day_state, done, steps, command, checked_by, checked_at | 점검 결과: 점검할 때마다 계좌·영업일마다 한 행. 그날 상태 DONE 점검 완료 / OPEN 진행 중 / ATTENTION 확인 필요, 필수 단계 기준 |
+| close_check_steps | **check_id, step_no**, step_code, name, required, state, detail | 그 점검의 단계마다 한 행. 그때의 이름·필수 여부를 함께 남김. 상태 DONE / NONE / WAIT / WARN / BAD / MISSING |
+
+| 뷰 | 주요 컬럼 | 비고 |
+|---|---|---|
+| close_checks_last_v | account_id, check_date, check_id, day_state, done, steps, command, checked_by, checked_at | 계좌·영업일마다 마지막 점검 |
+
 ## 원장 무결성 점검 (v1.11)
 
 `python -m ministp verify`는 저장된 원장이 이벤트를 처음부터 다시 계산한 결과와 같은지 읽기 전용으로 확인한다. 쓰기 잠금을 잡지 않으므로 `run`이 떠 있어도 실행할 수 있다. 하나라도 어긋나면 종료 코드 1을 돌려준다.

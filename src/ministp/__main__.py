@@ -20,6 +20,7 @@
     python -m ministp master check                # 받은 종목정보 점검: 전일 대비, 등록 종목, 기준가 대조 (읽기 전용)
     python -m ministp master load                 # 받은 종목정보를 DB 이력에 넣기: 바뀐 종목만 (ERD v2.7)
     python -m ministp erp export --from 2026-11-18  # 분개를 ERP 일반전표 업로드 CSV와 통제 파일로 (전송 이력)
+    python -m ministp close-check                 # 마감 점검: 오늘 단계별 결과를 보고 이력에 남기기 (단계 기준은 close-step list)
     python -m ministp basket simulate --amount 10000000  # 바스켓 주문 시뮬레이션 (계산만, 주문 안 함)
 
 Paper (모의투자) only until Phase 4. Keys are asked for and never saved.
@@ -442,6 +443,23 @@ def _run(argv, *, environ=os.environ, client_factory=KisClient, connect=psycopg.
     p = sub.add_parser("close", parents=[by_account],
                        help="장부 마감: 불일치가 있던 날을 원인 판단(resolve) 뒤에 직접 마감 (깨끗한 날은 daily가 마감해요)")
     p.add_argument("--date", type=dt.date.fromisoformat, help="마감할 영업일 (기본: 오늘)")
+    p = sub.add_parser("close-check", parents=[by_account],
+                       help="마감 점검: 그날 단계별 결과를 보고 점검 이력에 남겨요 (daily·close도 끝에 남겨요, R-105)")
+    p.add_argument("--date", type=dt.date.fromisoformat, help="점검할 영업일 (기본: 오늘)")
+    p = sub.add_parser("close-step", help="마감 점검 단계 기준: 이름·순서·사용·필수·상세 화면·적용 자산 유형 (R-105)")
+    what = p.add_subparsers(dest="what", required=True)
+    what.add_parser("list", help="단계 목록")
+    q = what.add_parser("set", help="단계 하나를 바꿔요 (점검 로직은 그대로, 단계는 지우지 않아요)")
+    q.add_argument("step_code", metavar="단계코드")
+    q.add_argument("--name", help="단계 이름")
+    q.add_argument("--order", type=int, help="순서")
+    q.add_argument("--use", dest="in_use", action="store_true", default=None, help="사용")
+    q.add_argument("--no-use", dest="in_use", action="store_false", help="사용 안 함 (점검에서 빠져요)")
+    q.add_argument("--required", dest="required", action="store_true", default=None, help="필수 단계")
+    q.add_argument("--optional", dest="required", action="store_false", help="선택 단계 (그날 점검 완료를 막지 않아요)")
+    q.add_argument("--screen", help="상세 화면 (빈 값이면 없음)")
+    q.add_argument("--asset-type", help="이 자산 유형을 거래·보유한 계좌에만 (빈 값이면 모든 계좌)")
+    q.add_argument("--description", help="설명")
     sub.add_parser("status", parents=[by_account])
     p = sub.add_parser("customer", help="고객 등록 (별칭만, 개인정보는 넣지 않아요)")
     what = p.add_subparsers(dest="what", required=True)
@@ -688,8 +706,13 @@ def _run(argv, *, environ=os.environ, client_factory=KisClient, connect=psycopg.
             if args.cmd in ("open", "order", "cancel", "confirm", "daily", "close", "run", "resolve", "customer") or (
                     args.cmd in ("dividend", "cash", "adjust") and args.what != "list") or (
                     args.cmd == "account" and args.what != "list") or (
-                    args.cmd == "code" and args.what not in ("list", "check")):
+                    args.cmd == "code" and args.what not in ("list", "check")) or (
+                    args.cmd == "close-step" and args.what == "set"):
                 acquire_writer(conn)
+
+            if args.cmd == "close-step":
+                require_current_schema(conn)
+                return _close_steps(conn, args)
 
             if args.cmd == "code":
                 require_current_schema(conn)
@@ -713,6 +736,9 @@ def _run(argv, *, environ=os.environ, client_factory=KisClient, connect=psycopg.
             acct = next(a for a in accounts if a.account_id == args.account)
             if len(accounts) > 1:   # say whose books these are whenever there is a choice
                 print(f"계좌 {acct.account_id} {acct.alias} (고객 {acct.customer_id}, {acct.status})")
+
+            if args.cmd == "close-check":
+                return _close_check(conn, calendar, fees, today, args.date or today, args.account, "close-check")
 
             if args.cmd == "request":     # add: 이 계좌의 지금 모습으로 묶음 검증 (R-98)
                 return _request_add(books, args, calendar, started)
@@ -755,6 +781,7 @@ def _run(argv, *, environ=os.environ, client_factory=KisClient, connect=psycopg.
                 nav = close_books(books, day)
                 print(f"[{day}] 장부 마감: 순자산 {nav.net_assets:,}, 기준가 {nav.nav_per_1000}. "
                       "이 날짜까지는 더 기록되지 않아요.")
+                _close_check(conn, calendar, fees, today, day, args.account, "close", quiet=True)
                 return 0
 
             broker = _broker(environ, client_factory, acct, accounts)
@@ -859,6 +886,7 @@ def _run(argv, *, environ=os.environ, client_factory=KisClient, connect=psycopg.
                 print(f"{verdict}. 무오류 연속 영업일 {streak} / {GATE_DAYS}")
                 if report.closed:
                     print(f"장부 마감: {day}까지. 이 날짜로는 더 기록되지 않아요.")
+                _close_check(conn, calendar, fees, today, day, args.account, "daily", quiet=True)
                 return 0 if report.clean else 3
     except (OpsError, KisError, CalendarNotLoadedError, SchemaError, mg.MigrationError) as e:
         print(f"오류: {e}")
@@ -1070,6 +1098,55 @@ def _adjust(conn, args, books, today: dt.date) -> int:
         a = adjustments.cancel(books, args.adjustment_id, day, args.reason, today)
         print(f"[{day}] 조정 취소 {a.ref} ({books.account_id}): 예수금 {-a.cash:+,}원. 조정 전표는 그대로 두고 반대 전표를 더했어요.")
     print(f"예수금 {books.ledger.cash_balance():,}원. 증권사 잔고와는 다음 daily의 대사에서 맞춰 봐요.")
+    return 0
+
+
+def _close_check(conn, calendar, fees, today: dt.date, day: dt.date, account_id: str, command: str,
+                 quiet: bool = False) -> int:
+    """마감 점검 (STP-2400) for one day, kept in the check history (R-105). After `daily` and `close` it prints one
+    line; a failure to keep it is said and does not undo what the command did."""
+    from . import closeboard as cb
+    from . import queries as q
+    try:
+        steps = q.close_day_steps(conn, calendar, fees, today, day, account_id)
+        check_id = cb.record(conn, account_id, day, steps, command)
+    except KeyError as e:
+        print(f"마감 점검: {e.args[0]}")
+        return 0 if quiet else 1
+    except psycopg.Error as e:
+        print(f"마감 점검 결과를 이력에 남기지 못했어요: {e}")
+        return 0 if quiet else 1
+    state = cb.day_state(steps)
+    print(f"마감 점검 [{day}] {state}: 필수 단계 {cb.required(steps)}개 중 {cb.finished(steps)}개 끝남"
+          f" (점검 이력 {check_id}번)")
+    if not quiet:
+        for st in steps:
+            mark = "" if st.required else " (선택)"
+            print(f"  {st.no}. {st.name}{mark}: {st.state} - {st.detail}")
+    else:
+        for st in steps:
+            if st.required and st.state in (cb.BAD, cb.MISSING):
+                print(f"  {st.name}: {st.state} - {st.detail}")
+    return 0
+
+
+def _close_steps(conn, args) -> int:
+    from . import closeboard as cb
+    if args.what == "list":
+        for d in cb.load_steps(conn):
+            flags = ("사용" if d.in_use else "사용 안 함") + (", 필수" if d.required else ", 선택")
+            extra = (f", {d.asset_type}만" if d.asset_type else "") + (f", 화면 {d.screen}" if d.screen else "")
+            print(f"{d.sort_order:>2}. {d.code:12} {d.name:10} ({flags}{extra}) {d.description}")
+        return 0
+    try:
+        d = cb.set_step(conn, args.step_code, name=args.name, sort_order=args.order, in_use=args.in_use,
+                        required=args.required, screen=args.screen, asset_type=args.asset_type,
+                        description=args.description)
+    except cb.CloseStepError as e:
+        print(f"바꾸지 않았어요: {e}")
+        return 1
+    print(f"{d.code} {d.name}: 순서 {d.sort_order}, {'사용' if d.in_use else '사용 안 함'}, "
+          f"{'필수' if d.required else '선택'}, 화면 {d.screen or '없음'}, 자산 유형 {d.asset_type or '모두'}")
     return 0
 
 

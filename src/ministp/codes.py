@@ -44,7 +44,8 @@ class CodeGroup:
 # 0002 inserted the codes of ERD v2.1, 0003 the three of the day close (v2.2), 0004 the three audit groups (v2.3),
 # 0005 the dividend codes and two groups (v2.4), 0006 the cash movement codes (v2.5),
 # 0007 the adjustment codes and their reasons (v2.6), 0008 the market master groups and match results (v2.7),
-# 0009 the approval groups (v2.9), 0010 two status codes (v2.10), 0011 the ERP export groups and actions (v2.11).
+# 0009 the approval groups (v2.9), 0010 two status codes (v2.10), 0011 the ERP export groups and actions (v2.11),
+# 0012 the close check states (v2.12).
 SEED: tuple[CodeGroup, ...] = (
     CodeGroup("ACCOUNT_STATUS", "계좌 상태", "위탁계좌의 상태. 정상 계좌만 주문을 받아요 (R-39).",
               "account_status_history.status", (
@@ -221,6 +222,17 @@ SEED: tuple[CodeGroup, ...] = (
     CodeGroup("ERP_EXPORT_STATUS", "ERP 전송 상태", "내보낸 파일을 ERP가 받았는지 (R-104).", "erp_exports_v.status", (
         ("EXPORTED", "내보냄", "파일과 통제 파일을 만듦. 그 전표는 다시 내지 않아요"),
         ("VOIDED", "무효", "ERP가 받지 않음. 그 전표를 다시 낼 수 있어요"))),
+    CodeGroup("CLOSE_STEP_STATE", "마감 점검 단계 상태", "마감 점검 단계마다 본 결과 (R-105).", "close_check_steps.state", (
+        ("DONE", "완료", ""),
+        ("NONE", "대상 없음", "그날 할 일이 없음"),
+        ("WAIT", "대기", "오늘 아직 하지 않음"),
+        ("WARN", "주의", "끝났지만 한번 볼 것"),
+        ("BAD", "확인 필요", "누가 판단해야 함"),
+        ("MISSING", "누락", "날이 지났는데 하지 않음"))),
+    CodeGroup("CLOSE_DAY_STATE", "마감 점검 일 상태", "필수 단계를 모아 본 그날의 상태 (R-105).", "close_checks.day_state", (
+        ("DONE", "점검 완료", "필수 단계가 모두 끝남"),
+        ("OPEN", "진행 중", "오늘 아직 남은 필수 단계가 있음"),
+        ("ATTENTION", "확인 필요", "필수 단계에 확인 필요나 누락이 있음"))),
     CodeGroup("AUDIT_CHANNEL", "감사 로그 경로", "어디로 들어온 요청인지.", "audit_log.channel", (
         ("CLI", "명령", "PC의 명령 창에서 실행"),
         ("UI", "화면", "업무화면의 처리 버튼"),
@@ -263,7 +275,8 @@ SEED: tuple[CodeGroup, ...] = (
         ("ORDER_REQUEST_CANCEL", "주문 요청 취소", "작성자가 전송 전에 거둠"),
         ("ORDER_CONFIRM", "주문 결과 확인", "답이 없던 주문을 사람이 증권사 주문내역과 맞춰 확인함"),
         ("ERP_EXPORT", "ERP 전표 내보내기", "일반전표 업로드 파일과 통제 파일을 만들고 전송 이력을 남김"),
-        ("ERP_EXPORT_VOID", "ERP 전송 무효", "ERP가 받지 않은 파일을 무효로 해서 그 전표를 다시 낼 수 있게 함"))),
+        ("ERP_EXPORT_VOID", "ERP 전송 무효", "ERP가 받지 않은 파일을 무효로 해서 그 전표를 다시 낼 수 있게 함"),
+        ("CLOSE_STEP_SET", "마감 점검 단계 변경", "단계 이름·순서·사용·필수·화면·자산 유형을 바꿈"))),
 )
 
 
@@ -309,7 +322,7 @@ def program_codes() -> dict[str, set[str]]:
     from .accounts import STATUSES
     from .instruments import AssetType, Market
     from .ledger import ADJUSTMENT_ACCOUNTS, DIVIDEND_STATUSES, Side
-    from . import erp
+    from . import closeboard, erp
     from .master_db import MATCH_STATUSES
     from .rights import ACTION_TYPES
     from .oms import OrderStatus
@@ -341,6 +354,8 @@ def program_codes() -> dict[str, set[str]]:
         "SEND_OUTCOME": set(approval.SEND_OUTCOMES),
         "ERP_EXPORT_UNIT": set(erp.UNITS.values()),
         "ERP_EXPORT_STATUS": set(erp.EXPORT_STATUSES),
+        "CLOSE_STEP_STATE": set(closeboard.STATE_CODES.values()),
+        "CLOSE_DAY_STATE": set(closeboard.DAY_STATE_CODES.values()),
     }
 
 
@@ -464,7 +479,8 @@ def _check_list(conn: psycopg.Connection, table: str, column: str) -> set[str] |
 
 
 # Columns that store the codes of a group whose `used_by` names another column: checked the same way.
-SAME_CODES = {"instrument_master.market": "MARKET", "order_request_lines.side": "ORDER_SIDE"}
+SAME_CODES = {"instrument_master.market": "MARKET", "order_request_lines.side": "ORDER_SIDE",
+              "close_steps.asset_type": "ASSET_TYPE"}
 
 
 def check(conn: psycopg.Connection) -> list[str]:
@@ -506,4 +522,5 @@ def check(conn: psycopg.Connection) -> list[str]:
         unnamed = sorted(stored - codes[gid])
         if unnamed:
             problems.append(f"{gid}: {used_by}에 저장돼 있는데 코드명이 없는 값 {', '.join(unnamed)}")
-    return problems
+    from .closeboard import master_problems     # 마감 점검 단계 기준과 점검 로직 (R-105)
+    return problems + master_problems(conn)

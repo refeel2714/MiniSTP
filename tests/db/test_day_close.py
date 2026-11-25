@@ -168,13 +168,18 @@ def test_close_and_status_commands(conn, broker, capsys):
     assert "장부 마감: 아직 마감한 날이 없어요" in capsys.readouterr().out
     broker.cash_skew = -5
     assert cli.run(["daily"], now=at(16, 0), **kw) == 3
-    assert "장부를 마감하지 않았어요" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "장부를 마감하지 않았어요" in out and "마감 점검 [2026-11-20] 확인 필요" in out   # R-105: daily keeps its check
+    assert "증권사 대사: 확인 필요" in out
     assert cli.run(["close"], now=at(16, 5), **kw) == 1
     assert "판단하지 않은 불일치가 2건" in capsys.readouterr().out
     for (i,) in conn.execute("select id from recon_results where status = 'BREAK'").fetchall():
         assert cli.run(["resolve", str(i), "FEE_DIFF", "수수료 확인"], now=at(16, 6), **kw) == 0
     assert cli.run(["close", "--date", "2026-11-20"], now=at(16, 10), **kw) == 0
-    assert "[2026-11-20] 장부 마감: 순자산" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "[2026-11-20] 장부 마감: 순자산" in out and "마감 점검 [2026-11-20] 점검 완료" in out
+    assert conn.execute("select command, day_state from close_checks order by check_id").fetchall() == [
+        ("daily", "ATTENTION"), ("close", "DONE")]
     assert cli.run(["status"], now=at(16, 15), **kw) == 0
     assert "장부 마감: 2026-11-20까지 (1일), 그 뒤 이벤트 0건" in capsys.readouterr().out
     broker.cash_skew = 0
@@ -188,7 +193,7 @@ def test_a_migrated_ledger_closes_its_next_day_and_keeps_the_old_days_open_to_no
     """0003 on the v1.1 sample: no close exists yet, so the lock holds nothing until the first `daily`."""
     _restore_v1_1()
     with psycopg.connect(URL, autocommit=True) as old:
-        assert [r.migration.version for r in mg.migrate(old)] == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+        assert [r.migration.version for r in mg.migrate(old)] == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
         assert old.execute("select count(*) from day_closes").fetchone()[0] == 0
         events = old.execute("select count(*) from ledger_events").fetchone()[0]
         assert old.execute("select count(*) from unclosed_events_v").fetchone()[0] == events
