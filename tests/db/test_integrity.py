@@ -50,10 +50,10 @@ class damaged:
 
 def test_a_database_built_by_the_real_operations_is_clean(conn):
     r = report(conn)
-    assert list(r) == ["events", "guards", "balanced", "audit", "rights", "transfers", "master", "journal", "accounts", "positions", "cash", "closes", "dividends",
+    assert list(r) == ["events", "guards", "balanced", "audit", "rights", "transfers", "master", "erp", "journal", "accounts", "positions", "cash", "closes", "dividends",
                        "movements", "adjustments"]
     assert all(c.ok for c in r.values()), [c for c in r.values() if not c.ok]
-    assert "빈 번호 없음" in r["events"].detail and "24개 테이블" in r["guards"].detail and "마감일 잠금" in r["guards"].detail
+    assert "빈 번호 없음" in r["events"].detail and "27개 테이블" in r["guards"].detail and "마감일 잠금" in r["guards"].detail
 
 
 def test_the_report_only_reads(conn):
@@ -128,7 +128,7 @@ def test_an_event_the_rules_reject_is_reported_not_raised(conn):
 def test_verify_command_prints_the_report_and_exits_zero(conn, capsys):
     rc = cli.run(["verify"], environ={"MINISTP_DATABASE_URL": URL})
     out = capsys.readouterr().out
-    assert rc == 0 and "이상 없음" in out and out.count("OK") == 15 and "문제" not in out
+    assert rc == 0 and "이상 없음" in out and out.count("OK") == 16 and "문제" not in out
 
 
 def test_verify_command_exits_one_when_a_guard_is_off(conn, capsys):

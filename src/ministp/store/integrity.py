@@ -30,7 +30,7 @@ APPEND_ONLY_TABLES = ("ledger_events", "journal_entries", "journal_lines", "posi
                       "customers", "trading_accounts", "account_status_history", "day_closes", "audit_log",
                       "corporate_actions", "master_loads", "instrument_master",
                       "app_users", "user_rights", "order_requests", "order_request_lines", "order_approvals",
-                      "order_sends")
+                      "order_sends", "erp_exports", "erp_export_docs", "erp_export_voids")
 BALANCE_TRIGGERS = ("journal_entries_balanced", "journal_lines_balanced")
 # R-78 in the database: no entry, cash row or close dated inside a closed day (ERD v2.2).
 CLOSED_DAY_TRIGGERS = ("journal_entries_closed_day", "cash_ledger_closed_day", "day_closes_closed_day")
@@ -176,6 +176,19 @@ def check_master(conn: psycopg.Connection) -> Check:
     n, rows = conn.execute("select count(*), (select count(*) from instrument_master) from master_loads").fetchone()
     return Check("master", "종목 마스터", True,
                  f"적재 {n:,}번, 이력 {rows:,}행이 적재 기록과 맞음 (마지막 {last.ref} {last.base_date}, {last.rows_total:,}종목)")
+
+
+def check_erp(conn: psycopg.Connection) -> Check:
+    """R-104: every export holds the documents it says, and no document is in two exports not voided."""
+    from .. import erp
+    bad = erp.problems(conn)
+    if bad:
+        return Check("erp", "ERP 전송 이력", False, f"맞지 않는 전송 이력: {_some(bad)}")
+    n, docs, voids = conn.execute("select count(*), (select count(*) from erp_export_docs),"
+                                  " (select count(*) from erp_export_voids) from erp_exports").fetchone()
+    if n == 0:
+        return Check("erp", "ERP 전송 이력", True, "ERP로 내보낸 파일이 아직 없어요")
+    return Check("erp", "ERP 전송 이력", True, f"내보내기 {n:,}번(무효 {voids:,}번), 전표 {docs:,}건이 이력과 맞고 두 번 나간 전표 없음")
 
 
 # ---------- stored rows against a replay of the events ----------
@@ -359,7 +372,7 @@ def integrity_report(conn: psycopg.Connection, calendar, fees, instruments) -> l
             conn.execute("set transaction isolation level repeatable read read only")
         stream = check_event_stream(conn)
         checks = [stream, check_guards(conn), check_balanced(conn), check_audit(conn), check_rights(conn),
-                  check_transfers(conn), check_master(conn)]
+                  check_transfers(conn), check_master(conn), check_erp(conn)]
         if not stream.ok:
             return checks + [Check("replay", "이벤트 재생", False, "순번에 빈 곳이 있어 재생하지 않았어요")]
         for (account_id,) in conn.execute("select account_id from trading_accounts order by account_id").fetchall():

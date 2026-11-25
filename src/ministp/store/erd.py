@@ -176,6 +176,8 @@ GROUPS = [
      ["code_groups", "common_codes"]),
     ("감사 로그", "밖에서 시스템에 한 일과 그 결과. 처리된 것, 규칙이 거부한 것, 실패한 것이 모두 남고, 줄마다 앞 줄의 해시를 이어 받아요.",
      ["audit_log"]),
+    ("ERP 전송", "ERP로 내보낸 일반전표 파일과 그 안의 전표. 무효로 하지 않은 파일에 든 전표는 다시 내지 않아요.",
+     ["erp_exports", "erp_export_docs", "erp_export_voids"]),
 ]
 
 
@@ -195,6 +197,7 @@ LAYOUT = [
     ("공통코드 · 감사 로그", [["code_groups"], ["common_codes"], ["audit_log"], []]),
     ("종목 마스터 이력", [["master_loads"], ["instrument_master"], [], []]),
     ("주문 결재", [["app_users"], ["user_rights"], ["order_requests", "order_request_lines"], ["order_approvals", "order_sends"]]),
+    ("ERP 전송", [["erp_exports"], ["erp_export_docs"], ["erp_export_voids"], []]),
 ]
 BOX_W, COL_GAP, MARGIN = 232, 84, 28
 HEAD_H, ROW_H, MORE_H, BOX_GAP, BAND_TOP, BAND_PAD = 54, 40, 28, 28, 44, 22

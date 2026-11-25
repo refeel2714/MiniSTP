@@ -133,6 +133,15 @@ def compare_master(conn: psycopg.Connection) -> list[Compared]:
             Compared("적재 기록과 맞지 않는 이력 수", len(master_db.problems(conn)), 0, "하나도 없어야 함")]
 
 
+def compare_erp(conn: psycopg.Connection) -> list[Compared]:
+    """R-104: the documents the exports say they hold against the document rows, and documents sent twice."""
+    from .. import erp
+    said, held = conn.execute("select coalesce(sum(documents), 0), (select count(*) from erp_export_docs)"
+                              " from erp_exports").fetchone()
+    return [Compared("ERP 전송 전표 행 수", held, int(said), "내보내기마다 적은 전표 수의 합계"),
+            Compared("맞지 않는 전송 이력 수", len(erp.problems(conn)), 0, "하나도 없어야 함")]
+
+
 # ---------- stored rows against a replay of the events ----------
 
 def compare_journal(conn: psycopg.Connection, ledger: Ledger, account_id: str = DEFAULT_ACCOUNT) -> list[Compared]:
@@ -258,7 +267,7 @@ def compare_adjustments(conn: psycopg.Connection, ledger: Ledger, account_id: st
 
 
 PLAIN = {"events": compare_events, "guards": compare_guards, "balanced": compare_balanced, "rights": compare_rights,
-         "transfers": compare_transfers, "master": compare_master,
+         "transfers": compare_transfers, "master": compare_master, "erp": compare_erp,
          "audit": compare_audit}
 REPLAYED = {"journal": compare_journal, "accounts": compare_accounts, "positions": compare_positions,
             "cash": compare_cash, "closes": compare_closes, "dividends": compare_dividends, "movements": compare_movements,

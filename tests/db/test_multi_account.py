@@ -115,7 +115,7 @@ def test_rehearsal_on_v1_1_passes_and_leaves_no_trace(old):
     assert not report.applied and report.migration.erd_version == "2.0"
     assert sorted(t.table for t in report.kept) == V1_TABLES and all(t.unchanged for t in report.kept)
     assert sorted(t.table for t in report.tables if t.rows_before is None) == sorted(NEW_TABLES)
-    assert [r.migration.erd_version for r in later] == ["2.1", "2.2", "2.3", "2.4", "2.5", "2.6", "2.7", "2.9", "2.10"] and not any(r.applied for r in later)
+    assert [r.migration.erd_version for r in later] == ["2.1", "2.2", "2.3", "2.4", "2.5", "2.6", "2.7", "2.9", "2.10", "2.11"] and not any(r.applied for r in later)
     assert mg.fingerprint(old) == before and _shape(old) == shape
     assert not mg._has_table(old, mg.TABLE)
 
@@ -140,7 +140,7 @@ def test_applying_keeps_every_row_and_puts_the_ledger_in_the_default_account(old
                        " from trading_accounts").fetchall() == [("C0001", "KIS", "PAPER", "GENERAL", "KIS", FIRST_DAY)]
     assert old.execute("select account_id, customer_id, status, effective_from from account_status_v").fetchall() == [
         (DEFAULT_ACCOUNT, "C0001", "OPEN", FIRST_DAY)]
-    assert list(mg.applied(old)) == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10] and mg.migrate(old) == []
+    assert list(mg.applied(old)) == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11] and mg.migrate(old) == []
     checks = _report(old)
     assert all(c.ok for c in checks), [c for c in checks if not c.ok]
 
@@ -192,15 +192,15 @@ def test_db_migrate_and_verify_commands_on_v1_1(old, capsys):
     assert cli.run(["db-migrate", "--dry-run"], environ=env) == 0
     out = capsys.readouterr().out
     assert "대기: 0001 다계좌" in out and "ERD v2.0" in out and "리허설 통과" in out and "새 테이블 customers" in out
-    assert "적용한 상태에서 원장 무결성 점검 15개 통과 (계좌 1개)" in out
+    assert "적용한 상태에서 원장 무결성 점검 16개 통과 (계좌 1개)" in out
     assert not mg._has_table(old, mg.TABLE)
     assert cli.run(["db-migrate", "--apply"], environ=env) == 0
     out = capsys.readouterr().out
     assert out.index("리허설(되돌림): 0001") < out.index("적용: 0001") < out.index("마이그레이션 완료")
-    assert "적용된 DB에서 원장 무결성 점검 15개 통과" in out and out.count("15개 통과") == 2   # rehearsed, then applied
+    assert "적용된 DB에서 원장 무결성 점검 16개 통과" in out and out.count("16개 통과") == 2   # rehearsed, then applied
     assert cli.run(["verify"], environ=env) == 0
     out = capsys.readouterr().out
-    assert "문제" not in out and "24개 테이블" in out and "[A0001]" not in out      # one account: no prefix
+    assert "문제" not in out and "27개 테이블" in out and "[A0001]" not in out      # one account: no prefix
 
 
 def test_apply_refuses_a_database_whose_ledger_would_not_verify_afterwards(old, capsys):
@@ -254,7 +254,7 @@ def test_the_integrity_report_checks_every_account(two):
     conn, _, _, (calendar, fees, instruments) = two
     checks = integrity_report(conn, calendar, fees, instruments)
     assert all(c.ok for c in checks), [c for c in checks if not c.ok]
-    assert [c.account for c in checks] == [""] * 7 + ["A0001"] * 8 + ["A0002"] * 8 + ["A0003"] * 8
+    assert [c.account for c in checks] == [""] * 8 + ["A0001"] * 8 + ["A0002"] * 8 + ["A0003"] * 8
     # a row moved to the wrong account is found in both accounts
     with conn.transaction(force_rollback=True):
         conn.execute("alter table cash_ledger disable trigger user")

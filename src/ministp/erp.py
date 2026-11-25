@@ -1,6 +1,10 @@
 """ERP 일반전표 내보내기 (spec D9, R-96): the journal, as a general-journal upload file for the company ERP.
 
-Reads `journal_entries` / `journal_lines` and writes a CSV; never writes to the DB, so it may run beside `run`.
+Reads `journal_entries` / `journal_lines` and writes a CSV. What it writes to the DB is only the send history
+(R-104, ERD v2.11): one `erp_exports` row per file and one `erp_export_docs` row per document in it, so a
+document already exported is never exported again (the DB refuses it) until that export is voided. The file is
+written under a temporary name and renamed when complete, then a control file (`.ctl`: count, totals, SHA-256)
+follows it, so whatever picks the file up (an SFTP job, a person) never sees half a file.
 Without a mapping file the documents carry MiniSTP's own chart (`accounts_chart`) as is. A mapping file
 (YAML, not a table: the operating schema stays as it is until the gate) turns them into the company's account
 codes; then a file is written only when every account in the range is mapped. Every document must balance.
@@ -18,6 +22,9 @@ Every line carries its account (계좌, 계좌명) and, when the entry is about 
 """
 import csv
 import datetime as dt
+import hashlib
+import io
+import os
 import pathlib
 from collections import defaultdict
 from dataclasses import dataclass
@@ -25,10 +32,13 @@ from dataclasses import dataclass
 import psycopg
 import yaml
 
+from . import audit
 from .accounting import Account
 from .store import DEFAULT_ACCOUNT
 
 BY = ("entry", "day")
+UNITS = {"entry": "ENTRY", "day": "DAY"}          # erp_exports.unit (공통코드 ERP_EXPORT_UNIT)
+EXPORT_STATUSES = ("EXPORTED", "VOIDED")          # erp_exports_v.status (공통코드 ERP_EXPORT_STATUS)
 HEADER = ["회사코드", "전표유형", "증빙번호", "전표일자", "통화", "줄번호", "계정코드", "계정명", "차변", "대변", "적요",
           "계좌", "계좌명", "종목코드", "MiniSTP계정", "원장이벤트", "반대전표대상"]
 KIND_NAMES = {"DEPOSIT": "투자원금 입금", "OPENING": "기초 보유", "EXECUTION": "체결", "SETTLEMENT": "결제",
@@ -51,13 +61,15 @@ class Mapping:
     document_type: str
     currency: str
     accounts: dict[str, tuple[str, str]]       # MiniSTP code -> (ERP code, ERP name)
+    sha256: str | None = None                  # of the mapping file; None for MiniSTP's own chart
 
 
 def load_mapping(path: str | pathlib.Path) -> Mapping:
     p = pathlib.Path(path)
     if not p.exists():
         raise ErpError(f"계정 매핑 파일 {p}이 없어요. docs/erp/mapping.example.yaml을 복사해 회사 계정코드로 고쳐 쓰세요.")
-    raw = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
+    data = p.read_bytes()
+    raw = yaml.safe_load(data.decode("utf-8")) or {}
     missing = [k for k in ("company", "document_type", "accounts") if not raw.get(k)]
     if missing:
         raise ErpError(f"매핑 파일에 {', '.join(missing)} 항목이 없어요.")
@@ -66,7 +78,8 @@ def load_mapping(path: str | pathlib.Path) -> Mapping:
         if not isinstance(v, dict) or not v.get("code"):
             raise ErpError(f"매핑 파일의 계정 {code}에 code가 없어요.")
         accounts[str(code)] = (str(v["code"]), str(v.get("name", "")))
-    return Mapping(str(raw["company"]), str(raw["document_type"]), str(raw.get("currency", "KRW")), accounts)
+    return Mapping(str(raw["company"]), str(raw["document_type"]), str(raw.get("currency", "KRW")), accounts,
+                   hashlib.sha256(data).hexdigest())
 
 
 @dataclass(frozen=True)
@@ -316,22 +329,217 @@ def _check_balanced(lines: list[DocLine]) -> None:
         raise ErpError("차대가 맞지 않는 전표가 있어 파일을 만들지 않았어요: " + "; ".join(bad))
 
 
-def write_csv(result: Export, path: str | pathlib.Path) -> pathlib.Path:
-    """UTF-8 with BOM so Excel opens the Korean headers. Refuses to overwrite: a second file for the same
-    range is how a document gets posted twice."""
-    p = pathlib.Path(path)
-    if p.exists():
-        raise ErpError(f"{p}이 이미 있어요. 같은 전표를 두 번 올리지 않도록 덮어쓰지 않아요. 지우거나 --out으로 다른 이름을 주세요.")
-    p.parent.mkdir(parents=True, exist_ok=True)
+def render_csv(result: Export) -> bytes:
+    """The upload file: UTF-8 with BOM so Excel opens the Korean headers."""
     mapping = result.mapping
-    with p.open("w", encoding="utf-8-sig", newline="") as fh:
-        w = csv.writer(fh)
-        w.writerow(HEADER)
-        for ln in result.lines:
-            w.writerow([mapping.company, mapping.document_type, ln.doc_no, ln.date.isoformat(), mapping.currency,
-                        ln.line_no, ln.erp_code, ln.erp_name, ln.debit, ln.credit, ln.memo,
-                        ln.account_id, ln.account_name, ln.symbol, ln.ministp_accounts, ln.events, ln.reverses])
-    return p
+    buf = io.StringIO(newline="")
+    w = csv.writer(buf)
+    w.writerow(HEADER)
+    for ln in result.lines:
+        w.writerow([mapping.company, mapping.document_type, ln.doc_no, ln.date.isoformat(), mapping.currency,
+                    ln.line_no, ln.erp_code, ln.erp_name, ln.debit, ln.credit, ln.memo,
+                    ln.account_id, ln.account_name, ln.symbol, ln.ministp_accounts, ln.events, ln.reverses])
+    return buf.getvalue().encode("utf-8-sig")
+
+
+def _refuse_existing(*paths: pathlib.Path) -> None:
+    for p in paths:
+        if p.exists():
+            raise ErpError(f"{p}이 이미 있어요. 같은 전표를 두 번 올리지 않도록 덮어쓰지 않아요. 지우거나 --out으로 다른 이름을 주세요.")
+
+
+def _publish(path: pathlib.Path, data: bytes) -> pathlib.Path:
+    """Write under `<name>.tmp`, flush to disk, then give it its name in one step. Never replaces a file."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    with tmp.open("wb") as fh:
+        fh.write(data)
+        fh.flush()
+        os.fsync(fh.fileno())
+    try:
+        os.link(tmp, path)                 # fails if the name is taken, unlike a rename on POSIX
+    except FileExistsError:
+        raise ErpError(f"{path}이 이미 있어요. 덮어쓰지 않아요.") from None
+    finally:
+        tmp.unlink(missing_ok=True)
+    return path
+
+
+def write_csv(result: Export, path: str | pathlib.Path) -> pathlib.Path:
+    """The upload file alone, written then renamed. Refuses to overwrite: a second file for the same range is
+    how a document gets posted twice. `deliver` is what the command uses: it also keeps the send history."""
+    p = pathlib.Path(path)
+    _refuse_existing(p)
+    return _publish(p, render_csv(result))
+
+
+def control_path(path: str | pathlib.Path) -> pathlib.Path:
+    p = pathlib.Path(path)
+    return p.with_suffix(".ctl")
+
+
+def control_text(result: Export, file_name: str, sha256: str, size: int, export_id: int, date_from: dt.date,
+                 date_to: dt.date, created_at: dt.datetime) -> str:
+    """The control file: what the receiver checks before posting. Plain `key=value` lines, UTF-8 without BOM."""
+    rows = [("file", file_name), ("sha256", sha256), ("bytes", size), ("export_id", export_id),
+            ("account", result.account_id or "ALL"), ("from", date_from.isoformat()), ("to", date_to.isoformat()),
+            ("unit", UNITS[result.by]), ("company", result.mapping.company),
+            ("document_type", result.mapping.document_type), ("documents", result.documents),
+            ("lines", len(result.lines)), ("debit", result.debit), ("credit", result.credit),
+            ("created_at", created_at.isoformat(timespec="seconds"))]
+    return "".join(f"{k}={v}\n" for k, v in rows)
+
+
+@dataclass(frozen=True)
+class Clash:
+    doc_no: str             # the document of this export
+    sent_as: str            # the document already exported
+    export_id: int
+    same_document: bool     # False: the same account and day went out in the other unit
+
+
+def _docs(result: Export) -> dict[str, tuple[str, dt.date]]:
+    """doc_no -> (account, date) of each document of the export."""
+    out: dict[str, tuple[str, dt.date]] = {}
+    for ln in result.lines:
+        out.setdefault(ln.doc_no, (ln.account_id, ln.date))
+    return out
+
+
+def clashes(conn: psycopg.Connection, result: Export) -> list[Clash]:
+    """Documents of `result` that an export not voided already holds, or whose account and day it holds in the
+    other unit (건별 and 일별 합계 of the same day would post that day twice)."""
+    docs = _docs(result)
+    if not docs:
+        return []
+    nos = list(docs)
+    rows = conn.execute(
+        "select x.doc_no, d.doc_no, d.export_id, d.doc_no = x.doc_no"
+        "  from unnest(%s::text[], %s::text[], %s::date[]) as x (doc_no, account_id, doc_date)"
+        "  join erp_export_docs d on d.doc_no = x.doc_no or (d.account_id = x.account_id and d.doc_date = x.doc_date)"
+        "  join erp_exports e on e.export_id = d.export_id"
+        " where not exists (select 1 from erp_export_voids v where v.export_id = d.export_id)"
+        "   and (d.doc_no = x.doc_no or e.unit <> %s)"
+        " order by x.doc_no, d.export_id",
+        (nos, [docs[n][0] for n in nos], [docs[n][1] for n in nos], UNITS[result.by])).fetchall()
+    return [Clash(*r) for r in rows]
+
+
+def without(result: Export, doc_nos: set[str]) -> Export:
+    return Export(result.by, [ln for ln in result.lines if ln.doc_no not in doc_nos], result.mapping, result.account_id)
+
+
+@dataclass(frozen=True)
+class Delivered:
+    export_id: int
+    result: Export
+    csv: pathlib.Path
+    control: pathlib.Path
+    sha256: str
+    skipped: int            # documents left out because they were already exported (`new_only`)
+
+
+def deliver(conn: psycopg.Connection, result: Export, path: str | pathlib.Path, date_from: dt.date, date_to: dt.date,
+            new_only: bool = False) -> Delivered:
+    """`erp export`: the upload file, its control file and the send history, all or nothing (R-104).
+
+    A document an export not voided already holds stops the export, unless `new_only`, which leaves those out.
+    The same account and day in the other unit always stops it. The files are published inside the
+    transaction and removed again if it does not commit, so a file on disk always has its history row."""
+    p = pathlib.Path(path)
+    ctl = control_path(p)
+    _refuse_existing(p, ctl)
+    skipped = 0
+    with conn.transaction():
+        found = clashes(conn, result)
+        other_unit = [c for c in found if not c.same_document]
+        if other_unit:
+            raise ErpError("같은 계좌·날짜를 다른 단위(건별/일별 합계)로 이미 내보냈어요. ERP에 그날이 두 번 잡혀요: "
+                           + _some([f"{c.doc_no} ↔ {c.sent_as} (내보내기 {c.export_id})" for c in other_unit])
+                           + ". 먼저 낸 파일을 ERP가 받지 않았다면 erp void로 무효로 하세요.")
+        if found and not new_only:
+            raise ErpError(f"이미 내보낸 전표 {len({c.doc_no for c in found})}건이 들어 있어요: "
+                           + _some([f"{c.doc_no} (내보내기 {c.export_id})" for c in found])
+                           + ". 새 전표만 내려면 --new-only, ERP가 받지 않은 파일이면 erp void로 무효로 하세요.")
+        if found:
+            sent = {c.doc_no for c in found}
+            skipped, result = len(sent), without(result, sent)
+            if not result.lines:
+                raise ErpError(f"새로 낼 전표가 없어요. 이 기간의 전표 {skipped}건은 모두 이미 내보냈어요.")
+        data = render_csv(result)
+        digest = hashlib.sha256(data).hexdigest()
+        _, actor, _ = audit.origin()
+        export_id, created_at = conn.execute(
+            "insert into erp_exports (account_id, date_from, date_to, unit, company_code, document_type, mapping_sha256,"
+            " documents, lines, debit_total, credit_total, file_name, file_sha256, created_by)"
+            " values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) returning export_id, created_at",
+            (result.account_id, date_from, date_to, UNITS[result.by], result.mapping.company,
+             result.mapping.document_type, result.mapping.sha256, result.documents, len(result.lines),
+             result.debit, result.credit, p.name, digest, actor)).fetchone()
+        with conn.cursor() as cur:
+            cur.executemany("insert into erp_export_docs (export_id, doc_no, account_id, doc_date) values (%s, %s, %s, %s)",
+                            [(export_id, no, a, d) for no, (a, d) in _docs(result).items()])
+        audit.record(conn, "ERP_EXPORT", account_id=result.account_id, target=export_ref(export_id),
+                     detail={"file": p.name, "sha256": digest, "unit": UNITS[result.by], "from": date_from,
+                             "to": date_to, "documents": result.documents, "lines": len(result.lines),
+                             "debit": result.debit, "skipped": skipped, "mapping_sha256": result.mapping.sha256})
+        written = []
+        try:
+            written.append(_publish(p, data))
+            written.append(_publish(ctl, control_text(result, p.name, digest, len(data), export_id, date_from,
+                                                      date_to, created_at).encode("utf-8")))
+        except BaseException:
+            for w in written:
+                w.unlink(missing_ok=True)
+            raise
+    return Delivered(export_id, result, p, ctl, digest, skipped)
+
+
+def export_ref(export_id: int) -> str:
+    return f"ERP-{export_id}"
+
+
+def _some(items: list[str], n: int = 5) -> str:
+    return ", ".join(items[:n]) + (f" 외 {len(items) - n}건" if len(items) > n else "")
+
+
+def void(conn: psycopg.Connection, export_id: int, reason: str) -> None:
+    """`erp void`: the ERP did not take this file, so its documents may be exported again (R-104).
+    The history row stays; only a void row is added. Removing the file itself is the person's job."""
+    if not (reason or "").strip():
+        raise ErpError("무효 사유를 적어 주세요 (--reason).")
+    with conn.transaction():
+        row = conn.execute("select account_id, status from erp_exports_v where export_id = %s", (export_id,)).fetchone()
+        if row is None:
+            raise ErpError(f"내보내기 {export_id}번이 없어요. erp history로 확인하세요.")
+        if row[1] == "VOIDED":
+            raise ErpError(f"내보내기 {export_id}번은 이미 무효예요.")
+        _, actor, _ = audit.origin()
+        conn.execute("insert into erp_export_voids (export_id, reason, voided_by) values (%s, %s, %s)",
+                     (export_id, reason.strip(), actor))
+        audit.record(conn, "ERP_EXPORT_VOID", account_id=row[0], target=export_ref(export_id),
+                     detail={"reason": reason.strip()})
+
+
+def history(conn: psycopg.Connection, limit: int = 20) -> list[tuple]:
+    """(번호, 계좌, 시작일, 종료일, 단위, 전표 수, 차변 합계, 파일, 상태, 내보낸 사람, 시각, 무효 사유), newest first."""
+    return conn.execute(
+        "select export_id, account_id, date_from, date_to, unit, documents, debit_total, file_name, status,"
+        " created_by, created_at, void_reason from erp_exports_v order by export_id desc limit %s", (limit,)).fetchall()
+
+
+def problems(conn: psycopg.Connection) -> list[str]:
+    """Where the send history does not hold together: an export whose document rows do not match its count,
+    or a document in two exports that are not voided (the trigger refuses it; this finds drift)."""
+    bad = [f"내보내기 {i}: 전표 {n}건인데 전표 행 {m}개" for i, n, m in conn.execute(
+        "select e.export_id, e.documents, count(d.doc_no) from erp_exports e"
+        " left join erp_export_docs d using (export_id) group by e.export_id, e.documents"
+        " having count(d.doc_no) <> e.documents order by 1")]
+    bad += [f"{no}: 내보내기 {ids}" for no, ids in conn.execute(
+        "select d.doc_no, string_agg(d.export_id::text, ', ' order by d.export_id) from erp_export_docs d"
+        " where not exists (select 1 from erp_export_voids v where v.export_id = d.export_id)"
+        " group by d.doc_no having count(*) > 1 order by 1")]
+    return bad
 
 
 def default_out(date_from: dt.date, date_to: dt.date, by: str, account_id: str | None = DEFAULT_ACCOUNT) -> pathlib.Path:
