@@ -177,10 +177,13 @@
       h("div", { class: "iname" }, h("b", { text: name || "-" }), sub ? h("span", { text: sub }) : null));
   }
   // A share of a whole: a rate as a percentage, or a quantity against the column that is its whole ("4 / 10").
-  function meter(v, whole) {
+  // A share of a whole (비중) is drawn against the largest share in the column (`top`), so 1~6% weights of a
+  // hundred holdings still tell apart; the number stays the real share. A count against its own whole ("4 / 10") is not scaled.
+  function meter(v, whole, top) {
     if (v === null || v === undefined) return h("span", { class: "none", text: "-" });
-    const share = whole === undefined ? Number(v) : (Number(whole) ? Number(v) / Number(whole) : 0);
-    const fill = h("i", { class: share >= 1 ? "full" : null });
+    const raw = whole === undefined ? Number(v) : (Number(whole) ? Number(v) / Number(whole) : 0);
+    const share = whole === undefined && top ? raw / top : raw;
+    const fill = h("i", { class: raw >= 1 ? "full" : null });
     fill.style.width = (Math.max(0, Math.min(1, share)) * 100).toFixed(1) + "%";
     return h("div", { class: "meter" }, h("span", { text: whole === undefined ? pf.format(v) : `${nf.format(v)} / ${nf.format(whole ?? 0)}` }),
       h("div", { class: "mtrack", "aria-hidden": "true" }, fill));
@@ -1235,19 +1238,21 @@
     function renderTable() {
       if (!rows.length) return body.replaceChildren(h("div", { class: "empty", text: "조회된 내역이 없어요" }));
       const cols = g.columns.filter(c => !c.inside && !c.hidden);   // drawn inside another cell, or only there to name the row
+      // 셀 안 막대, 비중 막대: each bar is the value against the largest one in its column
+      const scaled = c => c.display === "bar" || (c.display === "meter" && !c.of);
+      const peak = Object.fromEntries(cols.filter(scaled).map(c =>
+        [c.name, Math.max(0, ...rows.map(r => Math.abs(Number(r[c.name]) || 0)))]));
       const head = h("tr", {}, h("th", { class: "rn", scope: "col", text: "#" }), cols.map(c => {
         const on = sortCol === c.name;
         const th = h("th", { scope: "col", class: c.align === "right" ? "r" : null,
-          "aria-sort": on ? (sortDir > 0 ? "ascending" : "descending") : null, title: c.source || "화면 계산 값" },
+          "aria-sort": on ? (sortDir > 0 ? "ascending" : "descending") : null,
+          title: (c.source || "화면 계산 값") + (c.display === "meter" && !c.of && peak[c.name] ? ` · 막대 끝은 이 목록에서 가장 큰 값(${pf.format(peak[c.name])})` : "") },
           c.display === "spark" ? c.label   // a run of numbers has no order to sort by
             : c.display === "steps" ? h("div", { class: "steps head" }, c.steps.map(n => h("span", { text: n })))   // each name over its dot
             : h("button", { type: "button", onclick: () => sortBy(c.name) }, c.label, on ? (sortDir > 0 ? " ▲" : " ▼") : ""));
         if (c.width) th.style.width = c.width + "px";
         return th;
       }));
-      // 셀 안 막대: each bar is the value against the largest one in its column
-      const peak = Object.fromEntries(cols.filter(c => c.display === "bar").map(c =>
-        [c.name, Math.max(0, ...rows.map(r => Math.abs(Number(r[c.name]) || 0)))]));
       const rolls = [];
       const tbody = h("tbody", {}, view.map((r, i) => h("tr", {
         "data-k": rowKey(r),
@@ -1267,7 +1272,7 @@
           if (sv) td.append(h("span", { class: "csub", text: sv }));
         }
         if (c.display === "badge") td.append(badge(r, c));
-        else if (c.display === "meter") td.append(c.of ? meter(v, r[c.of]) : meter(v));
+        else if (c.display === "meter") td.append(c.of ? meter(v, r[c.of]) : meter(v, undefined, peak[c.name]));
         else if (c.display === "steps") td.append(steps(v, c.steps));
         else if (c.display === "spark") td.append(spark(v));
         else if (c.display === "pill" && text) td.append(h("span", { class: ("pill " + tone(v, c.color, r)).trim(), text }));
