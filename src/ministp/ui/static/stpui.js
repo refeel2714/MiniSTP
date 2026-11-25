@@ -807,10 +807,16 @@
     const keyCol = g.key || g.columns[0].name;
     const rowKey = g.view === "cards" ? () => "card" : r => String(r[keyCol]);   // cards show one row
     const count = h("span", { class: "count" });
+    // 목록 안 찾기: a long list (FILTER_FROM rows or more) gets a box that keeps the rows holding the typed text
+    // in any column (the code under a name too). Sort, live updates and the map keep to it; Esc empties it.
+    let q = "";
+    const finder = h("input", { type: "search", class: "gfind", placeholder: "목록에서 찾기", "aria-label": `${g.title}에서 찾기`,
+      hidden: true, oninput: () => refind(finder.value), onkeydown: e => { if (e.key === "Escape" && finder.value) { e.stopPropagation(); finder.value = ""; refind(""); } } });
     const metaBox = h("span", { class: "meta" });
     const aboutBox = h("span", { class: "about", title: "목록에서 고른 행" });
     const body = h("div", { class: "gbody" });
     const chartBox = g.chart ? h("div", { class: "chart" }) : null;
+    const FILTER_FROM = 20;
     const MODES = { taccount: "T계정", map: "지도", grid: "표" };
     const offered = [...new Set([g.view, g.map ? "map" : null, "grid"])].filter(m => m in MODES);
     const modes = offered.length > 1 ? offered.map(m =>
@@ -836,7 +842,7 @@
     const el = h("section", { class: "panel" + (g.view === "cards" ? " cards-panel" : ""), "aria-label": g.title },
       h("div", { class: "phead" }, h("h2", { text: g.title }), aboutBox,
         g.live ? h("span", { class: "livechip", title: "DB가 바뀌면 자동으로 다시 조회해요" }, "실시간") : null,
-        metaBox, count,
+        metaBox, count, finder,
         modes ? h("div", { class: "seg", role: "group", "aria-label": "보기" }, modes) : null,
         h("span", { class: "txid", title: "조회 트랜잭션", text: g.tx }),
         acts.length || editBtns.length ? h("div", { class: "acts" }, editBtns, acts.map(a => a.btn)) : null),
@@ -905,6 +911,8 @@
       }
       const hadFocus = body.contains(document.activeElement);
       rows = fresh;
+      finder.hidden = !(rows.length >= FILTER_FROM && (g.view === "grid" || g.view === "taccount"));
+      if (finder.hidden && q) { finder.value = ""; q = ""; }
       renderMeta(meta || {});
       if (same) apply(); else morph(body, apply);
       loaded = true;
@@ -1008,7 +1016,7 @@
     }
 
     function apply() {
-      view = rows.slice();
+      view = q ? rows.filter(hit) : rows.slice();
       if (sortCol) {
         const c = g.columns.find(c => c.name === sortCol);
         const num = NUMERIC.has(c.format);
@@ -1018,7 +1026,8 @@
           return (num ? x - y : String(x).localeCompare(String(y), "ko")) * sortDir;
         });
       }
-      count.textContent = g.view === "grid" || g.view === "taccount" ? `${nf.format(rows.length)}건` : "";
+      count.textContent = g.view === "grid" || g.view === "taccount"
+        ? (q ? `${nf.format(view.length)} / ${nf.format(rows.length)}건` : `${nf.format(rows.length)}건`) : "";
       mode === "cards" ? renderCards() : mode === "calendar" ? renderCalendar() : mode === "taccount" ? renderTAccounts()
         : mode === "map" ? renderMap() : renderTable();
     }
@@ -1262,11 +1271,11 @@
         return td;
       }))));
       editTotal = null;
-      const foot = g.totals.length ? h("tfoot", {}, h("tr", {}, h("td", { class: "rn", text: "합계" }), cols.map(c =>
+      const foot = g.totals.length ? h("tfoot", {}, h("tr", {}, h("td", { class: "rn", text: q ? "찾은 행 합계" : "합계" }), cols.map(c =>
         ed && c.name === ed.column ? (editTotal = h("td", { class: "r" }))
         : g.totals.includes(c.name)
           ? (sum => h("td", { class: ("r " + (c.color === "sign" ? tone(sum, "sign") : "")).trim(), text: fmt(sum, c.format) }))(
-              rows.reduce((s, r) => s + (Number(r[c.name]) || 0), 0))
+              (q ? view : rows).reduce((s, r) => s + (Number(r[c.name]) || 0), 0))
           : h("td", {})))) : null;
       const table = h("table", { class: "grid", tabindex: "0", role: "grid", "aria-rowcount": rows.length,
         onkeydown: key }, h("thead", {}, head), tbody, foot);
@@ -1277,6 +1286,14 @@
       placeBar(true);
     }
 
+    function hit(r) {
+      return g.columns.some(c => { const v = r[c.name]; return v != null && (String(v).toLowerCase().includes(q) || fmt(v, c.format).toLowerCase().includes(q)); });
+    }
+    function refind(text) {
+      q = text.trim().toLowerCase();
+      const keep = view[sel];
+      apply(); sel = keep ? view.indexOf(keep) : -1; mark(false);
+    }
     function sortBy(name) {
       if (sortCol === name) sortDir = -sortDir; else { sortCol = name; sortDir = 1; }
       const keep = view[sel];
