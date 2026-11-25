@@ -177,10 +177,13 @@
       h("div", { class: "iname" }, h("b", { text: name || "-" }), sub ? h("span", { text: sub }) : null));
   }
   // A share of a whole: a rate as a percentage, or a quantity against the column that is its whole ("4 / 10").
-  function meter(v, whole) {
+  // A share of a whole (비중) is drawn against the largest share in the column (`top`), so 1~6% weights of a
+  // hundred holdings still tell apart; the number stays the real share. A count against its own whole ("4 / 10") is not scaled.
+  function meter(v, whole, top) {
     if (v === null || v === undefined) return h("span", { class: "none", text: "-" });
-    const share = whole === undefined ? Number(v) : (Number(whole) ? Number(v) / Number(whole) : 0);
-    const fill = h("i", { class: share >= 1 ? "full" : null });
+    const raw = whole === undefined ? Number(v) : (Number(whole) ? Number(v) / Number(whole) : 0);
+    const share = whole === undefined && top ? raw / top : raw;
+    const fill = h("i", { class: raw >= 1 ? "full" : null });
     fill.style.width = (Math.max(0, Math.min(1, share)) * 100).toFixed(1) + "%";
     return h("div", { class: "meter" }, h("span", { text: whole === undefined ? pf.format(v) : `${nf.format(v)} / ${nf.format(whole ?? 0)}` }),
       h("div", { class: "mtrack", "aria-hidden": "true" }, fill));
@@ -753,6 +756,17 @@
       const room = window.innerHeight - split.getBoundingClientRect().top - window.scrollY - 56;   // the status line and the page margin stay in view
       split.style.setProperty("--fit", Math.max(380, Math.round(room)) + "px");
     }
+    // 위아래 구성: the last list reaches down to the bottom of the window, so a long list shows as many rows as fit
+    // and scrolls in place (the others keep their 360px). It is worked out again when something above it grows.
+    const stacked = () => def.layout === "split" ? null
+      : [...app.querySelectorAll(".grids > .panel")].filter(p => !p.classList.contains("cards-panel")).pop();
+    function fitLast() {
+      const last = stacked(), body = last && last.querySelector(".gbody");
+      if (!body || window.innerWidth <= 900) { if (body) body.style.maxHeight = ""; return; }
+      const below = last.getBoundingClientRect().bottom - body.getBoundingClientRect().bottom;   // a legend under the list
+      const room = window.innerHeight - body.getBoundingClientRect().top - window.scrollY - below - 56;
+      body.style.maxHeight = Math.max(360, Math.round(room)) + "px";
+    }
 
     frame(def, h("main", { class: "screen" },
       DATA.path.length ? h("p", { class: "crumb", "aria-label": "화면 분류", text: DATA.path.join(" › ") }) : null,
@@ -765,6 +779,12 @@
       status));
     fitSplit();
     window.addEventListener("resize", fitSplit);
+    fitLast();
+    window.addEventListener("resize", fitLast);
+    if (stacked() && "ResizeObserver" in window) {   // cards above it fill in, a chart lands over the list, a condition wraps
+      const moved = new ResizeObserver(() => fitLast());   // the same top gives the same height, so it settles at once
+      app.querySelectorAll(".screen > .purpose, .screen > .conds, .grids > .panel").forEach(el => moved.observe(el));
+    }
 
     document.addEventListener("keydown", e => {
       if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); search(); }
@@ -809,10 +829,16 @@
     const keyCol = g.key || g.columns[0].name;
     const rowKey = g.view === "cards" ? () => "card" : r => String(r[keyCol]);   // cards show one row
     const count = h("span", { class: "count" });
+    // 목록 안 찾기: a long list (FILTER_FROM rows or more) gets a box that keeps the rows holding the typed text
+    // in any column (the code under a name too). Sort, live updates and the map keep to it; Esc empties it.
+    let q = "";
+    const finder = h("input", { type: "search", class: "gfind", placeholder: "목록에서 찾기", "aria-label": `${g.title}에서 찾기`,
+      hidden: true, oninput: () => refind(finder.value), onkeydown: e => { if (e.key === "Escape" && finder.value) { e.stopPropagation(); finder.value = ""; refind(""); } } });
     const metaBox = h("span", { class: "meta" });
     const aboutBox = h("span", { class: "about", title: "목록에서 고른 행" });
     const body = h("div", { class: "gbody" });
     const chartBox = g.chart ? h("div", { class: "chart" }) : null;
+    const FILTER_FROM = 20;
     const MODES = { voucher: "전표", taccount: "T계정", map: "지도", grid: "표" };
     const offered = [...new Set([g.view === "taccount" ? "voucher" : null, g.view, g.map ? "map" : null, "grid"])].filter(m => m in MODES);
     const modes = offered.length > 1 ? offered.map(m =>
@@ -838,7 +864,7 @@
     const el = h("section", { class: "panel" + (g.view === "cards" ? " cards-panel" : ""), "aria-label": g.title },
       h("div", { class: "phead" }, h("h2", { text: g.title }), aboutBox,
         g.live ? h("span", { class: "livechip", title: "DB가 바뀌면 자동으로 다시 조회해요" }, "실시간") : null,
-        metaBox, count,
+        metaBox, count, finder,
         modes ? h("div", { class: "seg", role: "group", "aria-label": "보기" }, modes) : null,
         h("span", { class: "txid", title: "조회 트랜잭션", text: g.tx }),
         acts.length || editBtns.length ? h("div", { class: "acts" }, editBtns, acts.map(a => a.btn)) : null),
@@ -907,6 +933,8 @@
       }
       const hadFocus = body.contains(document.activeElement);
       rows = fresh;
+      finder.hidden = !(rows.length >= FILTER_FROM && (g.view === "grid" || g.view === "taccount"));
+      if (finder.hidden && q) { finder.value = ""; q = ""; }
       renderMeta(meta || {});
       if (same) apply(); else morph(body, apply);
       loaded = true;
@@ -1010,7 +1038,7 @@
     }
 
     function apply() {
-      view = rows.slice();
+      view = q ? rows.filter(hit) : rows.slice();
       if (sortCol) {
         const c = g.columns.find(c => c.name === sortCol);
         const num = NUMERIC.has(c.format);
@@ -1020,7 +1048,8 @@
           return (num ? x - y : String(x).localeCompare(String(y), "ko")) * sortDir;
         });
       }
-      count.textContent = g.view === "grid" || g.view === "taccount" ? `${nf.format(rows.length)}건` : "";
+      count.textContent = g.view === "grid" || g.view === "taccount"
+        ? (q ? `${nf.format(view.length)} / ${nf.format(rows.length)}건` : `${nf.format(rows.length)}건`) : "";
       mode === "cards" ? renderCards() : mode === "calendar" ? renderCalendar() : mode === "taccount" ? renderTAccounts() : mode === "voucher" ? renderVouchers()
         : mode === "map" ? renderMap() : renderTable();
     }
@@ -1028,6 +1057,7 @@
     // 구성 지도: a tile a row. The area is the row's share of the size column, the colour is the tone
     // column against the size (+ red, - blue, deeper the further from zero; no value = hatched).
     // Tiles are the rows: a click picks the row, a double click or Enter moves on like a table row.
+    const MAP_TILES = 40, MAP_MIN = 0.005;   // at most 40 tiles, and none under 0.5% of the whole
     const mapWatch = window.ResizeObserver ? new ResizeObserver(() => placeTiles()) : null;
     function squarify(items, x, y, w, hgt) {          // items: [{ v }] largest first; gives each x, y, w, h in px
       const total = items.reduce((a, it) => a + it.v, 0);
@@ -1053,7 +1083,11 @@
       const box = body.querySelector(".tmap");
       if (!box || !box.clientWidth) return;
       const tiles = [...box.children].map(el => ({ el, v: Number(el.dataset.v) }));
-      squarify(tiles, 0, 0, box.clientWidth, box.clientHeight);
+      const rest = tiles.find(t => t.el.classList.contains("rest"));   // 나머지 runs down the right edge, its width its share
+      const W = box.clientWidth, H = box.clientHeight;
+      const rw = rest ? Math.round(W * rest.v / tiles.reduce((a, t) => a + t.v, 0)) : 0;
+      if (rest) Object.assign(rest, { x: W - rw, y: 0, w: rw, h: H });
+      squarify(tiles.filter(t => t !== rest), 0, 0, W - rw, H);
       for (const t of tiles) {
         t.el.style.left = t.x + "px"; t.el.style.top = t.y + "px";
         t.el.style.width = Math.max(0, t.w - 2) + "px"; t.el.style.height = Math.max(0, t.h - 2) + "px";
@@ -1064,9 +1098,14 @@
     function renderMap() {
       const m = g.map, col = n => g.columns.find(c => c.name === n);
       const size = col(m.size), toneCol = m.tone ? col(m.tone) : null;
-      const sized = view.map((r, i) => ({ r, i, v: Number(r[m.size]) || 0 })).filter(x => x.v > 0).sort((a, b) => b.v - a.v);
-      if (!sized.length) return body.replaceChildren(h("div", { class: "empty", text: rows.length ? `${size.label}이 있는 행이 없어요` : "조회된 내역이 없어요" }));
-      const total = sized.reduce((a, x) => a + x.v, 0);
+      const all = view.map((r, i) => ({ r, i, v: Number(r[m.size]) || 0 })).filter(x => x.v > 0).sort((a, b) => b.v - a.v);
+      if (!all.length) return body.replaceChildren(h("div", { class: "empty", text: rows.length ? `${size.label}이 있는 행이 없어요` : "조회된 내역이 없어요" }));
+      const total = all.reduce((a, x) => a + x.v, 0);
+      // A hundred holdings make a tail of tiles too small for a name. The largest ones keep a tile each (up to
+      // MAP_TILES, and only while a tile is at least MAP_MIN of the whole); the rest share one 나머지 tile.
+      let cut = all.findIndex((x, k) => k >= MAP_TILES || x.v / total < MAP_MIN);
+      if (cut < 0 || all.length - cut < 2) cut = all.length;
+      const sized = all.slice(0, cut), tail = all.slice(cut);
       const box = h("div", { class: "tmap", role: "listbox", "aria-label": `${g.title} 구성 지도`, tabindex: "0",
         onkeydown: e => {
           const step = { ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1 }[e.key];
@@ -1088,12 +1127,26 @@
             toneCol ? h("span", { class: "ttone", text: known ? `${Number(t) > 0 ? "+" : ""}${fmt(t, toneCol.format)} (${ratio > 0 ? "+" : ""}${pf.format(ratio)})` : "평가 전" }) : null);
           el.style.setProperty("--k", (known ? 10 + 38 * Math.min(1, Math.abs(ratio) / 0.08) : 0).toFixed(1) + "%");   // full depth at 8%
           return el;
-        }));
+        }), tail.length ? restTile() : null);
+      function restTile() {   // not a row: a double click shows them all in the table
+        const v = tail.reduce((a, x) => a + x.v, 0), share = pf.format(v / total);
+        const tones = toneCol ? tail.map(x => x.r[m.tone]) : [];
+        const t = toneCol && tones.every(x => x !== null && x !== undefined) ? tones.reduce((a, x) => a + Number(x), 0) : null;
+        const lines = [`나머지 ${nf.format(tail.length)}건`, `${size.label} ${fmt(v, size.format)} (${share})`];
+        if (t !== null) lines.push(`${toneCol.label} ${t > 0 ? "+" : ""}${fmt(t, toneCol.format)}`);
+        lines.push("두 번 누르면 표로 모두 보여요");
+        return h("div", { class: "mtile rest", "data-v": v, title: lines.join("\n"), "aria-label": lines.join(", "),
+          ondblclick: () => modes && modes.find(b => b.dataset.m === "grid")?.click() },
+          h("b", { text: `나머지 ${nf.format(tail.length)}건` }), h("span", { class: "tshare", text: share }),
+          h("span", { class: "tsize", text: fmt(v, size.format) }),
+          t !== null ? h("span", { class: "ttone", text: `${t > 0 ? "+" : ""}${fmt(t, toneCol.format)}` }) : null);
+      }
       body.replaceChildren(h("div", { class: "tmapbox" }, box,
         h("div", { class: "tlegend" }, h("span", { text: `면적 ${size.label}` }),
           toneCol ? [h("span", { text: `색 ${toneCol.label}` }), h("span", { class: "lg up", text: "이익" }), h("span", { class: "lg down", text: "손실" }),
-            sized.some(x => x.r[m.tone] === null || x.r[m.tone] === undefined) ? h("span", { class: "lg none", text: "값 없음" }) : null] : null,
-          sized.length < rows.length ? h("span", { text: `${size.label}이 없는 ${rows.length - sized.length}건은 그리지 않았어요` }) : null)));
+            all.some(x => x.r[m.tone] === null || x.r[m.tone] === undefined) ? h("span", { class: "lg none", text: "값 없음" }) : null] : null,
+          all.length < rows.length ? h("span", { text: `${size.label}이 없는 ${rows.length - all.length}건은 그리지 않았어요` }) : null,
+          tail.length ? h("span", { text: `작은 ${nf.format(tail.length)}건은 "나머지" 한 칸으로 묶었어요` }) : null)));
       if (mapWatch) { mapWatch.disconnect(); mapWatch.observe(box); }
       placeTiles();
     }
@@ -1261,19 +1314,21 @@
     function renderTable() {
       if (!rows.length) return body.replaceChildren(h("div", { class: "empty", text: "조회된 내역이 없어요" }));
       const cols = g.columns.filter(c => !c.inside && !c.hidden);   // drawn inside another cell, or only there to name the row
+      // 셀 안 막대, 비중 막대: each bar is the value against the largest one in its column
+      const scaled = c => c.display === "bar" || (c.display === "meter" && !c.of);
+      const peak = Object.fromEntries(cols.filter(scaled).map(c =>
+        [c.name, Math.max(0, ...rows.map(r => Math.abs(Number(r[c.name]) || 0)))]));
       const head = h("tr", {}, h("th", { class: "rn", scope: "col", text: "#" }), cols.map(c => {
         const on = sortCol === c.name;
         const th = h("th", { scope: "col", class: c.align === "right" ? "r" : null,
-          "aria-sort": on ? (sortDir > 0 ? "ascending" : "descending") : null, title: c.source || "화면 계산 값" },
+          "aria-sort": on ? (sortDir > 0 ? "ascending" : "descending") : null,
+          title: (c.source || "화면 계산 값") + (c.display === "meter" && !c.of && peak[c.name] ? ` · 막대 끝은 이 목록에서 가장 큰 값(${pf.format(peak[c.name])})` : "") },
           c.display === "spark" ? c.label   // a run of numbers has no order to sort by
             : c.display === "steps" ? h("div", { class: "steps head" }, c.steps.map(n => h("span", { text: n })))   // each name over its dot
             : h("button", { type: "button", onclick: () => sortBy(c.name) }, c.label, on ? (sortDir > 0 ? " ▲" : " ▼") : ""));
         if (c.width) th.style.width = c.width + "px";
         return th;
       }));
-      // 셀 안 막대: each bar is the value against the largest one in its column
-      const peak = Object.fromEntries(cols.filter(c => c.display === "bar").map(c =>
-        [c.name, Math.max(0, ...rows.map(r => Math.abs(Number(r[c.name]) || 0)))]));
       const rolls = [];
       const tbody = h("tbody", {}, view.map((r, i) => h("tr", {
         "data-k": rowKey(r),
@@ -1293,7 +1348,7 @@
           if (sv) td.append(h("span", { class: "csub", text: sv }));
         }
         if (c.display === "badge") td.append(badge(r, c));
-        else if (c.display === "meter") td.append(c.of ? meter(v, r[c.of]) : meter(v));
+        else if (c.display === "meter") td.append(c.of ? meter(v, r[c.of]) : meter(v, undefined, peak[c.name]));
         else if (c.display === "steps") td.append(steps(v, c.steps));
         else if (c.display === "spark") td.append(spark(v));
         else if (c.display === "pill" && text) td.append(h("span", { class: ("pill " + tone(v, c.color, r)).trim(), text }));
@@ -1305,11 +1360,11 @@
         return td;
       }))));
       editTotal = null;
-      const foot = g.totals.length ? h("tfoot", {}, h("tr", {}, h("td", { class: "rn", text: "합계" }), cols.map(c =>
+      const foot = g.totals.length ? h("tfoot", {}, h("tr", {}, h("td", { class: "rn", text: q ? "찾은 행 합계" : "합계" }), cols.map(c =>
         ed && c.name === ed.column ? (editTotal = h("td", { class: "r" }))
         : g.totals.includes(c.name)
           ? (sum => h("td", { class: ("r " + (c.color === "sign" ? tone(sum, "sign") : "")).trim(), text: fmt(sum, c.format) }))(
-              rows.reduce((s, r) => s + (Number(r[c.name]) || 0), 0))
+              (q ? view : rows).reduce((s, r) => s + (Number(r[c.name]) || 0), 0))
           : h("td", {})))) : null;
       const table = h("table", { class: "grid", tabindex: "0", role: "grid", "aria-rowcount": rows.length,
         onkeydown: key }, h("thead", {}, head), tbody, foot);
@@ -1320,6 +1375,14 @@
       placeBar(true);
     }
 
+    function hit(r) {
+      return g.columns.some(c => { const v = r[c.name]; return v != null && (String(v).toLowerCase().includes(q) || fmt(v, c.format).toLowerCase().includes(q)); });
+    }
+    function refind(text) {
+      q = text.trim().toLowerCase();
+      const keep = view[sel];
+      apply(); sel = keep ? view.indexOf(keep) : -1; mark(false);
+    }
     function sortBy(name) {
       if (sortCol === name) sortDir = -sortDir; else { sortCol = name; sortDir = 1; }
       const keep = view[sel];
