@@ -803,7 +803,9 @@
     let changed = new Map();   // row key -> Set of changed columns ("*" = new row), shown once
     let previous = new Map();  // row key -> the row before this fill (numbers roll from here)
     let loaded = false;
-    let mode = g.view;         // a T계정 grid or one with a 구성 지도 can be turned into a table and back (buttons next to the count)
+    // a T계정 grid opens as 전표 (an entry's lines down the page, as a journal is written) and turns into T계정 or a
+    // table; a grid with a 구성 지도 turns into a table and back (buttons next to the count)
+    let mode = g.view === "taccount" ? "voucher" : g.view;
     const keyCol = g.key || g.columns[0].name;
     const rowKey = g.view === "cards" ? () => "card" : r => String(r[keyCol]);   // cards show one row
     const count = h("span", { class: "count" });
@@ -811,8 +813,8 @@
     const aboutBox = h("span", { class: "about", title: "목록에서 고른 행" });
     const body = h("div", { class: "gbody" });
     const chartBox = g.chart ? h("div", { class: "chart" }) : null;
-    const MODES = { taccount: "T계정", map: "지도", grid: "표" };
-    const offered = [...new Set([g.view, g.map ? "map" : null, "grid"])].filter(m => m in MODES);
+    const MODES = { voucher: "전표", taccount: "T계정", map: "지도", grid: "표" };
+    const offered = [...new Set([g.view === "taccount" ? "voucher" : null, g.view, g.map ? "map" : null, "grid"])].filter(m => m in MODES);
     const modes = offered.length > 1 ? offered.map(m =>
       h("button", { type: "button", "aria-pressed": m === mode ? "true" : "false", "data-m": m, onclick: () => {
         if (m === mode) return;
@@ -1019,7 +1021,7 @@
         });
       }
       count.textContent = g.view === "grid" || g.view === "taccount" ? `${nf.format(rows.length)}건` : "";
-      mode === "cards" ? renderCards() : mode === "calendar" ? renderCalendar() : mode === "taccount" ? renderTAccounts()
+      mode === "cards" ? renderCards() : mode === "calendar" ? renderCalendar() : mode === "taccount" ? renderTAccounts() : mode === "voucher" ? renderVouchers()
         : mode === "map" ? renderMap() : renderTable();
     }
 
@@ -1132,6 +1134,37 @@
           h("div", { class: "tsum" },
             h("span", {}, "차변 합계", h("b", { text: amount(dr) })), h("span", {}, "대변 합계", h("b", { text: amount(cr) })),
             h("span", { class: "pill " + (dr === cr ? "st-ok" : "st-bad"), text: dr === cr ? "차대 일치" : `차대 불일치 ${amount(dr - cr)}` })));
+      })));
+    }
+
+    // 전표 보기: the same blocks as T계정, but each 전표 written the way a journal is: its lines down the page,
+    // 계정 · 차변 · 대변, the debit lines first in the order they were recorded, then the credit lines; then both sums.
+    function renderVouchers() {
+      if (!rows.length) return body.replaceChildren(h("div", { class: "empty", text: "조회된 내역이 없어요" }));
+      const t = g.taccount, col = n => g.columns.find(c => c.name === n);
+      const facts = g.columns.filter(c => ![t.account, t.name, t.debit, t.credit].includes(c.name));
+      const blocks = new Map();
+      for (const r of view) {
+        const k = t.entry ? String(r[t.entry]) : "";
+        if (!blocks.has(k)) blocks.set(k, []);
+        blocks.get(k).push(r);
+      }
+      const amount = v => Number(v) ? fmt(v, "money") : "";
+      const isCredit = r => !!Number(r[t.credit]) && !Number(r[t.debit]);   // 차변 줄 먼저, 대변 줄은 아래에 들여서
+      body.replaceChildren(h("div", { class: "tview" }, [...blocks.values()].map(lines => {
+        const dr = lines.reduce((a, r) => a + (Number(r[t.debit]) || 0), 0);
+        const cr = lines.reduce((a, r) => a + (Number(r[t.credit]) || 0), 0);
+        const shown = facts.filter(c => lines[0][c.name] !== null && lines[0][c.name] !== undefined && lines[0][c.name] !== "");
+        return h("section", { class: "tentry", "aria-label": t.entry ? `${col(t.entry).label} ${lines[0][t.entry]}` : g.title },
+          shown.length ? h("div", { class: "tfacts" }, shown.map(c => h("span", {}, c.label, h("b", { text: fmt(lines[0][c.name], c.format) })))) : null,
+          h("table", { class: "vtable" },
+            h("thead", {}, h("tr", {}, h("th", { text: "계정" }), h("th", { class: "num", text: "차변" }), h("th", { class: "num", text: "대변" }))),
+            h("tbody", {}, [...lines.filter(r => !isCredit(r)), ...lines.filter(isCredit)].map(r => h("tr", { class: isCredit(r) ? "cr" : "dr" },
+              h("td", {}, t.name ? r[t.name] : r[t.account], t.name ? h("span", { class: "vcode", text: r[t.account] }) : null),
+              h("td", { class: "num", text: amount(r[t.debit]) }), h("td", { class: "num", text: amount(r[t.credit]) })))),
+            h("tfoot", {}, h("tr", {}, h("td", {}, "합계", h("span", { class: "pill " + (dr === cr ? "st-ok" : "st-bad"),
+              text: dr === cr ? "차대 일치" : `차대 불일치 ${fmt(dr - cr, "money")}` })),
+              h("td", { class: "num", text: fmt(dr, "money") }), h("td", { class: "num", text: fmt(cr, "money") })))));
       })));
     }
 

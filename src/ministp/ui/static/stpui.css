@@ -273,6 +273,15 @@ button.day:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--panel), 0 
 .tsum { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 22px; padding-top: 9px; border-top: 1px solid var(--line); }
 .tsum b { margin-left: 6px; }
 .tsum .pill { margin-left: auto; }
+/* 전표 보기: 한 전표의 줄을 세로로, 계정 · 차변 · 대변. 대변 계정은 한 칸 들여 써요(분개를 손으로 쓰는 모양) */
+.vtable { width: 100%; max-width: 640px; border-collapse: collapse; font-size: 13px; }
+.vtable th { padding: 5px 10px; text-align: left; font-size: 12px; font-weight: 500; color: var(--muted); border-bottom: 1px solid var(--ink); }
+.vtable td { padding: 7px 10px; border-bottom: 1px solid var(--line); }
+.vtable .num { text-align: right; font-variant-numeric: tabular-nums; width: 9.5em; }
+.vtable tbody tr.cr td:first-child { padding-left: 28px; }
+.vtable .vcode { margin-left: 7px; font: 11px ui-monospace, "Cascadia Mono", Consolas, monospace; color: var(--muted); }
+.vtable tfoot td { font-weight: 650; border-top: 1px solid var(--ink); border-bottom: 0; }
+.vtable tfoot .pill { margin-left: 10px; font-weight: 600; }
 
 /* 구성 지도: 타일 하나가 행 하나. 면적은 크기 열, 색은 부호 열(이익 빨강, 손실 파랑, 짙을수록 큼) */
 .tmapbox { padding: 10px 12px 10px; }
