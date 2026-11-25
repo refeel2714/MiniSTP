@@ -753,6 +753,17 @@
       const room = window.innerHeight - split.getBoundingClientRect().top - window.scrollY - 56;   // the status line and the page margin stay in view
       split.style.setProperty("--fit", Math.max(380, Math.round(room)) + "px");
     }
+    // 위아래 구성: the last list reaches down to the bottom of the window, so a long list shows as many rows as fit
+    // and scrolls in place (the others keep their 360px). It is worked out again when something above it grows.
+    const stacked = () => def.layout === "split" ? null
+      : [...app.querySelectorAll(".grids > .panel")].filter(p => !p.classList.contains("cards-panel")).pop();
+    function fitLast() {
+      const last = stacked(), body = last && last.querySelector(".gbody");
+      if (!body || window.innerWidth <= 900) { if (body) body.style.maxHeight = ""; return; }
+      const below = last.getBoundingClientRect().bottom - body.getBoundingClientRect().bottom;   // a legend under the list
+      const room = window.innerHeight - body.getBoundingClientRect().top - window.scrollY - below - 56;
+      body.style.maxHeight = Math.max(360, Math.round(room)) + "px";
+    }
 
     frame(def, h("main", { class: "screen" },
       DATA.path.length ? h("p", { class: "crumb", "aria-label": "화면 분류", text: DATA.path.join(" › ") }) : null,
@@ -765,6 +776,12 @@
       status));
     fitSplit();
     window.addEventListener("resize", fitSplit);
+    fitLast();
+    window.addEventListener("resize", fitLast);
+    if (stacked() && "ResizeObserver" in window) {   // cards above it fill in, a chart lands over the list, a condition wraps
+      const moved = new ResizeObserver(() => fitLast());   // the same top gives the same height, so it settles at once
+      app.querySelectorAll(".screen > .purpose, .screen > .conds, .grids > .panel").forEach(el => moved.observe(el));
+    }
 
     document.addEventListener("keydown", e => {
       if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); search(); }
