@@ -20,7 +20,7 @@ COLORS = {None, "sign", "side", "status", "verdict"}  # verdict: the row's ok fi
 # 셀 표시 유형: how a cell is drawn on top of its value. The value stays; the picture sits next to it.
 #   badge  종목 배지: 이름 첫 글자, 아래에 코드. 색은 코드에서 정해지고 모양은 자산 유형
 #   bar    셀 안 막대: 이 열에서 가장 큰 값 대비 크기
-#   meter  비율 막대: 0~1 값을 %와 막대로
+#   meter  비율 막대: 0~1 값을 %와 막대로 (of가 없으면 막대 끝은 그 목록에서 가장 큰 값)
 #   spark  추세선: 숫자열(오래된 값부터)
 #   pill   상태 표시: 색 규칙이 고른 색의 둥근 표시
 #   steps  진행 단계: 단계마다 점 하나 (끝 · 진행 중 · 멈춤 · 전), 값은 단계별 상태의 목록
