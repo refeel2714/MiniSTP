@@ -192,14 +192,20 @@ def integrity_compared(conn: psycopg.Connection, title: str, calendar, fees,
 def recon_history(conn: psycopg.Connection, date_from: dt.date | None = None, date_to: dt.date | None = None,
                   kind: str = "DAILY_RECON", only_breaks: bool = False,
                   account_id: str = DEFAULT_ACCOUNT) -> Dataset:
-    """One account's 대사 결과 with each break's latest owner judgement next to it (RESOLVED rows are not listed alone)."""
+    """One account's 대사 결과 with each break's latest owner judgement next to it (RESOLVED rows are not listed alone).
+
+    Within a run the rows that need someone come first: a break nobody has judged, then judged breaks, then the
+    matches, so a break of one holding out of a hundred is not lost in the middle. `key_name` names the
+    instrument when the key is a symbol."""
     return _q(conn, """
-        select r.id, r.date, s.kind, s.taken_at, r.item, r.key, r.internal_value, r.broker_value, r.diff,
+        select r.id, r.date, s.kind, s.taken_at, r.item, r.key, i.name as key_name,
+               r.internal_value, r.broker_value, r.diff,
                r.status, r.cause_code,
                j.id as resolved_by, j.cause_code as resolved_cause, j.note as resolved_note,
                j.created_at as resolved_at
           from recon_results r
           join broker_snapshots s on s.snapshot_id = r.run_id
+          left join instruments i on i.symbol = r.key
           left join lateral (select x.id, x.cause_code, x.note, x.created_at from recon_results x
                               where x.supersedes_id = r.id order by x.id desc limit 1) j on true
          where r.status <> 'RESOLVED'
@@ -208,7 +214,7 @@ def recon_history(conn: psycopg.Connection, date_from: dt.date | None = None, da
            and (%(f)s::date is null or r.date >= %(f)s)
            and (%(t)s::date is null or r.date <= %(t)s)
            and (not %(ob)s or r.status = 'BREAK')
-         order by r.date desc, r.run_id desc, r.id""",
+         order by r.date desc, r.run_id desc, (r.status = 'BREAK' and j.id is null) desc, r.status = 'BREAK' desc, r.id""",
               {"kind": kind, "f": date_from, "t": date_to, "ob": only_breaks, "a": account_id})
 
 
@@ -575,10 +581,11 @@ def price_trend_symbols(ledger: Ledger, date_from: dt.date | None = None, date_t
     there is none before it), so a one-day period reads as that day against the day before. `trend` is the
     period's closes, oldest first. `level` is the worst result of the period's checks on the closes themselves
     (pricecheck: tick grid, valuation and NAV at the same close, the price limit): whether a close can be a
-    close, not why the price moved. The period is carried on each row for the detail to use."""
+    close, not why the price moved. The period is carried on each row for the detail to use. The worst level
+    comes first (확인 필요, then 주의, then 정상), by symbol within a level, so a warning is not lost among a hundred."""
     from decimal import Decimal
 
-    from .pricecheck import price_checks, worst
+    from .pricecheck import _RANK, price_checks, worst
     by_symbol: dict[str, list] = {}
     for c in _in_period(price_checks(ledger), date_from, date_to):
         by_symbol.setdefault(c.symbol, []).append(c)
@@ -590,6 +597,7 @@ def price_trend_symbols(ledger: Ledger, date_from: dt.date | None = None, date_t
         rows.append((symbol, inst.name if inst else None, inst.asset_type.value if inst else None, len(mine), base,
                      closes[-1], mine[-1].date, _rate_pct(Decimal(closes[-1]) / base - 1) if base > 0 else None,
                      max(closes), min(closes), closes, worst(c.level for c in mine), date_from, date_to))
+    rows.sort(key=lambda r: -_RANK[r[11]])   # stable: by symbol within a level
     return Dataset(("symbol", "instrument_name", "asset_type", "days", "base_close", "last_close", "last_date",
                     "change", "high", "low", "trend", "level", "date_from", "date_to"), tuple(rows))
 
