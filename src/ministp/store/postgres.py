@@ -120,9 +120,9 @@ class PostgresLedgerStore:
             self.conn.execute(sql)
             with self.conn.cursor() as cur:
                 cur.executemany(
-                    "insert into accounts_chart (code, name, normal_side) values (%s, %s, %s)"
+                    "insert into accounts_chart (code, name, normal_side, in_use) values (%s, %s, %s, %s)"
                     " on conflict (code) do nothing",
-                    [(a.code, a.value[1], a.normal_side) for a in Account])
+                    [(a.code, a.value[1], a.normal_side, a.in_use) for a in Account])
                 cur.executemany(
                     f"insert into {mg.TABLE} (version, name, erd_version, checksum) values (%s, %s, %s, %s)",
                     [(m.version, m.name, m.erd_version, m.checksum) for m in migrations])

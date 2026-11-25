@@ -40,7 +40,7 @@ def test_one_document_per_journal_entry_with_minstp_codes_by_default(conn, broke
     assert r.documents == n_entries and r.debit == r.credit > 0
     fill = [ln for ln in r.lines if "매수 체결" in ln.memo]
     assert fill and fill[0].memo.startswith("매수 체결 069500") and "2주 @80,000" in fill[0].memo
-    assert {ln.erp_code for ln in fill} == {"1100", "5030", "2010"}  # FVPL 주식, 수수료 / 매수미지급금
+    assert {ln.erp_code for ln in fill} == {"1100", "5030", "2010"}  # FVPL 금융자산, 수수료 / 매수미지급금
     assert all(ln.erp_code == ln.ministp_accounts for ln in r.lines)
     seq = int(fill[0].events)
     assert fill[0].doc_no == f"MSTP-{seq}-1" and [ln.line_no for ln in fill] == list(range(1, len(fill) + 1))
@@ -57,7 +57,7 @@ def test_reversal_points_at_the_document_it_reverses(conn):
     for no in docs:                                                 # every document balances after mapping
         lines = [ln for ln in r.lines if ln.doc_no == no]
         assert sum(ln.debit for ln in lines) == sum(ln.credit for ln in lines)
-    assert "1130100" in {ln.erp_code for ln in r.lines}              # mapped: FVPL 주식 → 회사 계정
+    assert "1130100" in {ln.erp_code for ln in r.lines}              # mapped: FVPL 금융자산 → 회사 계정
 
 
 def test_an_unmapped_account_stops_the_export(conn, broker, tmp_path):
@@ -151,7 +151,7 @@ def test_every_entry_of_the_sample_gets_a_memo(conn):
     kinds = {k for (k,) in conn.execute("select distinct kind from journal_entries")}
     assert {"WITHDRAWAL", "ADJUSTMENT"} <= kinds
     assert all(ln.memo and not any(k in ln.memo for k in kinds) for ln in r.lines), {ln.memo for ln in r.lines}
-    assert any(ln.memo.startswith("투자원금 출금") for ln in r.lines)
+    assert any(ln.memo.startswith("본사 자금 출금") for ln in r.lines)
     assert any(ln.memo.startswith("수동 조정 ") and "(조정 1)" in ln.memo for ln in r.lines)
     names = erp._kind_names(conn)
     assert all(names.get(k, k) != k for k in kinds)

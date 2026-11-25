@@ -1,11 +1,12 @@
 -- MiniSTP ledger schema (spec 03).
--- ERD version: 2.12  (bump on every schema change, then run scripts/gen_erd.py) Append-only tables are enforced in the DB,
+-- ERD version: 2.13  (bump on every schema change, then run scripts/gen_erd.py) Append-only tables are enforced in the DB,
 -- not just in application code.
 
 create table if not exists accounts_chart (
     code        text primary key check (code ~ '^[1-5][0-9]{3}$'),   -- 채번 규칙 (스펙 D4): 대분류, 중분류, 순번, 세목
     name        text not null,
-    normal_side char(1) not null check (normal_side in ('D', 'C'))
+    normal_side char(1) not null check (normal_side in ('D', 'C')),
+    in_use      boolean not null default true              -- v2.13: 사용 중지한 계정은 지난 전표만 가리킴
 );
 
 -- v2.0 다계좌 (스펙 D7): 고객 -> 위탁계좌. 계좌번호와 인증키는 DB에 넣지 않는다.
@@ -690,6 +691,24 @@ insert into close_steps (step_code, name, sort_order, in_use, required, screen, 
     ('INTEGRITY', '원장 내부 대사', 9, true, true, 'STP-2110', null, '지금 원장이 이벤트를 다시 계산한 결과와 같은지')
 on conflict (step_code) do nothing;
 
+-- 계정과목표 v2 (ERD v2.13): 사용 중지한 계정으로는 새 분개 줄이 들어가지 않는다.
+create or replace function ministp_account_in_use() returns trigger language plpgsql as $$
+begin
+    if not (select in_use from accounts_chart where code = new.account_code) then
+        raise exception 'account % is retired: no new journal line may use it', new.account_code
+            using errcode = 'check_violation';
+    end if;
+    return new;
+end $$;
+
+do $$
+begin
+    if not exists (select 1 from pg_trigger where tgname = 'journal_lines_account_in_use') then
+        create trigger journal_lines_account_in_use before insert on journal_lines
+            for each row execute function ministp_account_in_use();
+    end if;
+end $$;
+
 -- A code is renamed or switched off, never removed: old rows still carry it.
 create or replace function ministp_guard_codes() returns trigger language plpgsql as $$
 begin
@@ -914,6 +933,7 @@ comment on table accounts_chart is '계정과목';
 comment on column accounts_chart.code is '계정코드';
 comment on column accounts_chart.name is '계정명';
 comment on column accounts_chart.normal_side is '정상잔액 방향 (D 차변 / C 대변)';
+comment on column accounts_chart.in_use is '사용 여부 (사용 중지한 계정은 지난 전표만 가리키고 새 분개에 쓰지 않음)';
 
 comment on table ledger_events is '원장 이벤트 (모든 기록의 원천, 수정·삭제 불가)';
 comment on column ledger_events.seq is '이벤트 순번';

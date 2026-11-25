@@ -81,7 +81,7 @@ def test_the_migration_leaves_the_same_codes_as_a_new_database(conn):
     _restore_v1_1()
     with psycopg.connect(URL, autocommit=True) as old:
         reports = mg.migrate(old)
-        assert [r.migration.version for r in reports] == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12] and all(r.applied for r in reports)
+        assert [r.migration.version for r in reports] == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13] and all(r.applied for r in reports)
         assert _rows(old) == fresh
         assert codes.check(old) == []                              # the codes a real ledger stored all have names
 
@@ -203,12 +203,13 @@ def test_the_code_screen_lists_the_chart_of_accounts_beside_the_common_codes(con
     groups, body = rows("STP4600R01")
     assert body["meta"]["consistent"] is True
     assert (groups[0]["group_id"], groups[0]["name"], groups[0]["store"], groups[0]["codes"]) == (
-        "accounts_chart", "계정과목", "전용 테이블", 18)
+        "accounts_chart", "계정과목", "전용 테이블", 20)
     assert [g["group_id"] for g in groups[1:]] == sorted(g.group_id for g in codes.SEED)
     assert {g["store"] for g in groups[1:]} == {"공통코드"}
 
     chart, _ = rows("STP4600R02", {"group_id": "accounts_chart"})
-    assert chart[0] == {"code": "1010", "name": "예수금", "description": "정상잔액 차변", "in_use": "사용"}
+    assert chart[0] == {"code": "1010", "name": "증권예치금", "description": "정상잔액 차변", "in_use": "사용"}
+    assert next(c for c in chart if c["code"] == "5050")["in_use"] == "사용 중지"          # 계정과목표 v2
     status, _ = rows("STP4600R02", {"group_id": "ACCOUNT_STATUS"})
     assert [(s["code"], s["name"]) for s in status] == [("OPEN", "정상"), ("SUSPENDED", "거래정지"), ("CLOSED", "해지")]
     assert client.post("/api/tx/STP4600R02", json={"params": {"group_id": "NOPE"}}).status_code == 400

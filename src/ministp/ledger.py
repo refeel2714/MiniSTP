@@ -311,13 +311,14 @@ class CashMovement:
 
 
 # R-66: why cash is adjusted, and the account on the other side: (when cash comes in, when it goes out).
-# None: that direction does not exist for the reason. Only INTEREST may carry a withheld tax.
+# None: that direction does not exist for the reason. Only INTEREST may carry a withheld tax, booked as 선납세금
+# (1040, chart v2): a company deducts it from its corporate tax, so it is an asset, not an expense.
 ADJUSTMENT_ACCOUNTS: dict[str, tuple[Account | None, Account | None]] = {
     "INTEREST": (Account.INTEREST_INCOME, None),                    # 예탁금 이용료
     "FEE": (Account.COMMISSION, Account.COMMISSION),                # the broker charged another commission
     "TAX": (Account.TAXES, Account.TAXES),                          # another transaction tax
     "DIVIDEND": (Account.DIVIDEND_INCOME, Account.DIVIDEND_INCOME),  # a dividend paid differs from what was booked
-    "WITHHOLDING": (Account.WITHHOLDING_TAX, Account.WITHHOLDING_TAX),  # another tax withheld from it
+    "WITHHOLDING": (Account.PREPAID_TAX, Account.PREPAID_TAX),      # another tax withheld from it (선납세금, v2)
     "OTHER": (Account.MISC_INCOME, Account.MISC_LOSS),
 }
 
@@ -781,14 +782,14 @@ class Ledger:
                 self._s.dividends[ev.action_id] = Dividend(ev.action_id, ev.symbol, ev.qty, ev.gross, ev.date)
                 self._s.journal.append(entry(ev.date, "DIVIDEND_ACCRUAL", dividend_ref(ev.action_id),
                                              Dr(Account.DIVIDEND_RECEIVABLE, ev.gross),
-                                             Cr(Account.DIVIDEND_INCOME, ev.gross)))   # R-57
+                                             Cr(self.income_account(ev.symbol), ev.gross)))   # R-57
             case DividendPaymentEvent():
                 self._apply_dividend_payment(ev)
             case DividendCancelEvent():
                 d = self._s.dividends[ev.action_id]
                 self._s.dividends[ev.action_id] = replace(d, canceled_on=ev.date)
                 self._s.journal.append(entry(ev.date, "DIVIDEND_CANCEL", dividend_ref(ev.action_id),
-                                             Dr(Account.DIVIDEND_INCOME, d.accrued),
+                                             Dr(self.income_account(d.symbol), d.accrued),
                                              Cr(Account.DIVIDEND_RECEIVABLE, d.accrued)))
             case AdjustmentEvent():
                 self._apply_adjustment(ev)
@@ -804,22 +805,28 @@ class Ledger:
                 self._s.closed_days[ev.date] = self._s.last_nav_row
                 self._s.closed_at = len(self._events) + 1   # this event is appended right after it is applied
 
+    def income_account(self, symbol: str) -> Account:
+        """Chart v2: an ETF pays a distribution (분배금수익 4050), a share a dividend (배당금수익 4030)."""
+        inst = self.instruments.get(symbol)
+        return Account.DISTRIBUTION_INCOME if inst is not None and inst.asset_type.value == "ETF" else Account.DIVIDEND_INCOME
+
     def _apply_dividend_payment(self, ev: DividendPaymentEvent) -> None:
         d = self._s.dividends.get(ev.action_id) or Dividend(ev.action_id, ev.symbol)
         if d.status != "ACCRUED" and ev.action_id in self._s.dividends:
             raise DividendError(f"corporate action {ev.action_id} is already {d.status}")
         more = ev.gross - d.accrued   # paid more (or less) than recognised: the income follows the payment
         self._s.dividends[ev.action_id] = replace(d, paid_gross=ev.gross, tax=ev.tax, paid_on=ev.date)
+        income = self.income_account(ev.symbol)
         self._s.journal.append(entry(ev.date, "DIVIDEND", dividend_ref(ev.action_id),
-                                     Dr(Account.CASH, ev.gross - ev.tax), Dr(Account.WITHHOLDING_TAX, ev.tax),
+                                     Dr(Account.CASH, ev.gross - ev.tax), Dr(Account.PREPAID_TAX, ev.tax),
                                      Cr(Account.DIVIDEND_RECEIVABLE, d.accrued),
-                                     Cr(Account.DIVIDEND_INCOME, max(more, 0)),
-                                     Dr(Account.DIVIDEND_INCOME, max(-more, 0))))   # R-57, R-23
+                                     Cr(income, max(more, 0)),
+                                     Dr(income, max(-more, 0))))   # R-57, R-23
 
     def _apply_adjustment(self, ev: AdjustmentEvent) -> None:
         income, expense = ADJUSTMENT_ACCOUNTS[ev.reason]
         if ev.amount > 0:   # cash in: what is withheld never arrives
-            lines = (Dr(Account.CASH, ev.amount - ev.tax), Dr(Account.WITHHOLDING_TAX, ev.tax), Cr(income, ev.amount))
+            lines = (Dr(Account.CASH, ev.amount - ev.tax), Dr(Account.PREPAID_TAX, ev.tax), Cr(income, ev.amount))
         else:
             lines = (Dr(expense, -ev.amount), Cr(Account.CASH, -ev.amount))
         e = entry(ev.date, "ADJUSTMENT", adjustment_ref(ev.adjustment_id), *lines)

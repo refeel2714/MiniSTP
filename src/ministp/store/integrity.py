@@ -38,6 +38,8 @@ CLOSED_DAY_TRIGGERS = ("journal_entries_closed_day", "cash_ledger_closed_day", "
 AUDIT_CHAIN_TRIGGER = "audit_log_chain"   # numbers, stamps and links each audit row (ERD v2.3)
 APPROVAL_FLOW_TRIGGER = "order_approvals_flow"   # 결재 순서와 셀프 승인 표시 (ERD v2.9, R-100)
 APPROVAL_TRIGGERS = (APPROVAL_FLOW_TRIGGER, "order_request_lines_fixed", "order_sends_flow")
+# 같은 전표 두 번 막기 (v2.11), 단계 기준 보호 (v2.12), 사용 중지 계정 막기 (v2.13).
+LATER_TRIGGERS = ("erp_export_docs_once", "close_steps_guard", "journal_lines_account_in_use")
 SHOWN = 3   # how many differing items a detail line names
 
 
@@ -76,12 +78,12 @@ def check_guards(conn: psycopg.Connection) -> Check:
         " join pg_namespace n on n.oid = c.relnamespace"
         " where n.nspname = current_schema() and not t.tgisinternal") if enabled in ("O", "A")}
     want = [f"{t}_{kind}" for t in APPEND_ONLY_TABLES for kind in ("append_only", "no_truncate")]
-    want += BALANCE_TRIGGERS + CLOSED_DAY_TRIGGERS + (AUDIT_CHAIN_TRIGGER,) + APPROVAL_TRIGGERS
+    want += BALANCE_TRIGGERS + CLOSED_DAY_TRIGGERS + (AUDIT_CHAIN_TRIGGER,) + APPROVAL_TRIGGERS + LATER_TRIGGERS
     off = [w for w in want if w not in live]
     if off:
         return Check("guards", "수정·삭제 방지", False, f"꺼져 있거나 없는 트리거: {_some(off)}")
     return Check("guards", "수정·삭제 방지", True,
-                 f"{len(APPEND_ONLY_TABLES)}개 테이블의 수정·삭제·비우기 금지, 분개 대차 검사, 마감일 잠금, 감사 로그 사슬, 결재 순서가 켜져 있음")
+                 f"{len(APPEND_ONLY_TABLES)}개 테이블의 수정·삭제·비우기 금지, 분개 대차 검사, 마감일 잠금, 감사 로그 사슬, 결재 순서, ERP 중복 차단, 사용 중지 계정 막기가 켜져 있음")
 
 
 def check_balanced(conn: psycopg.Connection) -> Check:

@@ -86,7 +86,7 @@ def test_code_buttons_refuse_what_the_command_refuses_and_write_nothing(press, c
         status, said = press(tx, **params)
         assert status == 400 and problem in said, (tx, params, said)
     assert conn.execute("select count(*), max(updated_at) from common_codes").fetchone() == before
-    assert conn.execute("select name from accounts_chart where code = '1010'").fetchone()[0] == "예수금"
+    assert conn.execute("select name from accounts_chart where code = '1010'").fetchone()[0] == "증권예치금"
     assert conn.execute("select count(*) from code_groups").fetchone()[0] == 35
 
 

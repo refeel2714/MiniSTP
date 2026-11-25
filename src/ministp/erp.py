@@ -41,7 +41,7 @@ UNITS = {"entry": "ENTRY", "day": "DAY"}          # erp_exports.unit (공통코�
 EXPORT_STATUSES = ("EXPORTED", "VOIDED")          # erp_exports_v.status (공통코드 ERP_EXPORT_STATUS)
 HEADER = ["회사코드", "전표유형", "증빙번호", "전표일자", "통화", "줄번호", "계정코드", "계정명", "차변", "대변", "적요",
           "계좌", "계좌명", "종목코드", "MiniSTP계정", "원장이벤트", "반대전표대상"]
-KIND_NAMES = {"DEPOSIT": "투자원금 입금", "OPENING": "기초 보유", "EXECUTION": "체결", "SETTLEMENT": "결제",
+KIND_NAMES = {"DEPOSIT": "본사 자금 입금", "OPENING": "기초 보유", "EXECUTION": "체결", "SETTLEMENT": "결제",
               "VALUATION": "공정가치 평가", "VALUATION_REVERSAL": "전일 평가 역분개",
               "LATE_EXECUTION": "마감 후 체결", "DIVIDEND_ACCRUAL": "배당 인식", "DIVIDEND": "배당 입금",
               "DIVIDEND_CANCEL": "배당 인식 취소", "WITHDRAWAL": "출금", "TRANSFER_OUT": "대체 출금",
@@ -203,13 +203,13 @@ def _memos(conn: psycopg.Connection, seqs: set[int]) -> dict[int, str]:
             what = f"{SIDE_NAMES.get(f['side'], f['side'])} 결제 {stock(f['symbol'])} {f['qty']:,}주" if f else "결제"
             out[seq] = f"{what} (체결 {p['exec_id']})"
         elif t == "DepositEvent":
-            out[seq] = "투자원금 입금"
+            out[seq] = "본사 자금 입금"
         elif t == "OpeningPositionEvent":
             out[seq] = f"기초 보유 {stock(p['symbol'])} {p['qty']:,}주"
         elif t in ("NavEvent", "RevaluationEvent"):
             out[seq] = f"{p['date']} 종가 공정가치 평가"
         elif t == "WithdrawalEvent":
-            out[seq] = "투자원금 출금"
+            out[seq] = "본사 자금 출금"
         elif t == "TransferOutEvent":
             out[seq] = f"계좌 대체 출금 → {p['to_account']} (대체 {p['transfer_id']})"
         elif t == "TransferInEvent":
