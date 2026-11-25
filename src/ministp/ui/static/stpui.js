@@ -1046,6 +1046,7 @@
     // 구성 지도: a tile a row. The area is the row's share of the size column, the colour is the tone
     // column against the size (+ red, - blue, deeper the further from zero; no value = hatched).
     // Tiles are the rows: a click picks the row, a double click or Enter moves on like a table row.
+    const MAP_TILES = 40, MAP_MIN = 0.005;   // at most 40 tiles, and none under 0.5% of the whole
     const mapWatch = window.ResizeObserver ? new ResizeObserver(() => placeTiles()) : null;
     function squarify(items, x, y, w, hgt) {          // items: [{ v }] largest first; gives each x, y, w, h in px
       const total = items.reduce((a, it) => a + it.v, 0);
@@ -1071,7 +1072,11 @@
       const box = body.querySelector(".tmap");
       if (!box || !box.clientWidth) return;
       const tiles = [...box.children].map(el => ({ el, v: Number(el.dataset.v) }));
-      squarify(tiles, 0, 0, box.clientWidth, box.clientHeight);
+      const rest = tiles.find(t => t.el.classList.contains("rest"));   // 나머지 runs down the right edge, its width its share
+      const W = box.clientWidth, H = box.clientHeight;
+      const rw = rest ? Math.round(W * rest.v / tiles.reduce((a, t) => a + t.v, 0)) : 0;
+      if (rest) Object.assign(rest, { x: W - rw, y: 0, w: rw, h: H });
+      squarify(tiles.filter(t => t !== rest), 0, 0, W - rw, H);
       for (const t of tiles) {
         t.el.style.left = t.x + "px"; t.el.style.top = t.y + "px";
         t.el.style.width = Math.max(0, t.w - 2) + "px"; t.el.style.height = Math.max(0, t.h - 2) + "px";
@@ -1082,9 +1087,14 @@
     function renderMap() {
       const m = g.map, col = n => g.columns.find(c => c.name === n);
       const size = col(m.size), toneCol = m.tone ? col(m.tone) : null;
-      const sized = view.map((r, i) => ({ r, i, v: Number(r[m.size]) || 0 })).filter(x => x.v > 0).sort((a, b) => b.v - a.v);
-      if (!sized.length) return body.replaceChildren(h("div", { class: "empty", text: rows.length ? `${size.label}이 있는 행이 없어요` : "조회된 내역이 없어요" }));
-      const total = sized.reduce((a, x) => a + x.v, 0);
+      const all = view.map((r, i) => ({ r, i, v: Number(r[m.size]) || 0 })).filter(x => x.v > 0).sort((a, b) => b.v - a.v);
+      if (!all.length) return body.replaceChildren(h("div", { class: "empty", text: rows.length ? `${size.label}이 있는 행이 없어요` : "조회된 내역이 없어요" }));
+      const total = all.reduce((a, x) => a + x.v, 0);
+      // A hundred holdings make a tail of tiles too small for a name. The largest ones keep a tile each (up to
+      // MAP_TILES, and only while a tile is at least MAP_MIN of the whole); the rest share one 나머지 tile.
+      let cut = all.findIndex((x, k) => k >= MAP_TILES || x.v / total < MAP_MIN);
+      if (cut < 0 || all.length - cut < 2) cut = all.length;
+      const sized = all.slice(0, cut), tail = all.slice(cut);
       const box = h("div", { class: "tmap", role: "listbox", "aria-label": `${g.title} 구성 지도`, tabindex: "0",
         onkeydown: e => {
           const step = { ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1 }[e.key];
@@ -1106,12 +1116,26 @@
             toneCol ? h("span", { class: "ttone", text: known ? `${Number(t) > 0 ? "+" : ""}${fmt(t, toneCol.format)} (${ratio > 0 ? "+" : ""}${pf.format(ratio)})` : "평가 전" }) : null);
           el.style.setProperty("--k", (known ? 10 + 38 * Math.min(1, Math.abs(ratio) / 0.08) : 0).toFixed(1) + "%");   // full depth at 8%
           return el;
-        }));
+        }), tail.length ? restTile() : null);
+      function restTile() {   // not a row: a double click shows them all in the table
+        const v = tail.reduce((a, x) => a + x.v, 0), share = pf.format(v / total);
+        const tones = toneCol ? tail.map(x => x.r[m.tone]) : [];
+        const t = toneCol && tones.every(x => x !== null && x !== undefined) ? tones.reduce((a, x) => a + Number(x), 0) : null;
+        const lines = [`나머지 ${nf.format(tail.length)}건`, `${size.label} ${fmt(v, size.format)} (${share})`];
+        if (t !== null) lines.push(`${toneCol.label} ${t > 0 ? "+" : ""}${fmt(t, toneCol.format)}`);
+        lines.push("두 번 누르면 표로 모두 보여요");
+        return h("div", { class: "mtile rest", "data-v": v, title: lines.join("\n"), "aria-label": lines.join(", "),
+          ondblclick: () => modes && modes.find(b => b.dataset.m === "grid")?.click() },
+          h("b", { text: `나머지 ${nf.format(tail.length)}건` }), h("span", { class: "tshare", text: share }),
+          h("span", { class: "tsize", text: fmt(v, size.format) }),
+          t !== null ? h("span", { class: "ttone", text: `${t > 0 ? "+" : ""}${fmt(t, toneCol.format)}` }) : null);
+      }
       body.replaceChildren(h("div", { class: "tmapbox" }, box,
         h("div", { class: "tlegend" }, h("span", { text: `면적 ${size.label}` }),
           toneCol ? [h("span", { text: `색 ${toneCol.label}` }), h("span", { class: "lg up", text: "이익" }), h("span", { class: "lg down", text: "손실" }),
-            sized.some(x => x.r[m.tone] === null || x.r[m.tone] === undefined) ? h("span", { class: "lg none", text: "값 없음" }) : null] : null,
-          sized.length < rows.length ? h("span", { text: `${size.label}이 없는 ${rows.length - sized.length}건은 그리지 않았어요` }) : null)));
+            all.some(x => x.r[m.tone] === null || x.r[m.tone] === undefined) ? h("span", { class: "lg none", text: "값 없음" }) : null] : null,
+          all.length < rows.length ? h("span", { text: `${size.label}이 없는 ${rows.length - all.length}건은 그리지 않았어요` }) : null,
+          tail.length ? h("span", { text: `작은 ${nf.format(tail.length)}건은 "나머지" 한 칸으로 묶었어요` }) : null)));
       if (mapWatch) { mapWatch.disconnect(); mapWatch.observe(box); }
       placeTiles();
     }
