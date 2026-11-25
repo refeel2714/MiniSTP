@@ -79,6 +79,16 @@ def test_recon_history_shows_judgement_next_to_the_break(conn, broker):
     assert len(recon_history(conn, kind="INTRADAY_RECON")) == 0
 
 
+def test_recon_history_puts_the_breaks_of_a_day_first_and_names_the_symbol(conn, broker):
+    _a_day(conn, broker)
+    rows = recon_history(conn, DAY, DAY).records()
+    status = [r["status"] for r in rows]
+    assert status == sorted(status, key=lambda s: s != "BREAK") and status[-1] == "MATCH"
+    named = {r["key"]: r["key_name"] for r in rows if r["item"] == "POSITION_QTY"}
+    assert named and all(named.values())                                    # a symbol key carries its name
+    assert all(r["key_name"] is None for r in rows if r["item"].startswith("CASH"))
+
+
 def test_recon_calendar_reads_each_day_the_way_the_gate_does(conn, broker):
     _a_day(conn, broker)                           # 11-20 (금): 불일치 둘, 둘 다 판단함
     late = D("2026-11-24")
