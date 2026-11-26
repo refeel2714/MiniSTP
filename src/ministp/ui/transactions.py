@@ -438,6 +438,21 @@ def _customer_accounts(c: TxContext, p) -> TxResult:
     return TxResult({"main": q.customer_accounts(c.conn, p["customer_id"])})
 
 
+def _code_groups(c: TxContext, p) -> TxResult:
+    """Every code group, and whether the code table still agrees with the schema and the program."""
+    from .. import codes
+    return TxResult({"main": q.code_group_list(c.conn)}, {"consistent": not codes.check(c.conn)})
+
+
+def _codes(c: TxContext, p) -> TxResult:
+    if not p.get("group_id"):
+        raise TxError("코드 그룹이 필요해요")
+    try:
+        return TxResult({"main": q.code_list(c.conn, p["group_id"])})
+    except KeyError:
+        raise TxError(f"없는 코드 그룹이에요: {p['group_id']}") from None
+
+
 TRANSACTIONS: dict[str, Tx] = {t.tx_id: t for t in [
     Tx("STP1100R01", "종목별 보유", {"day": "date"}, _holdings),
     Tx("STP1100R02", "예수금·주문가능금액", {}, _cash),
@@ -487,6 +502,8 @@ TRANSACTIONS: dict[str, Tx] = {t.tx_id: t for t in [
     Tx("STP1400R01", "고객 목록", {}, _customers),
     Tx("STP1400R02", "고객 보유 합산", {"customer_id": "text"}, _customer_positions),
     Tx("STP1400R03", "고객의 계좌", {"customer_id": "text"}, _customer_accounts),
+    Tx("STP4600R01", "코드 그룹 목록", {}, _code_groups),
+    Tx("STP4600R02", "그룹의 코드", {"group_id": "text"}, _codes),
 ]}
 
 

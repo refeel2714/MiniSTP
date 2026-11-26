@@ -10,6 +10,7 @@
     python -m ministp resolve 12 FEE_DIFF "메모"   # 불일치 판단 기록 (새 행으로 추가)
     python -m ministp sample-db                   # 데모용 샘플 DB(ministp_sample) 만들기, 운영 DB와 별개
     python -m ministp account list                # 계좌 목록. open/run/order/daily/status는 --account 계좌ID
+    python -m ministp code list                   # 공통코드 그룹. code list 그룹ID는 그 그룹의 코드와 코드명
     python -m ministp master fetch                # 시장 전체 종목정보(KIS 마스터 파일) 받아 두기, 키 필요 없음
     python -m ministp master check                # 받은 종목정보 점검: 전일 대비, 등록 종목, 기준가 대조 (읽기 전용)
     python -m ministp erp export --from 2026-11-18  # 분개를 ERP 일반전표 업로드 CSV로 (읽기 전용)
@@ -191,6 +192,23 @@ def run(argv, *, environ=os.environ, client_factory=KisClient, connect=psycopg.c
     q.add_argument("account_id", metavar="계좌ID"), q.add_argument("status", choices=list(STATUSES))
     q.add_argument("reason", metavar="사유")
     q.add_argument("--from", dest="effective_from", type=dt.date.fromisoformat, help="적용 시작일 (기본 오늘)")
+    p = sub.add_parser("code", help="공통코드: 코드와 코드명 보기, 코드명 바꾸기, 스키마·프로그램과 대조")
+    what = p.add_subparsers(dest="what", required=True)
+    q = what.add_parser("list", help="코드 그룹 목록. 그룹ID를 주면 그 그룹의 코드")
+    q.add_argument("group_id", nargs="?", metavar="그룹ID")
+    q = what.add_parser("rename", help="코드명 바꾸기 (코드 자체는 바뀌지 않아요)")
+    q.add_argument("group_id", metavar="그룹ID"), q.add_argument("code", metavar="코드")
+    q.add_argument("name", metavar="코드명"), q.add_argument("--desc", metavar="설명")
+    q = what.add_parser("group-add", help="운영자가 관리하는 코드 그룹 만들기")
+    q.add_argument("group_id", metavar="그룹ID"), q.add_argument("name", metavar="그룹명")
+    q.add_argument("--desc", default="", metavar="설명")
+    q = what.add_parser("add", help="운영자가 관리하는 그룹에 코드 추가")
+    q.add_argument("group_id", metavar="그룹ID"), q.add_argument("code", metavar="코드")
+    q.add_argument("name", metavar="코드명"), q.add_argument("--desc", default="", metavar="설명")
+    q = what.add_parser("use", help="코드 끄기·켜기 (지우지는 않아요)")
+    q.add_argument("group_id", metavar="그룹ID"), q.add_argument("code", metavar="코드")
+    q.add_argument("state", choices=["on", "off"])
+    what.add_parser("check", help="공통코드가 스키마 제약, 프로그램, 저장된 값과 어긋나지 않는지 점검")
     p = sub.add_parser("resolve")
     p.add_argument("result_id", type=int), p.add_argument("cause", choices=[c.value for c in Cause])
     p.add_argument("note")
@@ -295,8 +313,13 @@ def run(argv, *, environ=os.environ, client_factory=KisClient, connect=psycopg.c
                 return 0
 
             if args.cmd in ("open", "order", "cancel", "daily", "run", "resolve", "customer") or (
-                    args.cmd == "account" and args.what != "list"):
+                    args.cmd == "account" and args.what != "list") or (
+                    args.cmd == "code" and args.what not in ("list", "check")):
                 acquire_writer(conn)
+
+            if args.cmd == "code":
+                require_current_schema(conn)
+                return _codes(conn, args)
 
             if args.cmd in ("customer", "account"):
                 require_current_schema(conn)
@@ -516,6 +539,45 @@ def _accounts(conn, args, today: dt.date) -> int:
             " (select balance from cash_balance_v where account_id = %(a)s)", {"a": a.account_id}).fetchone()
         print(f"{a.account_id} {a.alias}: 고객 {a.customer_id}, {a.broker} {a.env}, {a.status} ({a.status_from}부터), "
               f"이벤트 {n:,}건, 예수금 {int(cash):,}원, 환경변수 {a.env_prefix}_*")
+    return 0
+
+
+def _codes(conn, args) -> int:
+    """`code list | rename | group-add | add | use | check`."""
+    from . import codes
+    if args.what == "rename":
+        old = codes.rename(conn, args.group_id, args.code, args.name, args.desc)
+        print(f"코드명 변경: {args.group_id} {args.code} '{old}' → '{args.name}'. 코드와 이미 저장된 값은 그대로예요.")
+        return 0
+    if args.what == "group-add":
+        codes.add_group(conn, args.group_id, args.name, args.desc)
+        print(f"코드 그룹 등록: {args.group_id} {args.name}. code add {args.group_id} 코드 코드명 으로 코드를 넣어요.")
+        return 0
+    if args.what == "add":
+        codes.add_code(conn, args.group_id, args.code, args.name, args.desc)
+        print(f"코드 등록: {args.group_id} {args.code} {args.name}")
+        return 0
+    if args.what == "use":
+        codes.set_in_use(conn, args.group_id, args.code, args.state == "on")
+        print(f"{args.group_id} {args.code}: {'사용' if args.state == 'on' else '사용 안 함'}. 코드는 지우지 않아요.")
+        return 0
+    if args.what == "check":
+        problems = codes.check(conn)
+        for line in problems:
+            print(f"  문제  {line}")
+        groups = codes.list_groups(conn)
+        if not problems:
+            print(f"공통코드 {len(groups)}개 그룹, 코드 {sum(g[5] + g[6] for g in groups)}개가 "
+                  "스키마 제약, 프로그램, 저장된 값과 어긋나지 않아요.")
+        return 1 if problems else 0
+    if args.group_id:
+        for code, name, desc, in_use in codes.list_codes(conn, args.group_id):
+            print(f"{code}  {name}" + (f"  ({desc})" if desc else "") + ("" if in_use else "  [사용 안 함]"))
+        return 0
+    for gid, name, _, used_by, fixed, on, off in codes.list_groups(conn):
+        print(f"{gid}  {name}: 코드 {on}개" + (f" (끈 코드 {off}개)" if off else "")
+              + (f", 쓰는 곳 {used_by}" if used_by else "") + ("" if fixed else ", 운영자 관리"))
+    print("계정과목은 원장이 직접 참조하는 코드라서 전용 테이블(accounts_chart)에 있어요.")
     return 0
 
 

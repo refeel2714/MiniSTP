@@ -966,6 +966,43 @@ def customer_accounts(conn: psycopg.Connection, customer_id: str) -> Dataset:
          order by t.account_id""", (customer_id,))
 
 
+# ---------- STP-4600 코드 조회 (조회 전용) ----------
+# Every coded value in one place: 계정과목 from its own table (the ledger references it),
+# everything else from the common code tables.
+
+CHART_GROUP = "accounts_chart"
+
+
+def code_group_list(conn: psycopg.Connection) -> Dataset:
+    """코드 그룹: 계정과목(전용 테이블)과 공통코드 그룹."""
+    return _q(conn, """
+        select %s as group_id, '계정과목' as name, '전용 테이블' as store, count(*) as codes,
+               'journal_lines.account_code' as used_by, 0 as rank
+          from accounts_chart
+        union all
+        select g.group_id, g.name, case when g.fixed then '공통코드' else '공통코드 (운영자 관리)' end,
+               count(c.code), g.used_by, 1
+          from code_groups g left join common_codes c using (group_id)
+         group by g.group_id
+         order by rank, group_id""", (CHART_GROUP,))
+
+
+def code_list(conn: psycopg.Connection, group_id: str) -> Dataset:
+    """One group's codes and names. 계정과목 comes from `accounts_chart` with its normal side named."""
+    if group_id == CHART_GROUP:
+        return _q(conn, """
+            select a.code, a.name, '정상잔액 ' || coalesce(n.name, a.normal_side) as description, '사용' as in_use
+              from accounts_chart a
+              left join common_codes n on n.group_id = 'NORMAL_SIDE' and n.code = a.normal_side
+             order by a.code""")
+    if conn.execute("select 1 from code_groups where group_id = %s", (group_id,)).fetchone() is None:
+        raise KeyError(group_id)
+    return _q(conn, """
+        select code, name, description, case when in_use then '사용' else '사용 안 함' end as in_use
+          from common_codes where group_id = %s
+         order by sort_order, code""", (group_id,))
+
+
 # ---------- STP-4100 종목정보 · STP-4300 거래 기준 (기준정보, 조회 전용) ----------
 # Reference data as the system really uses it: instruments from the DB, fee rates,
 # settlement rules, tick sizes and the holiday calendar from the objects the

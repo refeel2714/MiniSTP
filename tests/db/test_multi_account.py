@@ -111,18 +111,20 @@ def test_the_fixture_is_a_v1_1_database_with_a_ledger(old):
 
 def test_rehearsal_on_v1_1_passes_and_leaves_no_trace(old):
     before, shape = mg.fingerprint(old), _shape(old)
-    (report,) = mg.migrate(old, dry_run=True)
+    report, *later = mg.migrate(old, dry_run=True)
     assert not report.applied and report.migration.erd_version == "2.0"
     assert sorted(t.table for t in report.kept) == V1_TABLES and all(t.unchanged for t in report.kept)
     assert sorted(t.table for t in report.tables if t.rows_before is None) == sorted(NEW_TABLES)
+    assert [r.migration.erd_version for r in later] == ["2.1"] and not any(r.applied for r in later)
     assert mg.fingerprint(old) == before and _shape(old) == shape
     assert not mg._has_table(old, mg.TABLE)
 
 
 def test_applying_keeps_every_row_and_puts_the_ledger_in_the_default_account(old):
     before = mg.fingerprint(old)
-    (report,) = mg.migrate(old)
+    report, *later = mg.migrate(old)
     assert report.applied and all(t.unchanged for t in report.kept)
+    assert all(r.applied and all(t.unchanged for t in r.kept) for r in later)   # 0002 공통코드: new tables only
     assert mg.fingerprint(old, like=before) == before            # same rows over the v1.1 columns
     for t in WITH_ACCOUNT:
         assert old.execute(f"select distinct account_id from {t}").fetchall() == [(DEFAULT_ACCOUNT,)], t
@@ -130,7 +132,7 @@ def test_applying_keeps_every_row_and_puts_the_ledger_in_the_default_account(old
                        " from trading_accounts").fetchall() == [("C0001", "KIS", "PAPER", "GENERAL", "KIS", FIRST_DAY)]
     assert old.execute("select account_id, customer_id, status, effective_from from account_status_v").fetchall() == [
         (DEFAULT_ACCOUNT, "C0001", "OPEN", FIRST_DAY)]
-    assert list(mg.applied(old)) == [1] and mg.migrate(old) == []
+    assert list(mg.applied(old)) == [1, 2] and mg.migrate(old) == []
     checks = _report(old)
     assert all(c.ok for c in checks), [c for c in checks if not c.ok]
 

@@ -1,5 +1,5 @@
 -- MiniSTP ledger schema (spec 03).
--- ERD version: 2.0  (bump on every schema change, then run scripts/gen_erd.py) Append-only tables are enforced in the DB,
+-- ERD version: 2.1  (bump on every schema change, then run scripts/gen_erd.py) Append-only tables are enforced in the DB,
 -- not just in application code.
 
 create table if not exists accounts_chart (
@@ -161,6 +161,27 @@ create table if not exists recon_results (
         foreign key (run_id, account_id) references broker_snapshots (snapshot_id, account_id)
 );
 
+-- 공통코드 (v2.1): 코드와 코드명. 원장이 직접 참조하는 코드(계정과목)는 전용 테이블에 둔다.
+create table if not exists code_groups (
+    group_id    text primary key check (group_id ~ '^[A-Z][A-Z0-9_]{1,39}$'),
+    name        text not null check (name <> ''),
+    description text,
+    used_by     text,
+    fixed       boolean not null default true,
+    created_at  timestamptz not null default now()
+);
+
+create table if not exists common_codes (
+    group_id    text not null references code_groups (group_id),
+    code        text not null check (code <> ''),
+    name        text not null check (name <> ''),
+    description text,
+    sort_order  integer not null default 0,
+    in_use      boolean not null default true,
+    updated_at  timestamptz not null default now(),
+    primary key (group_id, code)
+);
+
 -- R-04: no UPDATE / DELETE / TRUNCATE on ledger tables.
 create or replace function ministp_forbid_change() returns trigger language plpgsql as $$
 begin
@@ -205,6 +226,36 @@ begin
         create constraint trigger journal_lines_balanced after insert on journal_lines
             deferrable initially deferred for each row execute function ministp_check_entry_balance();
     end if;
+end $$;
+
+-- A code is renamed or switched off, never removed: old rows still carry it.
+create or replace function ministp_guard_codes() returns trigger language plpgsql as $$
+begin
+    if tg_op = 'UPDATE' and tg_table_name = 'common_codes' then
+        if new.group_id = old.group_id and new.code = old.code then
+            new.updated_at := now();
+            return new;
+        end if;
+    elsif tg_op = 'UPDATE' then
+        if new.group_id = old.group_id and new.fixed = old.fixed then
+            return new;
+        end if;
+    end if;
+    raise exception 'code table %: % is not allowed (a code is renamed or switched off, never removed)',
+        tg_table_name, tg_op using errcode = 'insufficient_privilege';
+end $$;
+
+do $$
+declare t text;
+begin
+    foreach t in array array['code_groups', 'common_codes'] loop
+        if not exists (select 1 from pg_trigger where tgname = t || '_guard') then
+            execute format('create trigger %I before update or delete on %I
+                            for each row execute function ministp_guard_codes()', t || '_guard', t);
+            execute format('create trigger %I before truncate on %I
+                            for each statement execute function ministp_guard_codes()', t || '_no_truncate', t);
+        end if;
+    end loop;
 end $$;
 
 create or replace view account_balances_v as
@@ -390,6 +441,23 @@ comment on column customer_positions_v.customer_id is '고객 ID';
 comment on column customer_positions_v.symbol is '종목코드';
 comment on column customer_positions_v.qty is '보유수량';
 comment on column customer_positions_v.book_cost is '장부금액 (매입금액)';
+
+comment on table code_groups is '공통코드 그룹';
+comment on column code_groups.group_id is '코드 그룹 ID';
+comment on column code_groups.name is '코드 그룹명';
+comment on column code_groups.description is '코드 그룹 설명';
+comment on column code_groups.used_by is '쓰는 곳 (이 코드를 저장하는 테이블.컬럼)';
+comment on column code_groups.fixed is '코드 고정 여부 (프로그램이 정한 코드는 이름만 바꿀 수 있음)';
+comment on column code_groups.created_at is '등록 시각';
+
+comment on table common_codes is '공통코드 (코드와 코드명)';
+comment on column common_codes.group_id is '코드 그룹 ID';
+comment on column common_codes.code is '코드';
+comment on column common_codes.name is '코드명';
+comment on column common_codes.description is '코드 설명';
+comment on column common_codes.sort_order is '표시 순서';
+comment on column common_codes.in_use is '사용 여부';
+comment on column common_codes.updated_at is '수정 시각';
 
 -- 마이그레이션 적용 기록. 새 DB는 이 스키마로 만들어지면서 그때까지의 마이그레이션이 적용된 것으로 기록된다.
 create table if not exists schema_migrations (
