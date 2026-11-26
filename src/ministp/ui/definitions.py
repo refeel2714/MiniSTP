@@ -216,6 +216,7 @@ def load_lookups(path=None) -> dict[str, Lookup]:
 class MenuGroup:
     id: str                     # 중분류: two digits, the first is its 대분류
     name: str
+    first: tuple[str, ...] = ()  # screens shown first, in this order (the rest follow in number order)
 
 
 @dataclass(frozen=True)
@@ -231,7 +232,7 @@ def load_menu(path=None) -> list[MenuArea]:
     raw = yaml.safe_load(f.read_text(encoding="utf-8")) or []
     try:
         return [MenuArea(str(a["id"]), a["name"], a.get("note", ""),
-                         tuple(MenuGroup(str(g["id"]), g["name"]) for g in a["groups"])) for a in raw]
+                         tuple(MenuGroup(str(g["id"]), g["name"], tuple(g.get("first", ()))) for g in a["groups"])) for a in raw]
     except (KeyError, TypeError) as e:
         raise DefinitionError(f"menu.yaml: 형식 오류 {e}") from e
 
@@ -260,16 +261,25 @@ def menu_problems(menu: list[MenuArea], screens: dict[str, Screen]) -> list[str]
             errs.append(f"{s.id} {s.title}: 중분류 {digits[:2]}가 menu.yaml에 없어요")
         used.add(digits[:2])
     errs += [f"menu.yaml: 중분류 {g.id} {g.name}에 화면이 없어요" for a in menu for g in a.groups if g.id not in used]
+    errs += [f"menu.yaml: 중분류 {g.id}의 first에 적은 {sid}는 그 중분류의 화면이 아니에요"
+             for a in menu for g in a.groups for sid in g.first
+             if sid not in screens or sid.removeprefix("STP-")[:2] != g.id]
     return errs
 
 
 def menu_tree(menu: list[MenuArea], screens: dict[str, Screen]) -> list[dict]:
-    """대분류 → 중분류 → 화면, in number order: what the left menu, the home page and the index doc draw."""
+    """대분류 → 중분류 → 화면 in menu.yaml's order (a group's `first` screens, then the rest in number order):
+    what the left menu, the home page and the index doc draw."""
     by_group: dict[str, list[dict]] = {}
     for s in sorted(screens.values(), key=lambda s: s.id):
         by_group.setdefault(s.id.removeprefix("STP-")[:2], []).append({"id": s.id, "title": s.title})
+
+    def ordered(g: MenuGroup) -> list[dict]:
+        listed = by_group.get(g.id, [])
+        rank = {sid: i for i, sid in enumerate(g.first)}
+        return sorted(listed, key=lambda x: (rank.get(x["id"], len(rank)), x["id"]))
     return [{"id": a.id, "name": a.name, "note": a.note,
-             "groups": [{"id": g.id, "name": g.name, "screens": by_group.get(g.id, [])} for g in a.groups]}
+             "groups": [{"id": g.id, "name": g.name, "screens": ordered(g)} for g in a.groups]}
             for a in menu]
 
 

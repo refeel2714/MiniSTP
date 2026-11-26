@@ -106,7 +106,7 @@ def test_every_page_carries_the_menu_tree_and_a_screen_its_place_in_it(client, c
                                     client.get(path).text, re.S).group(1))
     home, page = data("/"), data("/screen/STP-3200")
     assert home["tree"] == page["tree"] and home["path"] == [] and page["path"] == ["원장·회계", "분개"]
-    assert [s["id"] for a in home["tree"] for g in a["groups"] for s in g["screens"]] == sorted(load_screens())
+    assert sorted(s["id"] for a in home["tree"] for g in a["groups"] for s in g["screens"]) == sorted(load_screens())
     script, index = client.get("/static/stpui.js").text, all_docs(load_screens(), erd.read_catalog(conn, "public"))
     assert "DATA.tree" in script and 'class: "tree"' in script
     assert "| **3 원장·회계**" in index["README.md"] and "| 32 분개 | [STP-3200](STP-3200.md) 분개 조회 |" in index["README.md"]
@@ -510,20 +510,20 @@ def test_returns_screen_reads_the_nav_month_by_month(client):
 
 def test_basket_screen_starts_from_current_weights_and_recomputes_what_is_typed(client, conn):
     before = conn.execute("select (select count(*) from ledger_events), (select count(*) from broker_snapshots)").fetchone()
-    first = client.post("/api/tx/STP1500R01", json={"params": {}}).json()["datasets"]["main"]
+    first = client.post("/api/tx/STP1310R01", json={"params": {}}).json()["datasets"]["main"]
     rows = [dict(zip(first["columns"], r)) for r in first["rows"]]
     assert rows and round(sum(r["current_weight"] for r in rows), 2) == 100
     assert all(r["target_weight"] == r["current_weight"] for r in rows)
-    plan = client.post("/api/tx/STP1500R02", json={"params": {"amount": 10_000_000}}).json()
+    plan = client.post("/api/tx/STP1310R02", json={"params": {"amount": 10_000_000}}).json()
     assert len(plan["datasets"]["main"]["rows"]) == len(rows) and plan["meta"]["limit"] == "30%"
     typed = ",".join(f"{r['symbol']}:{100 if i == 0 else 0}" for i, r in enumerate(rows))
-    one = client.post("/api/tx/STP1500R02", json={"params": {"amount": 1_000_000, "basket": typed, "limit": 100,
+    one = client.post("/api/tx/STP1310R02", json={"params": {"amount": 1_000_000, "basket": typed, "limit": 100,
                                                              "basis": "현재가 +1호가"}}).json()
     lines = [dict(zip(one["datasets"]["main"]["columns"], r)) for r in one["datasets"]["main"]["rows"]]
     assert lines[0]["amount"] > 0 and all(ln["qty"] == 0 for ln in lines[1:])
     summary = dict(zip(one["datasets"]["summary"]["columns"], one["datasets"]["summary"]["rows"][0]))
     assert summary["allocated"] + summary["leftover"] == 1_000_000 and summary["ok"] is True
-    bad = client.post("/api/tx/STP1500R02", json={"params": {"amount": 1_000_000, "basket": f"{rows[0]['symbol']}:50"}})
+    bad = client.post("/api/tx/STP1310R02", json={"params": {"amount": 1_000_000, "basket": f"{rows[0]['symbol']}:50"}})
     assert "100%가 아니에요" in bad.json()["error"]
     after = conn.execute("select (select count(*) from ledger_events), (select count(*) from broker_snapshots)").fetchone()
     assert before == after   # 계산만, DB에는 아무것도 쓰지 않아요
