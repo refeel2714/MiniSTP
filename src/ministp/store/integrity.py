@@ -28,7 +28,8 @@ from .postgres import DEFAULT_ACCOUNT, cash_rows, close_row, from_payload, posit
 # tests/unit/test_integrity_tables.py keeps the two in step.
 APPEND_ONLY_TABLES = ("ledger_events", "journal_entries", "journal_lines", "position_ledger", "cash_ledger",
                       "instruments", "oms_orders", "oms_order_acks", "broker_snapshots", "recon_results",
-                      "customers", "trading_accounts", "account_status_history", "day_closes", "audit_log")
+                      "customers", "trading_accounts", "account_status_history", "day_closes", "audit_log",
+                      "corporate_actions")
 BALANCE_TRIGGERS = ("journal_entries_balanced", "journal_lines_balanced")
 # R-78 in the database: no entry, cash row or close dated inside a closed day (ERD v2.2).
 CLOSED_DAY_TRIGGERS = ("journal_entries_closed_day", "cash_ledger_closed_day", "day_closes_closed_day")
@@ -92,6 +93,26 @@ def check_balanced(conn: psycopg.Connection) -> Check:
             " or count(l.line_id) = 0 order by e.entry_id limit %s", (SHOWN + 1,))]
         return Check("balanced", "분개 대차", False, f"대차가 맞지 않는 분개 {bad:,}건 (분개번호 {_some(ids)})")
     return Check("balanced", "분개 대차", True, f"분개 {n:,}건 모두 차변 = 대변 (합계 {int(dr):,})")
+
+
+def check_rights(conn: psycopg.Connection) -> Check:
+    """R-59: every dividend in the books comes from the register, for the amount the register says."""
+    actions, booked, bad = conn.execute(
+        "select (select count(*) from corporate_actions_v), count(*),"
+        " array_remove(array_agg(case"
+        "   when a.action_id is null then d.account_id || ' CA-' || d.action_id || ' 권리 원장에 없음'"
+        "   when a.symbol <> d.symbol then d.account_id || ' CA-' || d.action_id || ' 종목이 다름'"
+        "   when d.qty is not null and d.accrued_gross <> trunc(d.qty * a.amount_per_share)"
+        "     then d.account_id || ' CA-' || d.action_id || ' 인식 금액이 수량 × 주당 배당금과 다름'"
+        "   when d.status = 'PAID' and a.canceled_at is not null"
+        "     then d.account_id || ' CA-' || d.action_id || ' 취소된 권리인데 입금으로 기록됨'"
+        " end order by d.action_id, d.account_id), null)"
+        " from dividends_v d left join corporate_actions_v a using (action_id)").fetchone()
+    if bad:
+        return Check("rights", "권리", False, f"권리 원장과 다른 배당: {_some(bad)}")
+    if not actions:
+        return Check("rights", "권리", True, "등록된 권리가 아직 없어요")
+    return Check("rights", "권리", True, f"권리 {actions:,}건, 계좌별 배당 {booked:,}건이 권리 원장과 맞음")
 
 
 def check_audit(conn: psycopg.Connection) -> Check:
@@ -202,11 +223,32 @@ def check_closes(conn: psycopg.Connection, ledger: Ledger, account_id: str = DEF
                  f"{len(ledger.unclosed_events()):,}건")
 
 
+def check_dividends(conn: psycopg.Connection, ledger: Ledger, account_id: str = DEFAULT_ACCOUNT) -> Check:
+    """R-57: the dividend view says what a replay says, and 미수배당금 is exactly the accruals still open."""
+    stored = conn.execute(
+        "select action_id, symbol, coalesce(qty, 0), accrued_gross, accrued_on, paid_gross, tax, paid_on, canceled_on,"
+        " status from dividends_v where account_id = %s", (account_id,)).fetchall()
+    mem = ledger.dividends()
+    expected = [(d.action_id, d.symbol, d.qty, d.accrued, d.accrued_on, d.paid_gross, d.tax, d.paid_on,
+                 d.canceled_on, d.status) for d in mem.values()]
+    diff = _row_diff(stored, expected, lambda r: f"CA-{r[0]} {r[1]} {r[9]} {r[3]:,}원")
+    open_accruals = sum(d.receivable for d in mem.values())
+    balance = ledger.account_balance(Account.DIVIDEND_RECEIVABLE)
+    if balance != open_accruals:
+        diff.append(f"미수배당금 {balance:,} / 입금 전 인식 합계 {open_accruals:,}")
+    if diff:
+        return Check("dividends", "배당", False, f"다른 행: {_some(diff)}")
+    if not mem:
+        return Check("dividends", "배당", True, "배당 기록이 아직 없어요")
+    paid = sum(d.status == "PAID" for d in mem.values())
+    return Check("dividends", "배당", True, f"배당 {len(mem):,}건(입금 {paid:,}건) 일치, 미수배당금 {balance:,}원")
+
+
 def projection_checks(conn: psycopg.Connection, ledger: Ledger, account_id: str = DEFAULT_ACCOUNT) -> list[Check]:
     """Everything derived from one account's events, against `ledger` (a replay of those events)."""
     checks = [check_journal(conn, ledger, account_id), check_accounts(conn, ledger, account_id),
               check_positions(conn, ledger, account_id), check_cash(conn, ledger, account_id),
-              check_closes(conn, ledger, account_id)]
+              check_closes(conn, ledger, account_id), check_dividends(conn, ledger, account_id)]
     return [replace(c, account=account_id) for c in checks]
 
 
@@ -217,7 +259,7 @@ def integrity_report(conn: psycopg.Connection, calendar, fees, instruments) -> l
         if top:   # one snapshot, so a write in another session cannot split the picture
             conn.execute("set transaction isolation level repeatable read read only")
         stream = check_event_stream(conn)
-        checks = [stream, check_guards(conn), check_balanced(conn), check_audit(conn)]
+        checks = [stream, check_guards(conn), check_balanced(conn), check_audit(conn), check_rights(conn)]
         if not stream.ok:
             return checks + [Check("replay", "이벤트 재생", False, "순번에 빈 곳이 있어 재생하지 않았어요")]
         for (account_id,) in conn.execute("select account_id from trading_accounts order by account_id").fetchall():

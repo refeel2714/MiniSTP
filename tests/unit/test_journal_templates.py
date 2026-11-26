@@ -43,3 +43,13 @@ def test_a_reversal_fits_only_the_entry_it_turns_around():
     wrong = entry(DAY, "VALUATION_REVERSAL", "d", Dr(Account.FVPL_VALUATION, 50), Cr(Account.VALUATION_GAIN, 50),
                   reverses=val)
     assert template_of(val).code == "JT-09" and template_of(back).code == "JT-08" and template_of(wrong) is None
+
+
+def test_dividend_entries_find_their_templates():
+    accrual = entry(DAY, "DIVIDEND_ACCRUAL", "CA-1", Dr(Account.DIVIDEND_RECEIVABLE, 1000),
+                    Cr(Account.DIVIDEND_INCOME, 1000))
+    paid_less = entry(DAY, "DIVIDEND", "CA-1", Dr(Account.CASH, 770), Dr(Account.WITHHOLDING_TAX, 140),
+                      Dr(Account.DIVIDEND_INCOME, 90), Cr(Account.DIVIDEND_RECEIVABLE, 1000))
+    cancel = entry(DAY, "DIVIDEND_CANCEL", "CA-2", Dr(Account.DIVIDEND_INCOME, 1000),
+                   Cr(Account.DIVIDEND_RECEIVABLE, 1000))
+    assert [template_of(e).code for e in (accrual, paid_less, cancel)] == ["JT-14", "JT-15", "JT-16"]

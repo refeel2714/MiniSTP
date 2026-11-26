@@ -168,7 +168,7 @@ GROUPS = [
      ["customers", "trading_accounts", "account_status_history"]),
     ("원장", "모든 기록의 원천. 이벤트가 쌓이면 분개·보유·예수금이 함께 남아요. 마감한 날로는 더 들어가지 않아요.",
      ["ledger_events", "journal_entries", "journal_lines", "position_ledger", "cash_ledger", "day_closes"]),
-    ("기준정보", "계정과목과 종목 마스터.", ["accounts_chart", "instruments"]),
+    ("기준정보", "계정과목, 종목 마스터, 종목에 생긴 권리(현금배당).", ["accounts_chart", "instruments", "corporate_actions"]),
     ("주문", "주문 의도를 먼저 저장하고, 증권사 접수 결과를 따로 남겨요.", ["oms_orders", "oms_order_acks"]),
     ("증권사 응답과 대사", "증권사 응답 원본과 그 실행에서 나온 대사 결과.", ["broker_snapshots", "recon_results"]),
     ("공통코드", "코드와 코드명. 다른 테이블의 코드 컬럼은 여기를 FK로 묶지 않고, 점검(code check)이 어긋남을 찾아요.",
@@ -189,7 +189,7 @@ LAYOUT = [
     ("고객과 계좌", [["customers"], ["trading_accounts"], ["account_status_history"], []]),
     ("원장 · 기준정보", [["ledger_events"], ["journal_entries", "position_ledger", "cash_ledger", "day_closes"],
                      ["journal_lines"], ["accounts_chart"]]),
-    ("주문", [["instruments"], ["oms_orders"], ["oms_order_acks"], []]),
+    ("주문 · 권리", [["instruments"], ["oms_orders", "corporate_actions"], ["oms_order_acks"], []]),
     ("증권사 응답과 대사", [["broker_snapshots"], ["recon_results"], [], []]),
     ("공통코드 · 감사 로그", [["code_groups"], ["common_codes"], ["audit_log"], []]),
 ]

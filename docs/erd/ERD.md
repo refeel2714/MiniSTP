@@ -1,6 +1,6 @@
 # MiniSTP ERD
 
-ERD 버전: v2.3 · 스키마 해시: `79c5222953a7`
+ERD 버전: v2.4 · 스키마 해시: `678c1c5b4451`
 
 이 문서는 `scripts/gen_erd.py`가 `src/ministp/store/schema.sql`로 만든 DB에서 읽어 생성해요. 직접 고치지 말고 스키마의 한글 주석(COMMENT)을 고친 뒤 다시 생성하세요. 모든 원장 테이블은 append-only(수정·삭제 불가)예요.
 
@@ -109,6 +109,17 @@ erDiagram
         text market "시장 (KOSPI / KOSDAQ)"
         text asset_type "자산 유형 (STOCK / ETF)"
     }
+    corporate_actions {
+        bigint action_id PK "권리 번호"
+        text symbol FK "종목코드"
+        text action_type "권리 유형 (CASH_DIVIDEND 현금배당 / CANCEL 취소)"
+        date record_date "배당기준일"
+        date pay_date "지급일"
+        numeric(18,2) amount_per_share "주당 배당금 (세전, 원)"
+        bigint cancels_id FK,UK "취소 대상 권리 번호 (취소 행일 때)"
+        text note "메모 (취소 행은 취소 사유)"
+        timestamptz registered_at "등록 시각"
+    }
     oms_orders {
         text client_id PK "내부 주문번호"
         date trade_date "주문일"
@@ -186,6 +197,8 @@ erDiagram
     ledger_events ||--o{ cash_ledger : "event_seq, account_id"
     ledger_events ||--o{ day_closes : "event_seq, account_id"
     trading_accounts ||--o{ audit_log : "account_id"
+    instruments ||--o{ corporate_actions : "symbol"
+    corporate_actions ||--o{ corporate_actions : "cancels_id"
     instruments ||--o{ oms_orders : "symbol"
     trading_accounts ||--o{ oms_orders : "account_id"
     oms_orders ||--o{ oms_order_acks : "client_id"
@@ -333,6 +346,20 @@ erDiagram
 | `name` | 종목명 | text | Y |  |
 | `market` | 시장 (KOSPI / KOSDAQ) | text | Y |  |
 | `asset_type` | 자산 유형 (STOCK / ETF) | text | Y |  |
+
+### corporate_actions — 권리 원장 (종목에 생긴 현금배당과 그 취소, 수정·삭제 불가) (테이블)
+
+| 컬럼 | 한글명 | 타입 | 필수 | 키 |
+|---|---|---|---|---|
+| `action_id` | 권리 번호 | bigint | Y | PK |
+| `symbol` | 종목코드 | text | Y | FK → instruments.symbol |
+| `action_type` | 권리 유형 (CASH_DIVIDEND 현금배당 / CANCEL 취소) | text | Y |  |
+| `record_date` | 배당기준일 | date |  |  |
+| `pay_date` | 지급일 | date |  |  |
+| `amount_per_share` | 주당 배당금 (세전, 원) | numeric(18,2) |  |  |
+| `cancels_id` | 취소 대상 권리 번호 (취소 행일 때) | bigint |  | UK, FK → corporate_actions.action_id |
+| `note` | 메모 (취소 행은 취소 사유) | text |  |  |
+| `registered_at` | 등록 시각 | timestamp with time zone | Y |  |
 
 ### oms_orders — 주문 의도 (증권사 전송 전 기록) (테이블)
 
@@ -497,6 +524,37 @@ erDiagram
 | `event_type` | 이벤트 유형 | text |  |  |
 | `recorded_at` | 기록 시각 | timestamp with time zone |  |  |
 
+### corporate_actions_v — 권리 목록 (취소 여부 포함) (뷰)
+
+| 컬럼 | 한글명 | 타입 | 필수 | 키 |
+|---|---|---|---|---|
+| `action_id` | 권리 번호 | bigint |  |  |
+| `symbol` | 종목코드 | text |  |  |
+| `action_type` | 권리 유형 | text |  |  |
+| `record_date` | 배당기준일 | date |  |  |
+| `pay_date` | 지급일 | date |  |  |
+| `amount_per_share` | 주당 배당금 (세전, 원) | numeric(18,2) |  |  |
+| `note` | 메모 | text |  |  |
+| `registered_at` | 등록 시각 | timestamp with time zone |  |  |
+| `canceled_at` | 취소 시각 (취소되지 않았으면 비움) | timestamp with time zone |  |  |
+| `cancel_reason` | 취소 사유 | text |  |  |
+
+### dividends_v — 계좌별 배당 현황 (인식, 입금, 취소) (뷰)
+
+| 컬럼 | 한글명 | 타입 | 필수 | 키 |
+|---|---|---|---|---|
+| `account_id` | 계좌 ID | text |  |  |
+| `action_id` | 권리 번호 | bigint |  |  |
+| `symbol` | 종목코드 | text |  |  |
+| `qty` | 권리 수량 (기준일까지 결제된 보유) | bigint |  |  |
+| `accrued_gross` | 인식한 배당금 (세전) | bigint |  |  |
+| `accrued_on` | 인식일 | date |  |  |
+| `paid_gross` | 입금된 배당금 (세전) | bigint |  |  |
+| `tax` | 원천징수세액 | bigint |  |  |
+| `paid_on` | 입금일 | date |  |  |
+| `canceled_on` | 인식 취소일 | date |  |  |
+| `status` | 상태 (ACCRUED 인식 / PAID 입금 / CANCELED 취소) | text |  |  |
+
 ## 변경 이력
 
 | 버전 | 일자 | 변경 내용 |
@@ -507,3 +565,4 @@ erDiagram
 | v2.1 | 2026-11-22 | 공통코드. 코드 그룹 `code_groups`와 코드 `common_codes` 신설(마이그레이션 `0002_common_codes`). 스키마 제약과 프로그램에 흩어져 있던 코드 18개 그룹(계좌 상태, 대사 결과·항목·원인, 이벤트·전표 유형 등)에 코드명을 붙였다. 코드는 지우지 않고 이름을 바꾸거나 끄기만 한다(DB 트리거). 계정과목은 원장이 직접 참조하므로 전용 테이블 `accounts_chart`에 그대로 둔다. 기존 테이블과 기존 행은 바뀌지 않는다. |
 | v2.2 | 2026-11-23 | 일 마감(스펙 D6, R-77~79). 마감 기록 `day_closes` 신설(마감 이벤트마다 한 행, 그날의 확정 순자산·좌수·기준가). 마감일과 그 이전 날짜로는 전표(`journal_entries`)·예수금 행(`cash_ledger`)·마감 행이 더 들어가지 않도록 DB 트리거 `ministp_forbid_closed_day` 추가. 뷰 `last_close_v`(계좌별 마지막 마감), `abor_positions_v`(마감 시점 보유), `unclosed_events_v`(마감 뒤 이벤트) 추가. 공통코드에 이벤트 유형 `LateExecutionEvent`·`DayClosedEvent`, 전표 유형 `LATE_EXECUTION` 추가. 기존 DB는 마이그레이션 `0003_day_close`로 올림(기존 행 변경 없음). |
 | v2.3 | 2026-11-23 | 감사 로그(R-85~87). `audit_log` 신설(마이그레이션 `0004_audit_log`): 밖에서 시스템에 한 일(주문, 주문 취소, 일일 마감, 장부 마감, 불일치 판단, 종목·고객·계좌 등록, 계좌 상태와 공통코드 변경, 마이그레이션)마다 한 행, 처리된 것뿐 아니라 규칙이 거부한 요청과 실패한 요청도 남긴다. 번호·시각·해시는 DB 트리거 `ministp_audit_chain`이 채우고, 각 행은 앞 행의 해시를 이어 받아(`ministp_audit_hash`, SHA-256) 가운데 행을 고치거나 지우면 `verify`가 찾아낸다. 수정·삭제·비우기 금지 테이블 15개. 공통코드 그룹 3개(감사 로그 경로·결과·행위) 추가. 기존 데이터는 바뀌지 않는다. |
+| v2.4 | 2026-11-23 | 권리처리: 현금배당(R-57~59). 권리 원장 `corporate_actions` 신설(마이그레이션 `0005_corporate_actions`): 종목별 배당기준일·지급일·주당 배당금을 한 번 등록하고, 잘못된 권리는 고치지 않고 취소 행으로 무효로 한다. 뷰 `corporate_actions_v`(취소 여부 포함), `dividends_v`(계좌별 인식·입금·취소 현황, 원장 이벤트에서 읽음) 추가. 배당 인식·입금·취소는 원장 이벤트로 남고 분개와 예수금 행은 기존 테이블에 들어간다. 수정·삭제·비우기 금지 테이블 16개. 공통코드 그룹 2개(권리 유형, 배당 상태)와 이벤트·전표·예수금 사유·감사 행위 코드 10개 추가. 기존 데이터는 바뀌지 않는다. |

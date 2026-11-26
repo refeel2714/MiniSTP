@@ -16,12 +16,14 @@ from importlib.resources import files
 import psycopg
 
 from ..accounting import Account
-from ..ledger import (DayClosedEvent, DepositEvent, ExecutionEvent, LateExecutionEvent, Ledger, NavEvent,
-                      OpeningPositionEvent, RevaluationEvent, SettlementEvent, Side)
+from ..ledger import (DayClosedEvent, DepositEvent, DividendAccrualEvent, DividendCancelEvent, DividendPaymentEvent,
+                      ExecutionEvent, LateExecutionEvent, Ledger, NavEvent, OpeningPositionEvent, RevaluationEvent,
+                      SettlementEvent, Side)
 
 EVENT_TYPES = {cls.__name__: cls for cls in
                (DepositEvent, OpeningPositionEvent, ExecutionEvent, SettlementEvent, RevaluationEvent,
-                NavEvent, LateExecutionEvent, DayClosedEvent)}
+                NavEvent, LateExecutionEvent, DayClosedEvent, DividendAccrualEvent, DividendPaymentEvent,
+                DividendCancelEvent)}
 DATE_FIELDS = {"date", "trade_date", "booked_on"}
 DEFAULT_ACCOUNT = "A0001"    # the account every pre-v2.0 row belongs to
 DEFAULT_CUSTOMER = "C0001"

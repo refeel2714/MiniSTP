@@ -115,6 +115,26 @@ TEMPLATES += tuple(
     for code, t in zip(("JT-11", "JT-12", "JT-13"), (t for t in TEMPLATES if t.kind == "EXECUTION")))
 
 
+# 현금배당(R-57, R-23): 기준일에 미수배당금을 잡고, 들어온 날 지운다. 지급 전에 권리가 취소되면 되돌린다.
+TEMPLATES += (
+    JournalTemplate("JT-14", "DividendAccrualEvent", "DIVIDEND_ACCRUAL", "배당 기준일 (권리 확정)", (
+        D(A.DIVIDEND_RECEIVABLE, "기준일까지 결제된 보유수량 × 주당 배당금", "R-57"),
+        C(A.DIVIDEND_INCOME, "기준일까지 결제된 보유수량 × 주당 배당금", "R-57")),
+        "돈이 들어오기 전에 수익으로 잡아요"),
+    JournalTemplate("JT-15", "DividendPaymentEvent", "DIVIDEND", "배당 입금", (
+        D(A.CASH, "세전 배당금 − 원천징수"),
+        D(A.WITHHOLDING_TAX, "원천징수 세액", "R-23"),
+        C(A.DIVIDEND_RECEIVABLE, "기준일에 잡은 미수배당금", "R-57"),
+        C(A.DIVIDEND_INCOME, "더 받은 만큼 (세전 배당금 − 미수배당금)"),
+        D(A.DIVIDEND_INCOME, "덜 받은 만큼 (미수배당금 − 세전 배당금)")),
+        "기준일에 잡은 금액과 다르면 배당수익이 차이만큼 움직여요"),
+    JournalTemplate("JT-16", "DividendCancelEvent", "DIVIDEND_CANCEL", "지급 전 권리 취소", (
+        D(A.DIVIDEND_INCOME, "기준일에 잡은 미수배당금"),
+        C(A.DIVIDEND_RECEIVABLE, "기준일에 잡은 미수배당금")),
+        "JT-14를 그대로 되돌려요"),
+)
+
+
 def template_of(e: JournalEntry) -> JournalTemplate | None:
     """The template a journal entry fits, or None (the ledger made an entry this table does not describe)."""
     return next((t for t in TEMPLATES if t.fits(e)), None)

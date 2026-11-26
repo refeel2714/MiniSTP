@@ -43,7 +43,7 @@ def test_every_check_of_a_clean_database_has_numbers_and_they_all_agree(conn):
         got = rows(conn, check.key)
         assert got, check.key
         assert all(r.ok and r.diff == 0 for r in got.values()), check.key
-    assert set(PLAIN) | set(REPLAYED) == {"events", "guards", "balanced", "journal", "accounts", "positions", "cash", "closes", "audit"}
+    assert set(PLAIN) | set(REPLAYED) == {"events", "guards", "balanced", "journal", "accounts", "positions", "cash", "closes", "audit", "rights", "dividends"}
 
 
 def test_the_numbers_are_the_ones_the_books_hold(conn):

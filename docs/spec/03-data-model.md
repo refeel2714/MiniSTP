@@ -35,7 +35,7 @@ Phase 2 구현(v1.4)은 위 설계를 단순화했다. 주문 생성 정보는 `
 | settlement_events | settlement_id, status(SETTLED/FAILED), occurred_at | |
 | cash_ledger | date, reason(SETTLEMENT/DEPOSIT/WITHDRAWAL/DIVIDEND/ADJUSTMENT), amount, ref_type, ref_id | 예수금 변동만 |
 | position_ledger | trade_date, symbol, qty_delta, cost_delta, realized_pnl, ref_exec_id | R-30~34 |
-| corporate_actions | symbol, type(CASH_DIVIDEND/MANUAL_ADJ), record_date, pay_date, amount_per_share | |
+| corporate_actions | action_id, symbol, action_type(CASH_DIVIDEND/CANCEL), record_date, pay_date, amount_per_share, cancels_id | v1.17에서 구현. 아래 "권리처리" 절 |
 
 현재 잔고는 뷰로 계산한다: `positions_v`(종목별 Σqty_delta, Σcost_delta), `cash_balance_v`(Σamount).
 
@@ -152,6 +152,21 @@ Phase 2 구현(v1.4)은 위 설계를 단순화했다. 주문 생성 정보는 `
 5. **명령**: `audit [--limit N] [--account 계좌ID] [--action 코드] [--outcome 코드]`는 최근 줄부터 보여주고 마지막 줄 번호와 해시를 알려준다. 읽기만 하고, 보는 일 자체는 남기지 않는다.
 6. **마이그레이션**: `0004_audit_log`는 테이블, 트리거, 함수, 공통코드 그룹 세 개를 만든다. 기존 행은 건드리지 않는다. 적용 뒤 첫 줄은 그 적용(`DB_MIGRATE`)이다. 감사 로그 조회 화면은 다음 PR.
 
+## 권리처리: 현금배당 (v1.17, ERD v2.4)
+
+| 테이블·뷰 | 주요 컬럼 | 비고 |
+|---|---|---|
+| corporate_actions | action_id, symbol, action_type, record_date, pay_date, amount_per_share, cancels_id, note, registered_at | 권리 원장. 종목 단위, 모든 계좌가 함께 읽음. 수정·삭제 불가, 취소는 취소 행 |
+| corporate_actions_v | action_id, symbol, ..., canceled_at, cancel_reason | 권리 목록과 취소 여부 |
+| dividends_v | account_id, action_id, symbol, qty, accrued_gross, accrued_on, paid_gross, tax, paid_on, canceled_on, status | 계좌별 배당 현황. 원장 이벤트에서 바로 읽음 |
+
+1. **권리는 기준정보, 배당은 원장 이벤트**: 권리 원장은 종목에 생긴 일(누구에게나 같은 사실)이고, 계좌가 받은 배당은 그 계좌의 원장 이벤트 `DividendAccrualEvent`(인식), `DividendPaymentEvent`(입금), `DividendCancelEvent`(인식 취소)다. 이벤트가 권리 번호·수량·금액을 담고 있어서 재생에는 권리 원장이 필요 없다.
+2. **계좌별 프로젝션 테이블은 만들지 않았다**: 분개와 예수금 행은 기존 `journal_entries`·`journal_lines`·`cash_ledger`에 들어가고(전표 유형 `DIVIDEND_ACCRUAL`, `DIVIDEND`, `DIVIDEND_CANCEL`, 원천 참조 `CA-권리번호`), 현황은 뷰 `dividends_v`가 이벤트에서 계산한다.
+3. **취소는 행을 더한다**: `action_type = 'CANCEL'`, `cancels_id`가 대상 권리를 가리킨다(권리 하나에 취소 하나, 유일 제약). 배당 행과 취소 행의 모양은 CHECK 제약이 지킨다.
+4. **daily의 순서** (R-75의 ②와 ③ 사이): 권리 원장을 번호 순으로 읽어 ① 취소된 권리의 인식 되돌리기 ② 인식일이 된 권리의 인식(기준일 보유가 있을 때만) ③ 지급일이 된 권리의 입금(R-23 세금). 그 뒤에 평가와 기준가를 산출하므로 미수배당금이 그날 순자산에 들어간다(R-60).
+5. **명령**: `dividend add 종목 --record 기준일 --pay 지급일 --per-share 주당배당금`, `dividend cancel 권리번호 사유`, `dividend list`, `dividend pay 권리번호 [--gross 세전] [--tax 세금] [--date 날짜] [--account 계좌]`(증권사가 실제로 준 금액이 예상과 다르거나 원장 시작 전 보유분일 때). 모두 감사 로그에 남는다.
+6. **한계**: 인식한 뒤에 기준일 이전 매매일의 체결이 뒤늦게 들어오면(R-78) 권리 수량이 달라질 수 있다. 자동으로 고치지 않으므로 취소 후 다시 등록해 인식을 새로 한다. 증권사 권리 내역 조회로 자동 등록하는 것과 권리 화면은 다음 PR.
+
 ## 원장 무결성 점검 (v1.11)
 
 `python -m ministp verify`는 저장된 원장이 이벤트를 처음부터 다시 계산한 결과와 같은지 읽기 전용으로 확인한다. 쓰기 잠금을 잡지 않으므로 `run`이 떠 있어도 실행할 수 있다. 하나라도 어긋나면 종료 코드 1을 돌려준다.
@@ -159,14 +174,16 @@ Phase 2 구현(v1.4)은 위 설계를 단순화했다. 주문 생성 정보는 `
 | 점검 | 확인하는 것 |
 |---|---|
 | 이벤트 순번 | `ledger_events.seq`가 1부터 빈 번호 없이 이어진다 |
-| 수정·삭제 방지 | append-only 테이블 15개의 수정·삭제·비우기 금지 트리거, 분개 대차 트리거, 마감일 잠금 트리거(v1.15), 감사 로그 사슬 트리거(v1.16)가 켜져 있다 (R-04, R-50, R-78, R-87) |
+| 수정·삭제 방지 | append-only 테이블 16개의 수정·삭제·비우기 금지 트리거, 분개 대차 트리거, 마감일 잠금 트리거(v1.15), 감사 로그 사슬 트리거(v1.16)가 켜져 있다 (R-04, R-50, R-78, R-87) |
 | 분개 대차 | 모든 분개의 차변 합 = 대변 합 |
 | 감사 로그 (v1.16) | `audit_log`의 번호가 1부터 빈 번호 없이 이어지고, 각 줄의 해시가 앞 줄의 해시와 자기 내용으로 다시 계산한 값과 같다 (R-87) |
+| 권리 (v1.17) | 계좌에 기록된 배당이 모두 권리 원장에 있고, 종목이 같고, 인식 금액 = 수량 × 주당 배당금이며, 취소된 권리가 입금으로 기록된 계좌가 없다 (R-59) |
 | 분개 재생 | 저장된 분개가 이벤트 재생 결과와 건별로 같다 |
 | 계정 잔액 | 계정과목별 잔액이 재생 결과와 같다 |
 | 보유 | `position_ledger`의 행과 종목별 수량·장부금액이 재생 결과와 같다 |
 | 현금 | `cash_ledger`의 행과 예수금이 재생 결과와 같다 |
 | 일 마감 (v1.15) | `day_closes`의 행이 마감 이벤트를 가리키고 확정 기준가가 재생 결과와 같다. `abor_positions_v`가 마감까지의 재생 결과와 같다 |
+| 배당 (v1.17) | `dividends_v`가 재생 결과와 같고, 미수배당금 잔액이 입금 전 인식 금액의 합과 같다 (R-57) |
 
-아래 다섯 가지(재생 비교)는 계좌마다 따로 확인한다(v1.12). 모든 명령이 시작할 때도 확인하며, 어긋나면 그 명령은 실행되지 않는다. 코드가 DB보다 앞서 있을 때는 `verify`도 시작하지 않는다. 대신 `db-migrate --dry-run`이 마이그레이션을 적용한 상태에서 같은 점검을 한 뒤 되돌리고, `--apply`는 그 리허설이 통과해야만 적용한 다음 한 번 더 점검한다(v1.12).
+분개 재생부터 아래 여섯 가지(재생 비교)는 계좌마다 따로 확인한다(v1.12). 모든 명령이 시작할 때도 확인하며, 어긋나면 그 명령은 실행되지 않는다. 코드가 DB보다 앞서 있을 때는 `verify`도 시작하지 않는다. 대신 `db-migrate --dry-run`이 마이그레이션을 적용한 상태에서 같은 점검을 한 뒤 되돌리고, `--apply`는 그 리허설이 통과해야만 적용한 다음 한 번 더 점검한다(v1.12).
 

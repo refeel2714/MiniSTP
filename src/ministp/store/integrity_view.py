@@ -87,6 +87,22 @@ def compare_balanced(conn: psycopg.Connection) -> list[Compared]:
             Compared("대차가 맞지 않는 분개 수", bad, 0, "하나도 없어야 함")]
 
 
+def compare_rights(conn: psycopg.Connection) -> list[Compared]:
+    """R-59: every dividend in the books comes from the register, for the amount the register says."""
+    orphans, symbols, gross, want, paid = conn.execute(
+        "select count(*) filter (where a.action_id is null), count(*) filter (where a.symbol <> d.symbol),"
+        " coalesce(sum(d.accrued_gross) filter (where d.qty is not null and a.action_id is not null), 0),"
+        " coalesce(sum(trunc(d.qty * a.amount_per_share)) filter (where d.qty is not null"
+        "   and a.action_id is not null), 0),"
+        " count(*) filter (where d.status = 'PAID' and a.canceled_at is not null)"
+        " from dividends_v d left join corporate_actions_v a using (action_id)").fetchone()
+    none = "하나도 없어야 함"
+    return [Compared("권리 원장에 없는 배당 수", orphans, 0, none),
+            Compared("권리와 종목이 다른 배당 수", symbols, 0, none),
+            Compared("배당 인식 금액 합계", int(gross), int(want), "기준일 보유수량 × 주당 배당금의 합계"),
+            Compared("취소된 권리인데 입금으로 기록된 배당 수", paid, 0, none)]
+
+
 def compare_audit(conn: psycopg.Connection) -> list[Compared]:
     """R-87: the audit rows are numbered 1..n and each carries the hash of its content and of the row before."""
     from .. import audit
@@ -171,9 +187,25 @@ def compare_closes(conn: psycopg.Connection, ledger: Ledger, account_id: str = D
     return rows
 
 
-PLAIN = {"events": compare_events, "guards": compare_guards, "balanced": compare_balanced, "audit": compare_audit}
+def compare_dividends(conn: psycopg.Connection, ledger: Ledger, account_id: str = DEFAULT_ACCOUNT) -> list[Compared]:
+    """R-57: the dividend view against a replay, and 미수배당금 against the accruals still open."""
+    stored = conn.execute(
+        "select action_id, symbol, coalesce(qty, 0), accrued_gross, accrued_on, paid_gross, tax, paid_on, canceled_on,"
+        " status from dividends_v where account_id = %s", (account_id,)).fetchall()
+    mem = ledger.dividends()
+    expected = [(d.action_id, d.symbol, d.qty, d.accrued, d.accrued_on, d.paid_gross, d.tax, d.paid_on,
+                 d.canceled_on, d.status) for d in mem.values()]
+    return [Compared("배당 건수", len(stored), len(expected), REPLAY),
+            Compared("한쪽에만 있는 배당 행 수", _unlike(stored, expected), 0, "하나도 없어야 함"),
+            Compared("배당 인식 금액 합계", int(sum(r[3] for r in stored)), sum(d.accrued for d in mem.values()), REPLAY),
+            Compared("미수배당금", ledger.account_balance(Account.DIVIDEND_RECEIVABLE),
+                     sum(d.receivable for d in mem.values()), "입금 전 인식 금액의 합계")]
+
+
+PLAIN = {"events": compare_events, "guards": compare_guards, "balanced": compare_balanced, "rights": compare_rights,
+         "audit": compare_audit}
 REPLAYED = {"journal": compare_journal, "accounts": compare_accounts, "positions": compare_positions,
-            "cash": compare_cash, "closes": compare_closes}
+            "cash": compare_cash, "closes": compare_closes, "dividends": compare_dividends}
 
 
 def compared(conn: psycopg.Connection, key: str, calendar, fees, instruments,
