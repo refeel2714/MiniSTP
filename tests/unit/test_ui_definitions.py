@@ -411,7 +411,7 @@ def test_an_instrument_looks_the_same_on_every_screen():
     """종목명을 보여 주는 표는 어디서나 같은 배지: 색은 종목코드, 모양은 자산 유형."""
     shown = [(s.id, g.id, c) for s in load_screens().values() for g in s.grids if g.view == "grid"
              for c in g.columns if c.source == "instruments.name"]
-    assert len(shown) >= 5
+    assert len(shown) >= 6                                        # 고객별 보유(STP-1400)까지
     for sid, gid, c in shown:
         assert (c.display, c.code, c.shape) == ("badge", "symbol", "asset_type"), f"{sid} {gid}"
 

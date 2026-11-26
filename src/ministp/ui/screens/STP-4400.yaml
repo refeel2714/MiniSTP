@@ -1,0 +1,32 @@
+id: STP-4400
+title: 계좌 목록
+layout: split
+left: 60
+purpose: 등록된 위탁계좌의 기본정보예요. 기준정보라서 어느 계좌에 무엇이 얼마나 들어 있는지는 여기에 없어요. 예수금과 결제 예정은 계좌정보(STP-3400), 보유는 잔고(STP-1100)와 고객별 보유(STP-1400)에 있어요. 왼쪽에서 계좌를 고르면 오른쪽에 그 계좌의 상태 이력이 나와요. 화면을 열면 위쪽 막대에서 고른 계좌가 먼저 골라져 있고, 더블클릭하면 그 계좌의 계좌정보(STP-3400)로 가요. 계좌번호와 인증키는 DB에 없고 이 화면에도 나오지 않아요. 등록과 상태 변경은 CLI(customer, account 명령)로만 해요.
+grids:
+  - id: accounts
+    title: 위탁계좌
+    live: true
+    tx: STP4400R01
+    load: open
+    key: account_id
+    drill: {screen: STP-3400, account: account_id}
+    columns:
+      - {name: account_id, source: trading_accounts.account_id, format: code}
+      - {name: alias, source: trading_accounts.alias}
+      - {name: customer_alias, source: customers.alias}
+      - {name: status, source: account_status_v.status, format: code, color: status}
+      - {name: broker, source: trading_accounts.broker, format: code}
+      - {name: env, source: trading_accounts.env, format: code}
+      - {name: account_type, source: trading_accounts.account_type, format: code}
+      - {name: opened_on, source: trading_accounts.opened_on, format: date}
+  - id: status_history
+    title: 이 계좌의 상태 이력
+    tx: STP4400R02
+    load: master
+    master: accounts
+    link: {account_id: account_id}
+    columns:
+      - {name: status, source: account_status_history.status, format: code, color: status}
+      - {name: effective_from, source: account_status_history.effective_from, format: date}
+      - {name: reason, source: account_status_history.reason}

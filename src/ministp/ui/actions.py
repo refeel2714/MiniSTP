@@ -18,6 +18,7 @@ from ..calendar import BusinessCalendar
 from ..fees import FeeSchedule
 from ..ops import resolve_break
 from ..recon import Cause
+from ..store import DEFAULT_ACCOUNT
 from .transactions import COERCE
 
 
@@ -31,6 +32,7 @@ class ActionContext:
     calendar: BusinessCalendar
     fees: FeeSchedule
     today: dt.date
+    account_id: str = DEFAULT_ACCOUNT   # the account the screen is looking at (계좌 선택)
 
 
 @dataclass(frozen=True)

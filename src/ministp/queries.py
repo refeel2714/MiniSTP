@@ -279,8 +279,9 @@ def _open_day(calendar, day: dt.date) -> bool | None:
 
 
 def recon_calendar(conn: psycopg.Connection, calendar, today: dt.date, date_from: dt.date | None = None,
-                   date_to: dt.date | None = None, kind: str = "DAILY_RECON") -> Dataset:
-    """날짜별 대사 요약, newest first: one row a day, judged by that day's latest run (ops.recon_days,
+                   date_to: dt.date | None = None, kind: str = "DAILY_RECON",
+                   account_id: str = DEFAULT_ACCOUNT) -> Dataset:
+    """한 계좌의 날짜별 대사 요약, newest first: one row a day, judged by that day's latest run (ops.recon_days,
     the same reading the gate count uses).
 
     일치 = no break · 불일치(판단함) = breaks, every one judged (the gate still counts the day) ·
@@ -293,9 +294,10 @@ def recon_calendar(conn: psycopg.Connection, calendar, today: dt.date, date_from
     date_to = min(date_to or today, today)
     if date_from is None:   # this month and the one before: enough to see the 20-day gate
         date_from = (date_to.replace(day=1) - dt.timedelta(days=1)).replace(day=1)
-    days = recon_days(conn, kind, date_from, date_to)
+    days = recon_days(conn, kind, date_from, date_to, account_id)
     first = conn.execute("select min(r.date) from recon_results r join broker_snapshots b"
-                         " on b.snapshot_id = r.run_id where b.kind = %s", (kind,)).fetchone()[0]
+                         " on b.snapshot_id = r.run_id where b.kind = %s and r.account_id = %s",
+                         (kind, account_id)).fetchone()[0]
     daily = kind == "DAILY_RECON"
     rows, d = [], date_to
     while d >= date_from:
@@ -406,8 +408,11 @@ class OrderDetail:
     fills: Dataset   # each execution of the order with its settlement
 
 
-def order_detail(conn: psycopg.Connection, ledger: Ledger, client_id: str, today: dt.date) -> OrderDetail:
-    """주문 하나의 접수 내용과 체결별 결제: 체결일 → 결제 예정일 → 결제일."""
+def order_detail(conn: psycopg.Connection, ledger: Ledger, client_id: str, today: dt.date,
+                 account_id: str = DEFAULT_ACCOUNT) -> OrderDetail:
+    """주문 하나의 접수 내용과 체결별 결제: 체결일 → 결제 예정일 → 결제일.
+
+    `ledger` is that account's ledger; an order of another account is not found here."""
     order = _q(conn, """
         select o.client_id, o.trade_date, o.limit_price, a.outcome, a.order_no, a.created_at as acked_at, a.detail,
                n.notices, n.max_booking_ms
@@ -416,8 +421,9 @@ def order_detail(conn: psycopg.Connection, ledger: Ledger, client_id: str, today
           left join lateral (select count(*) as notices, max((s.payload->>'booking_ms')::int) as max_booking_ms
                                from broker_snapshots s
                               where s.kind = 'FILL_NOTICE' and s.date = o.trade_date
+                                and s.account_id = o.account_id
                                 and s.payload->'notice'->>'order_no' = a.order_no) n on true
-         where o.client_id = %s""", (client_id,))
+         where o.client_id = %s and o.account_id = %s""", (client_id, account_id))
     if not order.rows:
         raise KeyError(f"없는 주문이에요: {client_id}")
     o = order.records()[0]
@@ -899,6 +905,67 @@ def order_check(books, day: dt.date, symbol: str, side: str, qty: int, limit_pri
                               cap.max_buy_qty, cap.held_qty, cap.pending_sell_qty, cap.sellable_qty,
                               reason == "", reason, REASON_TEXT.get(reason, reason)),))
 
+# ---------- STP-4400 계좌 목록 · STP-1400 고객별 보유 (조회 전용) ----------
+
+def account_list(conn: psycopg.Connection) -> Dataset:
+    """Every account as it is registered: its customer, current status, broker, environment and opening day.
+
+    Reference data only: what an account holds is on the account's own screens (STP-3400, STP-1100, STP-1400).
+    The account number and the keys are not in the database; `credential_ref` is only
+    the name of the environment variables the owner's PC keeps them in."""
+    return _q(conn, """
+        select t.account_id, t.alias, t.customer_id, c.alias as customer_alias, t.broker, t.env,
+               t.account_type, s.status, s.effective_from as status_from, t.opened_on, t.credential_ref
+          from trading_accounts t
+          join customers c using (customer_id)
+          join account_status_v s using (account_id)
+         order by t.customer_id, t.account_id""")
+
+
+def account_status_history(conn: psycopg.Connection, account_id: str) -> Dataset:
+    """One account's status rows, newest first (a change is a new row, never an update)."""
+    return _q(conn, "select id, status, effective_from, reason, created_at from account_status_history"
+                    " where account_id = %s order by effective_from desc, id desc", (account_id,))
+
+
+def customer_positions(conn: psycopg.Connection, customer_id: str | None = None) -> Dataset:
+    """고객별 보유 합산: one customer's accounts added up per symbol (`customer_positions_v`).
+
+    With `customer_id` only that customer's rows (the detail under an account row)."""
+    return _q(conn, """
+        select v.customer_id, c.alias as customer_alias, v.symbol, i.name as instrument_name, v.qty, v.book_cost,
+               (select count(distinct p.account_id) from positions_v p join trading_accounts t using (account_id)
+                 where t.customer_id = v.customer_id and p.symbol = v.symbol) as accounts,
+               i.asset_type
+          from customer_positions_v v
+          join customers c using (customer_id)
+          join instruments i using (symbol)
+         where (%(c)s::text is null or v.customer_id = %(c)s)
+         order by v.customer_id, v.book_cost desc""", {"c": customer_id})
+
+
+def customer_list(conn: psycopg.Connection) -> Dataset:
+    """고객 목록: every customer with the number of accounts and what they add up to."""
+    return _q(conn, """
+        select c.customer_id, c.alias, count(t.account_id) as accounts,
+               coalesce(sum((select balance from cash_balance_v b where b.account_id = t.account_id)), 0) as cash_d0,
+               coalesce(sum((select sum(p.book_cost) from positions_v p where p.account_id = t.account_id)), 0) as book_cost
+          from customers c left join trading_accounts t using (customer_id)
+         group by c.customer_id, c.alias
+         order by c.customer_id""")
+
+
+def customer_accounts(conn: psycopg.Connection, customer_id: str) -> Dataset:
+    """One customer's accounts with their status, cash and holdings at book cost."""
+    return _q(conn, """
+        select t.account_id, t.alias, s.status,
+               (select balance from cash_balance_v b where b.account_id = t.account_id) as cash_d0,
+               (select coalesce(sum(p.book_cost), 0) from positions_v p where p.account_id = t.account_id) as book_cost
+          from trading_accounts t join account_status_v s using (account_id)
+         where t.customer_id = %s
+         order by t.account_id""", (customer_id,))
+
+
 # ---------- STP-4100 종목정보 · STP-4300 거래 기준 (기준정보, 조회 전용) ----------
 # Reference data as the system really uses it: instruments from the DB, fee rates,
 # settlement rules, tick sizes and the holiday calendar from the objects the
@@ -969,10 +1036,13 @@ def account_summary(books, calendar, today: dt.date) -> Dataset:
         " where b.kind = 'DAILY_RECON' and b.account_id = %s"
         " group by b.snapshot_id order by b.snapshot_id desc limit 1", (books.account_id,)).fetchone()
     last_nav = max((r.date for r in led.nav_history()), default=None)
+    alias = books.conn.execute("select alias from trading_accounts where account_id = %s",
+                               (books.account_id,)).fetchone()[0]
     return Dataset(
-        ("opened", "cash_d0", "receivables", "payables", "projected_cash", "unsettled", "holdings",
+        ("account_id", "alias", "status", "opened", "cash_d0", "receivables", "payables", "projected_cash", "unsettled", "holdings",
          "market_value", "valued_on", "last_recon_date", "last_recon_at", "open_breaks", "clean_streak"),
-        ((opened, led.cash_balance(), sum(s.signed for s in pending if s.signed > 0),
+        ((books.account_id, alias, books.status, opened, led.cash_balance(),
+          sum(s.signed for s in pending if s.signed > 0),
           -sum(s.signed for s in pending if s.signed < 0), led.projected_cash(), len(pending), len(held),
           market_value, close_day, recon[0] if recon else None, recon[1] if recon else None,
           recon[2] if recon else None, clean_streak(books.conn, calendar, last_nav, books.account_id) if last_nav else 0),))

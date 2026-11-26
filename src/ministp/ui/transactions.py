@@ -10,6 +10,7 @@ from ..calendar import BusinessCalendar
 from ..fees import FeeSchedule
 from ..ops import GATE_DAYS, Books, clean_streak, load_books, load_instruments, stored_open_orders
 from ..queries import Dataset
+from ..store import DEFAULT_ACCOUNT
 
 
 class TxError(ValueError):
@@ -22,10 +23,11 @@ class TxContext:
     calendar: BusinessCalendar
     fees: FeeSchedule
     today: dt.date
+    account_id: str = DEFAULT_ACCOUNT   # the account the screens are looking at (계좌 선택, 화면 공통)
 
     @cached_property
     def books(self) -> Books:
-        return load_books(self.conn, self.calendar, self.fees)
+        return load_books(self.conn, self.calendar, self.fees, self.account_id)
 
 
 @dataclass(frozen=True)
@@ -53,7 +55,7 @@ def _holdings(c: TxContext, p) -> TxResult:
     """보유는 오늘 `run`이 받은 현재가로 평가해요 (R-68). `run`이 꺼져 있으면 가장 최근 종가로."""
     from ..quotes import latest_quotes
     quotes, now = latest_quotes(c.conn, c.today), dt.datetime.now()
-    base = q.holdings(c.conn, p.get("day") or c.today)
+    base = q.holdings(c.conn, p.get("day") or c.today, c.account_id)
     view = q.holdings_view(base, c.books.ledger, quotes, now)
     symbols = [r[view.columns.index("symbol")] for r in view.rows]
     return TxResult({"main": view, "mix": q.holdings_mix(view)},
@@ -83,14 +85,15 @@ def _order_check(c: TxContext, p) -> TxResult:
 
 
 def _blotter(c: TxContext, p) -> TxResult:
-    return TxResult({"main": q.blotter_view(q.order_blotter(c.conn, p.get("day") or c.today), c.books.ledger, c.today)})
+    orders = q.order_blotter(c.conn, p.get("day") or c.today, c.account_id)
+    return TxResult({"main": q.blotter_view(orders, c.books.ledger, c.today)})
 
 
 def _order(c: TxContext, p) -> TxResult:
     if not p.get("client_id"):
         raise TxError("내부 주문번호가 필요해요")
     try:
-        d = q.order_detail(c.conn, c.books.ledger, p["client_id"], c.today)
+        d = q.order_detail(c.conn, c.books.ledger, p["client_id"], c.today, c.account_id)
     except KeyError as e:
         raise TxError(e.args[0]) from e
     return TxResult({"order": d.order, "fills": d.fills})
@@ -98,16 +101,17 @@ def _order(c: TxContext, p) -> TxResult:
 
 def _recon(c: TxContext, p) -> TxResult:
     return TxResult({"main": q.recon_history(c.conn, p.get("date_from"), p.get("date_to"),
-                                             p.get("kind") or "DAILY_RECON", bool(p.get("only_breaks")))})
+                                             p.get("kind") or "DAILY_RECON", bool(p.get("only_breaks")),
+                                             c.account_id)})
 
 
 MAX_CALENDAR_DAYS = 800   # 달력 보기는 두 해 남짓까지
 
 
 def _streak(c: TxContext) -> int:
-    """무오류 연속 영업일 as of the last day that was closed (the number every screen shows)."""
+    """무오류 연속 영업일 of the account in view, as of the last day that was closed (the number every screen shows)."""
     last = max((r.date for r in c.books.ledger.nav_history()), default=None)
-    return clean_streak(c.conn, c.calendar, last) if last else 0
+    return clean_streak(c.conn, c.calendar, last, c.account_id) if last else 0
 
 
 def _recon_days(c: TxContext, p) -> TxResult:
@@ -116,7 +120,7 @@ def _recon_days(c: TxContext, p) -> TxResult:
         raise TxError("시작일이 종료일보다 늦어요")
     if f and ((t or c.today) - f).days > MAX_CALENDAR_DAYS:
         raise TxError("달력은 두 해까지만 그려요. 기간을 줄여 주세요")
-    ds = q.recon_calendar(c.conn, c.calendar, c.today, f, t, p.get("kind") or "DAILY_RECON")
+    ds = q.recon_calendar(c.conn, c.calendar, c.today, f, t, p.get("kind") or "DAILY_RECON", c.account_id)
     ran = [r for r in ds.records() if r["items"] is not None]   # newest first
     # The day to open with: the latest one that still has a break to judge, else the latest run.
     opens = next((r for r in ran if r["open_breaks"]), ran[0] if ran else None)
@@ -128,7 +132,7 @@ def _recon_days(c: TxContext, p) -> TxResult:
 
 
 def _integrity(c: TxContext, p) -> TxResult:
-    ds = q.integrity_checks(c.conn, c.calendar, c.fees, load_instruments(c.conn))
+    ds = q.integrity_checks(c.conn, c.calendar, c.fees, load_instruments(c.conn), c.account_id)
     breaks = [r["key"] for r in ds.records() if r["result"] != q.RESULT_TEXT[True]]
     meta = {"all_ok": not breaks, "breaks": len(breaks)}
     if breaks:
@@ -140,7 +144,8 @@ def _integrity_rows(c: TxContext, p) -> TxResult:
     if not p.get("title"):
         raise TxError("점검 항목이 필요해요")
     try:
-        check, rows = q.integrity_compared(c.conn, p["title"], c.calendar, c.fees, load_instruments(c.conn))
+        check, rows = q.integrity_compared(c.conn, p["title"], c.calendar, c.fees, load_instruments(c.conn),
+                                           c.account_id)
     except KeyError as e:
         raise TxError(e.args[0]) from e
     return TxResult({"check": check, "rows": rows})
@@ -228,7 +233,7 @@ def _return_days(c: TxContext, p) -> TxResult:
 
 def _close_days(c: TxContext, p) -> TxResult:
     from ..closeboard import DAY_BAD
-    ds = q.close_days(c.conn, c.calendar, c.fees, c.today, p.get("date_from"), p.get("date_to"))
+    ds = q.close_days(c.conn, c.calendar, c.fees, c.today, p.get("date_from"), p.get("date_to"), c.account_id)
     return TxResult({"main": ds}, {"attention_days": sum(r["state"] == DAY_BAD for r in ds.records())})
 
 
@@ -236,21 +241,21 @@ def _close_steps(c: TxContext, p) -> TxResult:
     if not p.get("date"):
         raise TxError("영업일이 필요해요")
     try:
-        return TxResult({"main": q.close_steps(c.conn, c.calendar, c.fees, c.today, p["date"])})
+        return TxResult({"main": q.close_steps(c.conn, c.calendar, c.fees, c.today, p["date"], c.account_id)})
     except KeyError as e:
         raise TxError(e.args[0]) from e
 
 
 def _events(c: TxContext, p) -> TxResult:
     return TxResult({"main": q.ledger_events(c.conn, p.get("date_from"), p.get("date_to"),
-                                             p.get("event_type"), p.get("symbol"), p.get("seq"))})
+                                             p.get("event_type"), p.get("symbol"), p.get("seq"), c.account_id)})
 
 
 def _trace(c: TxContext, p) -> TxResult:
     if p.get("seq") is None:
         raise TxError("seq가 필요해요")
     try:
-        t = q.event_trace(c.conn, p["seq"])
+        t = q.event_trace(c.conn, p["seq"], c.account_id)
     except KeyError as e:
         raise TxError(str(e)) from e
     return TxResult({"event": t.event, "positions": t.positions, "cash": t.cash})   # its journal: STP3200R02
@@ -258,21 +263,21 @@ def _trace(c: TxContext, p) -> TxResult:
 
 def _journal_events(c: TxContext, p) -> TxResult:
     return TxResult({"main": q.journal_events(c.conn, p.get("date_from"), p.get("date_to"),
-                                              p.get("event_type"), p.get("symbol"), p.get("seq"))})
+                                              p.get("event_type"), p.get("symbol"), p.get("seq"), c.account_id)})
 
 
 def _journal(c: TxContext, p) -> TxResult:
     if p.get("seq") is None:
         raise TxError("seq가 필요해요")
     try:
-        journal, balanced = q.event_journal(c.conn, p["seq"])
+        journal, balanced = q.event_journal(c.conn, p["seq"], c.account_id)
     except KeyError as e:
         raise TxError(str(e)) from e
     return TxResult({"journal": journal}, {"balanced": balanced})
 
 
 def _trial(c: TxContext, p) -> TxResult:
-    ds, meta = q.trial_balance(c.conn, p.get("day") or c.today)
+    ds, meta = q.trial_balance(c.conn, p.get("day") or c.today, c.account_id)
     return TxResult({"main": ds}, meta)
 
 
@@ -407,6 +412,32 @@ def _risk(c: TxContext, p) -> TxResult:
     return TxResult({"main": q.risk_rules()})
 
 
+def _accounts(c: TxContext, p) -> TxResult:
+    """Every account, whichever one the screens are looking at."""
+    return TxResult({"main": q.account_list(c.conn)}, {"selected": c.account_id})
+
+
+def _account_status(c: TxContext, p) -> TxResult:
+    if not p.get("account_id"):
+        raise TxError("계좌 ID가 필요해요")
+    return TxResult({"main": q.account_status_history(c.conn, p["account_id"])})
+
+
+def _customers(c: TxContext, p) -> TxResult:
+    return TxResult({"main": q.customer_list(c.conn)})
+
+
+def _customer_positions(c: TxContext, p) -> TxResult:
+    """One customer's accounts added up per symbol (all customers when none is named)."""
+    return TxResult({"main": q.customer_positions(c.conn, p.get("customer_id") or None)})
+
+
+def _customer_accounts(c: TxContext, p) -> TxResult:
+    if not p.get("customer_id"):
+        raise TxError("고객 ID가 필요해요")
+    return TxResult({"main": q.customer_accounts(c.conn, p["customer_id"])})
+
+
 TRANSACTIONS: dict[str, Tx] = {t.tx_id: t for t in [
     Tx("STP1100R01", "종목별 보유", {"day": "date"}, _holdings),
     Tx("STP1100R02", "예수금·주문가능금액", {}, _cash),
@@ -451,6 +482,11 @@ TRANSACTIONS: dict[str, Tx] = {t.tx_id: t for t in [
     Tx("STP4300R03", "호가단위", {}, _ticks),
     Tx("STP4300R04", "휴장일", {}, _holidays),
     Tx("STP4300R05", "주문 검증 기준", {}, _risk),
+    Tx("STP4400R01", "계좌 목록", {}, _accounts),
+    Tx("STP4400R02", "계좌 상태 이력", {"account_id": "text"}, _account_status),
+    Tx("STP1400R01", "고객 목록", {}, _customers),
+    Tx("STP1400R02", "고객 보유 합산", {"customer_id": "text"}, _customer_positions),
+    Tx("STP1400R03", "고객의 계좌", {"customer_id": "text"}, _customer_accounts),
 ]}
 
 

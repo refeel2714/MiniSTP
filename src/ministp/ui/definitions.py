@@ -134,7 +134,9 @@ class Grid:
     taccount: dict | None = None  # view: taccount: {account, debit, credit[, name][, entry]}: columns of this grid
     map: dict | None = None       # 구성 지도: {label, size[, tone]}. With view: grid it is a second view next to the table
     meta: dict[str, str] = field(default_factory=dict)   # tx meta key -> label
-    drill: dict | None = None   # {screen: STP-xxxx, params: {cond: column}} or {by: column, screens: [...], params}
+    drill: dict | None = None   # {screen: STP-xxxx, params: {cond: column}, account: column}
+                                # or {by: column, screens: [...], params}: the row names the screen it opens
+                                # account: open the target screen for the account in that column
     chart: dict | None = None   # {x: column, y: column}: a line over the rows
     live: bool = False          # reload when the DB changes (SSE), changed rows highlighted
     key: str | None = None      # column that identifies a row across reloads (default: first column)
@@ -671,6 +673,8 @@ def validate(screens: dict[str, Screen], catalog: dict, lookups: dict[str, Looku
                             errs.append(f"{gw}: {'·'.join(t.id for t in targets)}에 없는 조회조건 {cond}로 이동")
                         if col not in names:
                             errs.append(f"{gw}: 이동 값 {col}이 열에 없어요")
+                if g.drill.get("account") and g.drill["account"] not in {c.name for c in g.columns}:
+                    errs.append(f"{gw}: 이동할 계좌 열 {g.drill['account']}이 열에 없어요")
             if g.chart and not {g.chart.get("x"), g.chart.get("y")} <= {c.name for c in g.columns}:
                 errs.append(f"{gw}: 차트 열 {g.chart}이 열에 없어요")
         search_params -= edit_params(s)   # filled by an 입력 그리드, not by a condition

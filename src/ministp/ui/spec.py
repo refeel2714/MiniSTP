@@ -117,6 +117,8 @@ def screen_markdown(screen: Screen, catalog: dict, lookups=None, menu=None) -> s
             facts.append(f"- 상태 표시: {', '.join(f'{v} (`{k}`)' for k, v in g.meta.items())}")
         if g.drill:
             params = ", ".join(f"`{k}` ← `{v}`" for k, v in g.drill.get("params", {}).items())
+            if g.drill.get("account"):
+                params = ", ".join(x for x in (params, f"계좌 ← `{g.drill['account']}`") if x)
             where = (f"`{g.drill['by']}` 열이 가리키는 화면({', '.join(g.drill['screens'])})" if g.drill.get("by")
                      else g.drill["screen"])
             facts.append(f"- 행 더블클릭·Enter: {where}으로 이동 ({params})" if g.drill.get("by")

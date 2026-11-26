@@ -28,12 +28,54 @@
     MATCH: "ok", ACCEPTED: "ok", FILLED: "ok", true: "ok",
     BREAK: "bad", REJECTED: "bad", false: "bad",
     RESOLVED: "warn", UNKNOWN: "warn", CANCELED: "warn", PENDING: "warn", "적용 중": "ok", "예정": "warn",
+    OPEN: "ok", SUSPENDED: "warn", CLOSED: "bad",
     "일치": "ok", "불일치(판단함)": "warn", "불일치": "bad", "대사 없음": "miss",   // miss: something owed is not there
     "결제 완료": "ok", "결제 대기": "info", "체결 대기": "info", "부분 체결": "warn",   // info: on its way, nothing to do
     "접수 거부": "bad", "결제 지연": "bad", "접수 기록 없음": "miss",
     "정상": "ok", "주의": "warn", "확인 필요": "bad", "평가 전": "info",
     "완료": "ok", "대기": "info", "누락": "miss", "점검 완료": "ok", "진행 중": "info",
   };
+
+  // ---------- account (다계좌) ----------
+  // Every screen looks at one account, picked in the top bar and remembered in this browser.
+  // The server gets it with every transaction; it never comes from a screen definition.
+  const ACCOUNTS = DATA.accounts || [];
+  const ACCOUNT_KEY = "stpui.account";
+  const ACCOUNT_STATUS = { SUSPENDED: "정지", CLOSED: "해지" };
+  const knownAccount = id => ACCOUNTS.some(a => a.account_id === id);
+  function rememberAccount(id) { try { localStorage.setItem(ACCOUNT_KEY, id); } catch (e) { /* private mode */ } }
+  const ACCOUNT = (function () {
+    const url = new URL(location.href), asked = url.searchParams.get("account");
+    let saved = null;
+    try { saved = localStorage.getItem(ACCOUNT_KEY); } catch (e) { /* private mode */ }
+    if (asked !== null) {              // a link from the account list: take it, then keep the address clean
+      url.searchParams.delete("account");
+      history.replaceState(null, "", url.pathname + url.search);
+      if (knownAccount(asked)) rememberAccount(asked);
+    }
+    return [asked, saved, DATA.default_account].find(knownAccount) || (ACCOUNTS[0] || {}).account_id || DATA.default_account;
+  })();
+  // 실전 테두리: the shell's environment or the picked account's (trading_accounts.env), whichever is live.
+  // The server could only write the shell's into the page, because the account is picked in this browser.
+  // A sample stays a sample whatever its accounts say.
+  const ACCOUNT_LIVE = DATA.env !== "sample" && (ACCOUNTS.find(a => a.account_id === ACCOUNT) || {}).env === "LIVE";
+  if (ACCOUNT_LIVE && DATA.env !== "live") {
+    DATA.env = "live";
+    DATA.env_name = "실전";
+    document.body.dataset.env = "live";
+    document.title = "[실전] " + document.title;
+  }
+  function accountPicker() {
+    if (ACCOUNTS.length < 2) return null;   // one account: nothing to pick, the bar stays as it was
+    const el = h("select", { id: "acct", "aria-label": "조회할 계좌" }, ACCOUNTS.map(a => h("option", {
+      value: a.account_id, selected: a.account_id === ACCOUNT,
+      text: `${a.account_id} ${a.alias}` + (ACCOUNT_STATUS[a.status] ? ` · ${ACCOUNT_STATUS[a.status]}` : ""),
+    })));
+    el.addEventListener("change", () => { rememberAccount(el.value); location.reload(); });
+    const me = ACCOUNTS.find(a => a.account_id === ACCOUNT) || {};
+    return h("label", { class: "acct" + (me.status && me.status !== "OPEN" ? " warn" : ""), for: "acct",
+      title: `고객 ${me.customer_id || ""} · 모든 화면이 이 계좌를 보여줘요` }, h("span", { text: "계좌" }), el);
+  }
 
   function h(tag, attrs, ...kids) {
     const el = document.createElement(tag);
@@ -123,9 +165,9 @@
     if (!r.ok || body.error) throw new Error(body.error || "HTTP " + r.status);
     return body;
   }
-  const call = (tx, params) => post("/api/tx/" + tx, { params });   // 조회
+  const call = (tx, params) => post("/api/tx/" + tx, { params, account: ACCOUNT });   // 조회
   // 처리: only a page this server sent knows the token, so no other site can press a button.
-  const act = (tx, params) => post("/api/action/" + tx, { params }, { "X-STPUI-Token": DATA.token });
+  const act = (tx, params) => post("/api/action/" + tx, { params, account: ACCOUNT }, { "X-STPUI-Token": DATA.token });
 
   function toast(text) {
     let box = document.getElementById("toast");
@@ -481,7 +523,7 @@
       h("form", { onsubmit: submit, novalidate: true, oninput: () => { err.textContent = ""; } },
         h("div", { class: "dhead" }, h("h2", { id: "dlg-title", text: b.label }),
           h("span", { class: "txid", title: "처리 트랜잭션: " + b.title, text: b.tx })),
-        DATA.env === "live" ? h("p", { class: "flive", role: "note", text: "실전 환경이에요. 이 처리는 실전 원장에 기록돼요." }) : null,
+        DATA.env === "live" ? h("p", { class: "flive", role: "note", text: (ACCOUNT_LIVE ? "실전 계좌예요." : "실전 환경이에요.") + " 이 처리는 실전 원장에 기록돼요." }) : null,
         shows, b.note ? h("p", { class: "fnote", text: b.note }) : null,
         h("div", { class: "fields" }, fields), err,
         h("div", { class: "dfoot" }, h("button", { type: "button", class: "ghost", onclick: () => dlg.close() }, "취소"), ok)));
@@ -496,7 +538,8 @@
   const ENV_TITLES = {
     sample: "샘플 DB: 연습용이라 증권사 계좌와 이어져 있지 않아요",
     paper: "모의투자 환경 (MINISTP_KIS_ENV=paper)",
-    live: "실전 환경 (MINISTP_KIS_ENV=live): 이 화면의 숫자와 처리는 실전 원장의 것이에요",
+    live: ACCOUNT_LIVE ? `실전 계좌 (${ACCOUNT}): 이 화면의 숫자와 처리는 실전 원장의 것이에요`
+      : "실전 환경 (MINISTP_KIS_ENV=live): 이 화면의 숫자와 처리는 실전 원장의 것이에요",
   };
   // What a viewer set on this browser (menu shut, a 대분류 folded). A convenience only: the page works without it.
   const prefs = {
@@ -519,6 +562,7 @@
       h("span", { class: "grow" }),
       h("button", { type: "button", class: "jumpbtn", title: "화면이나 종목으로 바로 가기 (Ctrl+K)", onclick: openJump },
         "바로 가기", h("kbd", { text: "Ctrl K" })),
+      accountPicker(),
       h("span", { class: "env", title: DATA.writable
         ? `DB ${DATA.db} · 조회는 읽기 전용 연결, 처리 버튼을 누를 때만 쓰기 연결`
         : `DB ${DATA.db} · 읽기 전용 연결 (처리 버튼은 ui --write 로 열었을 때만)` },
@@ -702,6 +746,7 @@
       }
       const q = new URLSearchParams();
       for (const [cond, col] of Object.entries(g.drill.params || {})) if (row[col] != null) q.set(cond, row[col]);
+      if (g.drill.account && row[g.drill.account]) q.set("account", row[g.drill.account]);   // open it for that account
       location.href = "/screen/" + target + "?" + q.toString();
     }
 
