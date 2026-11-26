@@ -46,7 +46,7 @@ from .ledger import Side
 from .oms import OrderStatus
 from .accounts import STATUSES, add_account, add_customer, list_accounts, set_status
 from .ops import (GATE_DAYS, IntradayRunner, OpsError, acquire_writer, add_instrument, cancel_order, clean_streak, close_books, daily_close, load_books, open_books,
-                  place_order, require_current_schema, resolve_break)
+                  require_current_schema, resolve_break)
 from .recon import Cause, Status
 from . import rights
 from .session import failure_text
@@ -95,6 +95,7 @@ def _print_recon(report) -> None:
 
 CASH_ACTIONS = {"deposit": "CASH_DEPOSIT", "withdraw": "CASH_WITHDRAW", "transfer": "CASH_TRANSFER"}
 CODE_ACTIONS = {"rename": "CODE_RENAME", "group-add": "CODE_GROUP_ADD", "add": "CODE_ADD", "use": "CODE_USE"}
+REQUEST_ACTIONS = {"approve": "ORDER_APPROVE", "reject": "ORDER_REJECT", "cancel": "ORDER_REQUEST_CANCEL"}
 
 
 def audited(args, today: dt.date):
@@ -142,11 +143,143 @@ def audited(args, today: dt.date):
                                                                                 "why": args.reason}
     if cmd == "master" and args.action == "load":
         return "MASTER_LOAD", None, args.date.isoformat() if args.date else None, None
+    if cmd == "user" and what == "add":
+        return "USER_ADD", None, args.user_id, {"name": args.name}
+    if cmd == "right" and what in ("grant", "revoke"):
+        return ("RIGHT_GRANT" if what == "grant" else "RIGHT_REVOKE"), args.account_id, args.user_id, {
+            "right": args.right, "max_order_value": getattr(args, "max_value", None),
+            "self_approve": getattr(args, "self_approve", None) or None, "reason": args.reason}
+    if cmd == "request" and what == "add":
+        return "ORDER_REQUEST", args.account, None, {"lines": args.line, "basket": args.basket or None}
+    if cmd == "request" and what in REQUEST_ACTIONS:
+        return REQUEST_ACTIONS[what], args.account, ",".join(args.ids), {"reason": getattr(args, "reason", None)}
     if cmd == "code" and what in CODE_ACTIONS:
         target = args.group_id + (f".{args.code}" if what != "group-add" else "")
         return CODE_ACTIONS[what], None, target, {"name": getattr(args, "name", None),
                                                   "state": getattr(args, "state", None)}
     return None
+
+
+def _approval(conn, args, today: dt.date, day: dt.date) -> int:
+    """user, right, request list/approve/reject/cancel. `day`: 요청 번호만 주면 쓰는 주문일 (지금 요청이 나갈 날)."""
+    from . import approval
+    cmd, what = args.cmd, args.what
+    if cmd == "user" and what == "add":
+        approval.add_user(conn, args.user_id, args.name, today)
+        print(f"사용자 등록: {args.user_id} {args.name}")
+        return 0
+    if cmd == "user":
+        for uid, name, by, at in conn.execute("select user_id, name, created_by, created_at from app_users order by user_id"):
+            print(f"  {uid:12} {name:10} 등록 {at:%Y-%m-%d} ({by})")
+        return 0
+    if cmd == "right" and what in ("grant", "revoke"):
+        approval.grant(conn, args.user_id, args.right, today, account_id=args.account_id,
+                       max_order_value=getattr(args, "max_value", None),
+                       self_approve=getattr(args, "self_approve", False), effective_from=args.effective_from,
+                       reason=args.reason, revoke=what == "revoke")
+        print(f"{'권한 회수' if what == 'revoke' else '권한 부여'}: {args.user_id} {approval.RIGHTS[args.right]}"
+              f" ({args.account_id or '모든 계좌'})")
+        return 0
+    if cmd == "right":
+        rows = conn.execute("select user_id, user_name, account_id, right_code, max_order_value, self_approve,"
+                            " effective_from from user_rights_v order by user_id, right_code, account_id").fetchall()
+        if not rows:
+            print("권한이 아직 없어요. user add 다음에 right grant 사용자ID RIGHTS_ADMIN 으로 시작해요.")
+        for uid, name, acct, code, limit, self_ok, since in rows:
+            extra = ("" if code != "ORDER_APPROVE" else
+                     f", 1건 한도 {f'{limit:,}원' if limit else '없음'}, 셀프 승인 {'허용' if self_ok else '안 됨'}")
+            print(f"  {uid:12} {name:8} {approval.RIGHTS[code]:6} {acct or '모든 계좌'}{extra} ({since}부터)")
+        return 0
+    if what == "list":
+        reqs = approval.requests(conn, account_id=args.account, trade_date=args.date,
+                                 from_date=None if args.date else today)
+        if not reqs:
+            print("주문 요청이 없어요.")
+        for r in reqs:
+            who = f" 승인 {r.approved_by}{'(셀프)' if r.self_approved else ''}" if r.approved_by else ""
+            print(f"  {r.trade_date} 요청 {r.request_no:<3} {approval.ORDER_TYPES[r.order_type]:3} "
+                  f"{approval.STATUSES[r.status]:6} 작성 {r.created_by}{who}"
+                  + (f" ({r.last_reason})" if r.last_reason else ""))
+            for ln in r.lines:
+                price = f"{ln.limit_price:,}" if ln.limit_price else "시장가"
+                sent = (f" 주문 {ln.client_id}" if ln.client_id else
+                        f" 전송 실패: {ln.send_reason}" if ln.send_outcome == "FAILED" else "")
+                print(f"      {ln.line_no}. {ln.symbol} {'매수' if ln.side.value == 'BUY' else '매도'} "
+                      f"{ln.qty:>6,}주 @{price:>9}{sent}")
+        return 0
+    keys = approval.parse_keys(args.ids, args.date or day)
+    shown = ", ".join(str(k.request_no) for k in keys)
+    if what == "approve":
+        from .cli import krx_calendar
+        from .fees import FeeSchedule
+        from .ops import load_books
+        books = load_books(conn, krx_calendar(), FeeSchedule.kis_paper(), args.account)
+        approval.approve(books, today, keys)
+        print(f"승인: 요청 {shown} ({keys[0].trade_date} 주문). 장중이면 run이 바로 보내요.")
+        return 0
+    if what == "reject":
+        approval.reject(conn, args.account, today, keys, args.reason)
+        print(f"반려: 요청 {shown}")
+        return 0
+    approval.cancel(conn, args.account, keys, args.reason)
+    print(f"요청 취소: 요청 {shown}")
+    return 0
+
+
+def order_day(calendar, at: dt.datetime) -> dt.date:
+    """요청이 나갈 주문일: 영업일 장 마감 전이면 오늘, 아니면 다음 영업일."""
+    today = at.date()
+    if calendar.is_business_day(today) and at.time() <= MARKET_CLOSE:
+        return today
+    return calendar.add_business_days(today, 1)
+
+
+def _parse_line(text: str):
+    from .approval import Line
+    parts = text.split(":")
+    try:
+        if len(parts) not in (3, 4) or parts[1].lower() not in ("buy", "sell"):
+            raise ValueError
+        return Line(parts[0].strip(), Side(parts[1].upper()), int(parts[2]), int(parts[3]) if len(parts) == 4 else None)
+    except ValueError:
+        raise OpsError(f"주문 줄은 종목:buy|sell:수량[:지정가] 모양이에요: {text}") from None
+
+
+def _request_add(books, args, calendar, started: dt.datetime) -> int:
+    from . import approval
+    lines = [_parse_line(t) for t in args.line]
+    day = order_day(calendar, started)
+    keys, result = approval.submit(books, started.date(), day, lines, basket=args.basket,
+                                   self_approve=args.approve, now=started)
+    kind = "바스켓 " if args.basket else ""
+    print(f"결재 요청 ({day} 주문): {kind}요청 {', '.join(str(k.request_no) for k in keys)}"
+          + (" · 셀프 승인까지 했어요" if args.approve else ""))
+    for ln in result.lines:
+        w = f", 주문 후 비중 {ln.post_weight}%" if ln.post_weight is not None else ""
+        print(f"  {ln.item.symbol} {'매수' if ln.item.side is Side.BUY else '매도'} {ln.item.qty:,}주: 통과{w}")
+    return 0
+
+
+def _order_via_approval(books, broker, today: dt.date, args, started: dt.datetime):
+    """order 명령도 결재를 거쳐요(11/24): 요청을 올리고, 셀프 승인 허용이 있으면 승인해 바로 보내요.
+    없으면 요청만 남기고 (None, None)."""
+    from . import approval
+    from .ops import session_for
+    line = approval.Line(args.symbol, Side(args.side.upper()), args.qty, args.limit)
+    right = approval.rights_of(books.conn, approval.actor(), books.account_id, today).get("ORDER_APPROVE")
+    self_ok = bool(right and right.self_approve)
+    prices = {} if args.limit else {args.symbol: broker.get_price(args.symbol)}   # 시장가는 지금 가격으로 검증
+    (key,), _ = approval.submit(books, today, today, [line], self_approve=self_ok, now=started, prices=prices)
+    if not self_ok:
+        print(f"결재 요청 {key.request_no}을 올렸어요. 다른 승인자가 승인하면 장중 run이 보내요.")
+        return None, None
+    session = session_for(books, broker, today)
+    sent = approval.send_approved(books, session, today, keys=[key], now=started)[0]
+    if sent.client_id is None:
+        print(f"주문 실패 (요청 {key.request_no}): {sent.detail}")
+        return session, None
+    print(f"요청 {key.request_no} 셀프 승인, 주문 {sent.client_id}로 보냈어요.")
+    return session, sent.client_id
 
 
 def _not_now(conn, args, today: dt.date, message: str) -> int:
@@ -273,6 +406,40 @@ def _run(argv, *, environ=os.environ, client_factory=KisClient, connect=psycopg.
     q.add_argument("account_id", metavar="계좌ID"), q.add_argument("status", choices=list(STATUSES))
     q.add_argument("reason", metavar="사유")
     q.add_argument("--from", dest="effective_from", type=dt.date.fromisoformat, help="적용 시작일 (기본 오늘)")
+    p = sub.add_parser("user", help="사용자 목록·등록 (주문을 쓰고 승인하는 사람, 지금은 PC 로그인 이름이 ID)")
+    what = p.add_subparsers(dest="what", required=True)
+    what.add_parser("list")
+    q = what.add_parser("add")
+    q.add_argument("user_id", metavar="사용자ID"), q.add_argument("name", metavar="이름")
+    p = sub.add_parser("right", help="결재 권한: 주문 작성, 주문 승인(1건 한도, 셀프 승인 허용), 권한 관리 (R-99)")
+    what = p.add_subparsers(dest="what", required=True)
+    what.add_parser("list")
+    for name in ("grant", "revoke"):
+        q = what.add_parser(name)
+        q.add_argument("user_id", metavar="사용자ID"), q.add_argument("right", choices=["ORDER_WRITE", "ORDER_APPROVE",
+                                                                                   "RIGHTS_ADMIN"])
+        q.add_argument("--account", dest="account_id", metavar="계좌ID", help="이 계좌에만 (없으면 모든 계좌)")
+        q.add_argument("--from", dest="effective_from", type=dt.date.fromisoformat, help="적용 시작일 (기본 오늘)")
+        q.add_argument("--reason", metavar="사유")
+        if name == "grant":
+            q.add_argument("--max-value", type=int, metavar="원", help="주문 승인: 1건 승인 한도 (없으면 한도 없음)")
+            q.add_argument("--self-approve", action="store_true", help="주문 승인: 자기가 쓴 요청도 승인할 수 있게")
+    p = sub.add_parser("request", help="주문 결재: 요청 올리기·목록·승인·반려·취소. 승인된 요청은 run이 보내요 (R-100)")
+    what = p.add_subparsers(dest="what", required=True)
+    q = what.add_parser("add", parents=[by_account])
+    q.add_argument("--line", action="append", required=True, metavar="종목:buy|sell:수량[:지정가]",
+                   help="주문 한 줄. 여러 번 쓰면 여러 줄을 한꺼번에 묶음 검증해요")
+    q.add_argument("--basket", action="store_true",
+                   help="여러 줄을 요청 한 건(바스켓)으로. 없으면 줄마다 단건 요청 한 건 (승인·반려·취소는 요청 단위)")
+    q.add_argument("--approve", action="store_true", help="셀프 승인까지 (셀프 승인 허용 권한이 있을 때)")
+    q = what.add_parser("list", parents=[by_account])
+    q.add_argument("--date", type=dt.date.fromisoformat, help="주문일 (기본: 오늘과 그 뒤)")
+    for name in ("approve", "reject", "cancel"):
+        q = what.add_parser(name, parents=[by_account])
+        q.add_argument("ids", nargs="+", metavar="요청번호", help="3 또는 20261120-3 (주문일-요청 번호)")
+        q.add_argument("--date", type=dt.date.fromisoformat, help="요청 번호만 줄 때의 주문일 (기본: 지금 요청이 나갈 주문일)")
+        if name != "approve":
+            q.add_argument("--reason", required=name == "reject", metavar="사유")
     p = sub.add_parser("code", help="공통코드: 코드와 코드명 보기, 코드명 바꾸기, 스키마·프로그램과 대조")
     what = p.add_subparsers(dest="what", required=True)
     q = what.add_parser("list", help="코드 그룹 목록. 그룹ID를 주면 그 그룹의 코드")
@@ -452,6 +619,10 @@ def _run(argv, *, environ=os.environ, client_factory=KisClient, connect=psycopg.
                 print(f"등록: {args.symbol} {args.name} ({market.value} {asset.value})")
                 return 0
 
+            if args.cmd in ("user", "right") or (args.cmd == "request" and args.what != "add"):
+                require_current_schema(conn)    # 결재는 원장에 쓰지 않아요: run이 떠 있어도 돼요
+                return _approval(conn, args, today, order_day(calendar, started))
+
             if args.cmd in ("open", "order", "cancel", "daily", "close", "run", "resolve", "customer") or (
                     args.cmd in ("dividend", "cash", "adjust") and args.what != "list") or (
                     args.cmd == "account" and args.what != "list") or (
@@ -480,6 +651,9 @@ def _run(argv, *, environ=os.environ, client_factory=KisClient, connect=psycopg.
             acct = next(a for a in accounts if a.account_id == args.account)
             if len(accounts) > 1:   # say whose books these are whenever there is a choice
                 print(f"계좌 {acct.account_id} {acct.alias} (고객 {acct.customer_id}, {acct.status})")
+
+            if args.cmd == "request":     # add: 이 계좌의 지금 모습으로 묶음 검증 (R-98)
+                return _request_add(books, args, calendar, started)
 
             if args.cmd == "status":
                 led = books.ledger
@@ -548,11 +722,15 @@ def _run(argv, *, environ=os.environ, client_factory=KisClient, connect=psycopg.
                     sleep(2)
                     return True
 
-                session, cid = place_order(books, broker, today, args.symbol,
-                                           Side(args.side.upper()), args.qty, args.limit, wait=wait)
+                session, cid = _order_via_approval(books, broker, today, args, started)
+                if session is None:     # 결재 요청만 올렸어요
+                    return 0
                 if cid is None:
-                    print(f"주문 실패: {failure_text(session.anomalies[-1].detail)}")
                     return 1
+                while True:
+                    session.sync(today)
+                    if session.oms.orders[cid].status is OrderStatus.FILLED or not wait():
+                        break
                 o = session.oms.orders[cid]
                 print(f"주문 {cid}: {o.status}, 체결 {o.filled_qty}/{o.qty}주")
                 for eid in session.executions_of(cid):

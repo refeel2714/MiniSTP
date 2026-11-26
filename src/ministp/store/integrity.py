@@ -28,11 +28,15 @@ from .postgres import DEFAULT_ACCOUNT, cash_rows, close_row, from_payload, posit
 APPEND_ONLY_TABLES = ("ledger_events", "journal_entries", "journal_lines", "position_ledger", "cash_ledger",
                       "instruments", "oms_orders", "oms_order_acks", "broker_snapshots", "recon_results",
                       "customers", "trading_accounts", "account_status_history", "day_closes", "audit_log",
-                      "corporate_actions", "master_loads", "instrument_master")
+                      "corporate_actions", "master_loads", "instrument_master",
+                      "app_users", "user_rights", "order_requests", "order_request_lines", "order_approvals",
+                      "order_sends")
 BALANCE_TRIGGERS = ("journal_entries_balanced", "journal_lines_balanced")
 # R-78 in the database: no entry, cash row or close dated inside a closed day (ERD v2.2).
 CLOSED_DAY_TRIGGERS = ("journal_entries_closed_day", "cash_ledger_closed_day", "day_closes_closed_day")
 AUDIT_CHAIN_TRIGGER = "audit_log_chain"   # numbers, stamps and links each audit row (ERD v2.3)
+APPROVAL_FLOW_TRIGGER = "order_approvals_flow"   # 결재 순서와 셀프 승인 표시 (ERD v2.9, R-100)
+APPROVAL_TRIGGERS = (APPROVAL_FLOW_TRIGGER, "order_request_lines_fixed", "order_sends_flow")
 SHOWN = 3   # how many differing items a detail line names
 
 
@@ -71,12 +75,12 @@ def check_guards(conn: psycopg.Connection) -> Check:
         " join pg_namespace n on n.oid = c.relnamespace"
         " where n.nspname = current_schema() and not t.tgisinternal") if enabled in ("O", "A")}
     want = [f"{t}_{kind}" for t in APPEND_ONLY_TABLES for kind in ("append_only", "no_truncate")]
-    want += BALANCE_TRIGGERS + CLOSED_DAY_TRIGGERS + (AUDIT_CHAIN_TRIGGER,)
+    want += BALANCE_TRIGGERS + CLOSED_DAY_TRIGGERS + (AUDIT_CHAIN_TRIGGER,) + APPROVAL_TRIGGERS
     off = [w for w in want if w not in live]
     if off:
         return Check("guards", "수정·삭제 방지", False, f"꺼져 있거나 없는 트리거: {_some(off)}")
     return Check("guards", "수정·삭제 방지", True,
-                 f"{len(APPEND_ONLY_TABLES)}개 테이블의 수정·삭제·비우기 금지, 분개 대차 검사, 마감일 잠금, 감사 로그 사슬이 켜져 있음")
+                 f"{len(APPEND_ONLY_TABLES)}개 테이블의 수정·삭제·비우기 금지, 분개 대차 검사, 마감일 잠금, 감사 로그 사슬, 결재 순서가 켜져 있음")
 
 
 def check_balanced(conn: psycopg.Connection) -> Check:

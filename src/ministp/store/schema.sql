@@ -1,5 +1,5 @@
 -- MiniSTP ledger schema (spec 03).
--- ERD version: 2.7  (bump on every schema change, then run scripts/gen_erd.py) Append-only tables are enforced in the DB,
+-- ERD version: 2.9  (bump on every schema change, then run scripts/gen_erd.py) Append-only tables are enforced in the DB,
 -- not just in application code.
 
 create table if not exists accounts_chart (
@@ -264,6 +264,88 @@ create table if not exists recon_results (
         foreign key (run_id, account_id) references broker_snapshots (snapshot_id, account_id)
 );
 
+-- 주문 결재 (ERD v2.8, 스펙 D9, R-99~101): 사용자, 결재 권한 이력, 주문 요청(주문일 + 요청 번호)과 줄,
+-- 결재 이력(요청 단위), 전송 이력(줄 단위). 모두 추가만 한다.
+create table if not exists app_users (
+    user_id    text primary key check (user_id ~ '^[^[:space:]]+$'),
+    name       text not null check (name <> ''),
+    created_by text not null check (created_by <> ''),
+    created_at timestamptz not null default now()
+);
+
+create table if not exists user_rights (
+    right_row_id    bigserial primary key,
+    user_id         text not null references app_users (user_id),
+    account_id      text references trading_accounts (account_id),
+    right_code      text not null check (right_code in ('ORDER_WRITE', 'ORDER_APPROVE', 'RIGHTS_ADMIN')),
+    granted         boolean not null,
+    max_order_value bigint check (max_order_value > 0),
+    self_approve    boolean not null default false,
+    effective_from  date not null,
+    granted_by      text not null check (granted_by <> ''),
+    reason          text,
+    created_at      timestamptz not null default now(),
+    check (granted or (max_order_value is null and not self_approve)),
+    check (right_code = 'ORDER_APPROVE' or (max_order_value is null and not self_approve))
+);
+create index if not exists user_rights_user_idx on user_rights (user_id, right_code);
+
+create table if not exists order_requests (
+    trade_date  date not null,
+    request_no  integer not null check (request_no > 0),
+    account_id  text not null references trading_accounts (account_id),
+    order_type  text not null check (order_type in ('SINGLE', 'BASKET')),
+    created_by  text not null references app_users (user_id),
+    created_at  timestamptz not null default now(),
+    primary key (trade_date, request_no)
+);
+create index if not exists order_requests_account_idx on order_requests (account_id, trade_date);
+
+create table if not exists order_request_lines (
+    trade_date  date not null,
+    request_no  integer not null,
+    line_no     integer not null check (line_no > 0),
+    symbol      text not null references instruments (symbol),
+    side        text not null check (side in ('BUY', 'SELL')),
+    qty         bigint not null check (qty > 0),
+    limit_price bigint check (limit_price > 0),
+    primary key (trade_date, request_no, line_no),
+    foreign key (trade_date, request_no) references order_requests (trade_date, request_no)
+);
+
+create table if not exists order_approvals (
+    id            bigserial primary key,
+    trade_date    date not null,
+    request_no    integer not null,
+    action        text not null check (action in ('REQUEST', 'APPROVE', 'REJECT', 'CANCEL', 'EXPIRE')),
+    actor         text references app_users (user_id),
+    self_approved boolean not null default false,
+    reason        text,
+    set_check     jsonb not null default '{}',
+    at            timestamptz not null default now(),
+    foreign key (trade_date, request_no) references order_requests (trade_date, request_no),
+    check (actor is not null or action = 'EXPIRE'),
+    check (action <> 'REJECT' or coalesce(reason, '') <> ''),
+    check (self_approved = false or action = 'APPROVE')
+);
+create index if not exists order_approvals_request_idx on order_approvals (trade_date, request_no, id);
+
+create table if not exists order_sends (
+    id          bigserial primary key,
+    trade_date  date not null,
+    request_no  integer not null,
+    line_no     integer not null,
+    outcome     text not null check (outcome in ('SENT', 'FAILED')),
+    client_id   text unique references oms_orders (client_id),
+    reason      text,
+    set_check   jsonb not null default '{}',
+    at          timestamptz not null default now(),
+    foreign key (trade_date, request_no, line_no) references order_request_lines (trade_date, request_no, line_no),
+    constraint order_sends_line_key unique (trade_date, request_no, line_no),
+    check ((outcome = 'SENT') = (client_id is not null)),
+    check (outcome <> 'FAILED' or coalesce(reason, '') <> '')
+);
+
 -- 공통코드 (v2.1): 코드와 코드명. 원장이 직접 참조하는 코드(계정과목)는 전용 테이블에 둔다.
 create table if not exists code_groups (
     group_id    text primary key check (group_id ~ '^[A-Z][A-Z0-9_]{1,39}$'),
@@ -314,7 +396,9 @@ begin
                              'position_ledger', 'cash_ledger', 'instruments', 'oms_orders',
                              'oms_order_acks', 'broker_snapshots', 'recon_results',
                              'customers', 'trading_accounts', 'account_status_history', 'day_closes',
-                             'audit_log', 'corporate_actions', 'master_loads', 'instrument_master'] loop
+                             'audit_log', 'corporate_actions', 'master_loads', 'instrument_master',
+                             'app_users', 'user_rights', 'order_requests', 'order_request_lines',
+                             'order_approvals', 'order_sends'] loop
         if not exists (select 1 from pg_trigger where tgname = t || '_append_only') then
             execute format('create trigger %I before update or delete on %I
                             for each row execute function ministp_forbid_change()',
@@ -381,6 +465,84 @@ begin
     if not exists (select 1 from pg_trigger where tgname = 'audit_log_chain') then
         create trigger audit_log_chain before insert on audit_log
             for each row execute function ministp_audit_chain();
+    end if;
+end $$;
+
+-- 결재 흐름 (ERD v2.8, R-100): 요청 → 승인·반려·취소, 만료. 승인된 요청의 줄마다 전송·전송 실패 한 번. 그 밖의 순서는 DB가 거부한다.
+-- 같은 요청에 두 사람이 동시에 손대도 하나만 통과하도록 요청마다 잠그고 읽는다.
+-- 요청과 취소는 작성자만, 셀프 승인 표시는 DB가 작성자와 승인자를 비교해 채운다(프로그램이 넣은 값은 무시).
+create or replace function ministp_order_approval_flow() returns trigger language plpgsql as $$
+declare
+    last_action text;
+    writer text;
+    key text := new.trade_date || '-' || new.request_no;
+begin
+    perform pg_advisory_xact_lock(hashtext('ministp.order_request:' || key));
+    select created_by into writer from order_requests where trade_date = new.trade_date and request_no = new.request_no;
+    select action into last_action from order_approvals
+     where trade_date = new.trade_date and request_no = new.request_no order by id desc limit 1;
+    if not ((new.action = 'REQUEST' and last_action is null)
+         or (new.action in ('APPROVE', 'REJECT') and last_action = 'REQUEST')
+         or (new.action in ('CANCEL', 'EXPIRE') and last_action in ('REQUEST', 'APPROVE'))) then
+        raise exception 'order request %: % after % is not allowed', key, new.action,
+            coalesce(last_action, 'nothing') using errcode = 'check_violation';
+    end if;
+    if new.action in ('CANCEL', 'EXPIRE') and exists (select 1 from order_sends s
+            where s.trade_date = new.trade_date and s.request_no = new.request_no) then
+        raise exception 'order request %: % after a line was sent is not allowed', key, new.action
+            using errcode = 'check_violation';
+    end if;
+    if new.action = 'REQUEST' and not exists (select 1 from order_request_lines l
+            where l.trade_date = new.trade_date and l.request_no = new.request_no) then
+        raise exception 'order request %: no lines', key using errcode = 'check_violation';
+    end if;
+    if new.action in ('REQUEST', 'CANCEL') and new.actor is distinct from writer then
+        raise exception 'order request %: only its writer % may %', key, writer, new.action
+            using errcode = 'check_violation';
+    end if;
+    new.self_approved := new.action = 'APPROVE' and new.actor = writer;
+    return new;
+end $$;
+
+-- 줄은 요청과 함께 쓰고(결재 요청 전), 결재가 시작된 요청에는 줄을 더하지 못한다.
+create or replace function ministp_order_lines_fixed() returns trigger language plpgsql as $$
+begin
+    if exists (select 1 from order_approvals a where a.trade_date = new.trade_date and a.request_no = new.request_no) then
+        raise exception 'order request %-%: lines are fixed once it is requested', new.trade_date, new.request_no
+            using errcode = 'check_violation';
+    end if;
+    return new;
+end $$;
+
+-- 전송은 승인된 요청의 줄마다 한 번 (R-101). 승인 뒤 취소·만료와 겹치지 않게 같은 잠금을 잡는다.
+create or replace function ministp_order_send_flow() returns trigger language plpgsql as $$
+declare
+    last_action text;
+    key text := new.trade_date || '-' || new.request_no;
+begin
+    perform pg_advisory_xact_lock(hashtext('ministp.order_request:' || key));
+    select action into last_action from order_approvals
+     where trade_date = new.trade_date and request_no = new.request_no order by id desc limit 1;
+    if last_action is distinct from 'APPROVE' then
+        raise exception 'order request %: % after % is not allowed', key, new.outcome,
+            coalesce(last_action, 'nothing') using errcode = 'check_violation';
+    end if;
+    return new;
+end $$;
+
+do $$
+begin
+    if not exists (select 1 from pg_trigger where tgname = 'order_approvals_flow') then
+        create trigger order_approvals_flow before insert on order_approvals
+            for each row execute function ministp_order_approval_flow();
+    end if;
+    if not exists (select 1 from pg_trigger where tgname = 'order_request_lines_fixed') then
+        create trigger order_request_lines_fixed before insert on order_request_lines
+            for each row execute function ministp_order_lines_fixed();
+    end if;
+    if not exists (select 1 from pg_trigger where tgname = 'order_sends_flow') then
+        create trigger order_sends_flow before insert on order_sends
+            for each row execute function ministp_order_send_flow();
     end if;
 end $$;
 
@@ -534,6 +696,47 @@ select i.symbol, i.name, i.market, i.asset_type,
             when replace(c.name, ' ', '') <> replace(i.name, ' ', '') then 'RENAMED'
             else 'MATCH' end as status
   from instruments i left join instrument_master_current_v c using (symbol);
+
+-- v2.8 주문 결재 (R-99~100): 지금 권한과 요청마다의 상태.
+create or replace view user_rights_v as
+select r.user_id, u.name as user_name, r.account_id, r.right_code, r.max_order_value, r.self_approve,
+       r.effective_from, r.granted_by, r.reason, r.right_row_id
+  from (select distinct on (user_id, coalesce(account_id, ''), right_code) *
+          from user_rights
+         where effective_from <= current_date
+         order by user_id, coalesce(account_id, ''), right_code, effective_from desc, right_row_id desc) r
+  join app_users u using (user_id)
+ where r.granted;
+
+create or replace view order_requests_v as
+select q.trade_date, q.request_no, q.account_id, q.order_type, q.created_by, q.created_at,
+       n.lines as line_count, n.amount,
+       case when l.action = 'APPROVE' and s.done = n.lines then case when s.sent > 0 then 'SENT' else 'SEND_FAILED' end
+            else case l.action when 'REQUEST' then 'PENDING' when 'APPROVE' then 'APPROVED' when 'REJECT' then 'REJECTED'
+                               when 'CANCEL' then 'CANCELED' when 'EXPIRE' then 'EXPIRED' end end as status,
+       a.actor as approved_by, a.self_approved, a.at as approved_at,
+       coalesce(s.sent, 0) as sent_lines, coalesce(s.failed, 0) as failed_lines,
+       case when l.action = 'APPROVE' and s.failed > 0 then s.reason else l.reason end as last_reason,
+       greatest(l.at, s.at) as status_at
+  from order_requests q
+  join lateral (select count(*) as lines, sum(qty * limit_price) as amount from order_request_lines r
+                 where r.trade_date = q.trade_date and r.request_no = q.request_no) n on true
+  join lateral (select action, reason, at from order_approvals o
+                 where o.trade_date = q.trade_date and o.request_no = q.request_no order by id desc limit 1) l on true
+  left join lateral (select actor, self_approved, at from order_approvals o
+                      where o.trade_date = q.trade_date and o.request_no = q.request_no and o.action = 'APPROVE'
+                      order by id desc limit 1) a on true
+  left join lateral (select count(*) as done, count(*) filter (where outcome = 'SENT') as sent,
+                            count(*) filter (where outcome = 'FAILED') as failed, max(at) as at,
+                            (array_agg(reason order by id desc) filter (where outcome = 'FAILED'))[1] as reason
+                       from order_sends x where x.trade_date = q.trade_date and x.request_no = q.request_no) s on true;
+
+create or replace view order_request_lines_v as
+select r.trade_date, r.request_no, r.line_no, q.account_id, q.order_type, r.symbol, r.side, r.qty, r.limit_price,
+       r.qty * r.limit_price as amount, s.outcome as send_outcome, s.client_id, s.reason as send_reason, s.at as sent_at
+  from order_request_lines r
+  join order_requests q using (trade_date, request_no)
+  left join order_sends s using (trade_date, request_no, line_no);
 
 -- Korean names (한글 명칭). Shown in pgAdmin and in docs/erd. Every table, view and
 -- column must have one; tests/db/test_erd.py fails otherwise.
@@ -886,6 +1089,110 @@ comment on column instrument_master_match_v.managed is '관리종목 여부';
 comment on column instrument_master_match_v.warning is '시장경고 구분';
 comment on column instrument_master_match_v.valid_from is '마스터 적용 시작일';
 comment on column instrument_master_match_v.status is '대조 결과 (MATCH 일치 / RENAMED 이름만 다름 / DIFFERENT 시장·구분 다름 / DELISTED 상장폐지 / MISSING 마스터에 없음)';
+
+comment on table app_users is '사용자 (주문을 쓰고 승인하는 사람, 추가만 가능)';
+comment on column app_users.user_id is '사용자 ID (지금은 PC 로그인 이름)';
+comment on column app_users.name is '이름';
+comment on column app_users.created_by is '등록한 사람';
+comment on column app_users.created_at is '등록 시각';
+
+comment on table user_rights is '결재 권한 이력 (부여·회수마다 한 행, 수정·삭제 불가)';
+comment on column user_rights.right_row_id is '권한 행 번호';
+comment on column user_rights.user_id is '사용자 ID';
+comment on column user_rights.account_id is '계좌 ID (비어 있으면 모든 계좌)';
+comment on column user_rights.right_code is '권한 (ORDER_WRITE 주문 작성 / ORDER_APPROVE 주문 승인 / RIGHTS_ADMIN 권한 관리)';
+comment on column user_rights.granted is '부여 여부 (거짓이면 회수 행)';
+comment on column user_rights.max_order_value is '1건 승인 한도 (원, 비어 있으면 한도 없음)';
+comment on column user_rights.self_approve is '셀프 승인 허용 (자기가 쓴 요청을 승인할 수 있음)';
+comment on column user_rights.effective_from is '적용 시작일';
+comment on column user_rights.granted_by is '부여·회수한 사람';
+comment on column user_rights.reason is '사유';
+comment on column user_rights.created_at is '기록 시각';
+
+comment on table order_requests is '주문 요청 (결재 한 건: 단건은 종목 한 줄, 바스켓은 여러 줄, 수정·삭제 불가)';
+comment on column order_requests.trade_date is '주문일 (요청 키, 이날 장중에만 나가고 장 마감에 만료)';
+comment on column order_requests.request_no is '요청 번호 (주문일마다 1부터, 계좌와 무관)';
+comment on column order_requests.account_id is '계좌 ID';
+comment on column order_requests.order_type is '주문 유형 (SINGLE 단건 / BASKET 바스켓)';
+comment on column order_requests.created_by is '작성자';
+comment on column order_requests.created_at is '작성 시각';
+
+comment on table order_request_lines is '주문 요청 줄 (요청의 종목 줄, 결재 요청 뒤에는 더하지 못함, 수정·삭제 불가)';
+comment on column order_request_lines.trade_date is '주문일';
+comment on column order_request_lines.request_no is '요청 번호';
+comment on column order_request_lines.line_no is '줄 번호 (보내는 순서)';
+comment on column order_request_lines.symbol is '종목코드';
+comment on column order_request_lines.side is '매매 구분';
+comment on column order_request_lines.qty is '수량';
+comment on column order_request_lines.limit_price is '지정가 (비어 있으면 시장가)';
+
+comment on table order_approvals is '결재 이력 (요청 단위: 요청·승인·반려·취소·만료마다 한 행, 수정·삭제 불가)';
+comment on column order_approvals.id is '이력 번호';
+comment on column order_approvals.trade_date is '주문일';
+comment on column order_approvals.request_no is '요청 번호';
+comment on column order_approvals.action is '결재 행위 (REQUEST 요청 / APPROVE 승인 / REJECT 반려 / CANCEL 취소 / EXPIRE 만료)';
+comment on column order_approvals.actor is '처리한 사람 (만료는 비어 있음: run이 처리)';
+comment on column order_approvals.self_approved is '셀프 승인 (작성자가 승인, DB가 채움)';
+comment on column order_approvals.reason is '사유 (반려는 필수)';
+comment on column order_approvals.set_check is '그때의 묶음 검증 결과 (R-98)';
+comment on column order_approvals.at is '처리 시각';
+
+comment on table order_sends is '전송 이력 (줄 단위: 승인된 요청의 줄마다 한 번, 수정·삭제 불가)';
+comment on column order_sends.id is '전송 이력 번호';
+comment on column order_sends.trade_date is '주문일';
+comment on column order_sends.request_no is '요청 번호';
+comment on column order_sends.line_no is '줄 번호';
+comment on column order_sends.outcome is '전송 결과 (SENT 전송 / FAILED 전송 실패)';
+comment on column order_sends.client_id is '주문 ID (전송한 주문)';
+comment on column order_sends.reason is '사유 (전송 실패는 필수)';
+comment on column order_sends.set_check is '보내기 직전 묶음 검증 결과 (R-98)';
+comment on column order_sends.at is '처리 시각';
+
+comment on view user_rights_v is '현재 결재 권한 (사용자·계좌·권한마다 오늘 적용되는 최근 행, 부여된 것만)';
+comment on column user_rights_v.user_id is '사용자 ID';
+comment on column user_rights_v.user_name is '이름';
+comment on column user_rights_v.account_id is '계좌 ID (비어 있으면 모든 계좌)';
+comment on column user_rights_v.right_code is '권한';
+comment on column user_rights_v.max_order_value is '1건 승인 한도 (원)';
+comment on column user_rights_v.self_approve is '셀프 승인 허용';
+comment on column user_rights_v.effective_from is '적용 시작일';
+comment on column user_rights_v.granted_by is '부여한 사람';
+comment on column user_rights_v.reason is '사유';
+comment on column user_rights_v.right_row_id is '권한 행 번호';
+
+comment on view order_requests_v is '주문 요청 현황 (요청마다 한 행, 상태는 결재 이력의 마지막 행과 줄별 전송 결과)';
+comment on column order_requests_v.trade_date is '주문일';
+comment on column order_requests_v.request_no is '요청 번호';
+comment on column order_requests_v.account_id is '계좌 ID';
+comment on column order_requests_v.order_type is '주문 유형';
+comment on column order_requests_v.created_by is '작성자';
+comment on column order_requests_v.created_at is '작성 시각';
+comment on column order_requests_v.line_count is '줄 수';
+comment on column order_requests_v.amount is '주문금액 합계 (지정가 줄만, 시장가 줄은 빠짐)';
+comment on column order_requests_v.status is '상태 (PENDING 결재 대기 / APPROVED 승인·전송 대기 / REJECTED 반려 / CANCELED 취소 / SENT 전송 / SEND_FAILED 전송 실패 / EXPIRED 만료)';
+comment on column order_requests_v.approved_by is '승인자';
+comment on column order_requests_v.self_approved is '셀프 승인';
+comment on column order_requests_v.approved_at is '승인 시각';
+comment on column order_requests_v.sent_lines is '전송한 줄 수';
+comment on column order_requests_v.failed_lines is '전송 실패한 줄 수';
+comment on column order_requests_v.last_reason is '마지막 사유';
+comment on column order_requests_v.status_at is '상태 시각';
+
+comment on view order_request_lines_v is '주문 요청 줄 현황 (줄마다 한 행, 전송 결과와 주문 ID)';
+comment on column order_request_lines_v.trade_date is '주문일';
+comment on column order_request_lines_v.request_no is '요청 번호';
+comment on column order_request_lines_v.line_no is '줄 번호';
+comment on column order_request_lines_v.account_id is '계좌 ID';
+comment on column order_request_lines_v.order_type is '주문 유형';
+comment on column order_request_lines_v.symbol is '종목코드';
+comment on column order_request_lines_v.side is '매매 구분';
+comment on column order_request_lines_v.qty is '수량';
+comment on column order_request_lines_v.limit_price is '지정가';
+comment on column order_request_lines_v.amount is '주문금액 (지정가 줄만)';
+comment on column order_request_lines_v.send_outcome is '전송 결과';
+comment on column order_request_lines_v.client_id is '주문 ID';
+comment on column order_request_lines_v.send_reason is '전송 실패 사유';
+comment on column order_request_lines_v.sent_at is '전송 시각';
 
 -- 마이그레이션 적용 기록. 새 DB는 이 스키마로 만들어지면서 그때까지의 마이그레이션이 적용된 것으로 기록된다.
 create table if not exists schema_migrations (

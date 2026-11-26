@@ -13,7 +13,7 @@ from ministp.store import PostgresLedgerStore
 
 psycopg = pytest.importorskip("psycopg")
 
-from db.test_ops import CAL, FEES, KODEX, D, SimBroker  # noqa: E402
+from db.test_ops import CAL, FEES, KODEX, D, SimBroker, let_me_order  # noqa: E402
 
 URL = os.environ.get("MINISTP_TEST_DATABASE_URL")
 pytestmark = [pytest.mark.db, pytest.mark.skipif(not URL, reason="MINISTP_TEST_DATABASE_URL not set")]
@@ -154,6 +154,7 @@ def test_cli_two_accounts_from_registration_to_the_daily_close(conn, capsys):
     assert "원장 시작: 예수금 100,000,000" in out and "원장 시작: 예수금 30,000,000" in out
     assert "계좌 A0002 연습 계좌 (고객 C0002, OPEN)" in out
 
+    let_me_order(conn)                                    # 주문은 결재를 거쳐요 (셀프 승인, R-99~101)
     assert cli.run(["order", "069500", "buy", "2", "--account", "A0002"], now=at(10, 0), **kw) == 0
     assert cli.run(["order", "069500", "buy", "1"], now=at(10, 1), **kw) == 0
     assert brokers["22222222"].calls == [("order", "069500", "BUY", 2)]

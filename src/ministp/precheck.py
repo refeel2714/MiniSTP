@@ -158,7 +158,8 @@ def _check(state: AccountState, p: Proposed, run: _Running, limits: RiskLimits,
                     pending_sell_qty=state.open_sell_qty.get(s, 0) + run.sell_qty.get(s, 0),
                     buying_power=state.projected_cash,
                     pending_buy_value=state.reserved_buy + run.reserved, halted=state.halted,
-                    limit_price=p.limit_price, tick=tick, business_day=state.business_day)
+                    limit_price=p.limit_price, tick=tick, business_day=state.business_day,
+                    account_open=state.active)
     issues = [] if d.ok else [d.reason]
     exposure = state.held_value(s) + state.open_buy_value.get(s, 0) + run.buys.get(s, 0)
     if p.side is Side.BUY:

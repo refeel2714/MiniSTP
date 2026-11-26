@@ -79,7 +79,7 @@ def test_kill_switch_and_account_status_block_the_whole_set():
     r = check_set(replace(CASH_ONLY, halted=True), [buy("005930", 1)])
     assert r.issues == ("KILL_SWITCH",) and r.lines[0].together == ("KILL_SWITCH",) and not r.ok
     r = check_set(replace(CASH_ONLY, active=False), [buy("005930", 1)])
-    assert r.issues == ("ACCOUNT_NOT_OPEN",) and r.lines[0].together == () and not r.ok
+    assert r.issues == ("ACCOUNT_NOT_OPEN",) and r.lines[0].together == ("ACCOUNT_NOT_OPEN",) and not r.ok  # R-39
     assert "정상 상태의 계좌" in issue_text(r.issues)
 
 

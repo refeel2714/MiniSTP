@@ -126,6 +126,22 @@ def books(conn):
     return load_books(conn, CAL, FEES)
 
 
+def let_me_order(conn, *users):
+    """모든 주문은 결재를 거쳐요(R-99~101). 이 PC 사용자(와 `users`)를 등록하고 작성·셀프 승인을 줘요."""
+    from ministp import approval, audit
+    since = D("2026-01-01")
+    me = audit.os_user()
+    with audit.acting_as("CLI", me):
+        approval.add_user(conn, me, "운영자", since)
+        approval.grant(conn, me, "RIGHTS_ADMIN", since)
+        for u in (me, *users):
+            if u != me:
+                approval.add_user(conn, u, u, since)
+            approval.grant(conn, u, "ORDER_WRITE", since)
+            approval.grant(conn, u, "ORDER_APPROVE", since, self_approve=True)
+    return me
+
+
 def test_open_waits_for_settlement_then_starts_from_broker(conn, broker):
     broker.set_day(D("2026-11-19"))
     with pytest.raises(OpsError, match="미결제"):
@@ -252,6 +268,7 @@ def test_cli_end_to_end(conn, broker, capsys):
 
     assert cli.run(["db-init"], now=at(8, 0), **kw) == 0  # idempotent on an existing DB
     assert cli.run(["open"], now=at(8, 0), **kw) == 0
+    let_me_order(conn)
     assert cli.run(["order", "069500", "buy", "1"], now=at(8, 30), **kw) == 2  # before open
     broker.orders[D("2026-11-20")] = {}
     assert cli.run(["order", "069500", "buy", "1"], now=at(10, 0), **kw) == 0

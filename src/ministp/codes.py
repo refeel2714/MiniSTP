@@ -185,6 +185,34 @@ SEED: tuple[CodeGroup, ...] = (
                   ("DIFFERENT", "시장·구분 다름", "등록할 때 시장이나 자산 유형을 잘못 넣었을 수 있음"),
                   ("DELISTED", "상장폐지", "마스터 파일에서 빠진 종목"),
                   ("MISSING", "마스터에 없음", "적재한 마스터에 한 번도 나온 적 없는 코드"))),
+    CodeGroup("USER_RIGHT", "결재 권한", "사용자가 주문에 대해 할 수 있는 일 (R-99).", "user_rights.right_code", (
+        ("ORDER_WRITE", "주문 작성", "주문 요청을 쓰고 결재를 요청함"),
+        ("ORDER_APPROVE", "주문 승인", "요청을 승인·반려함. 1건 한도와 셀프 승인 허용을 함께 둠"),
+        ("RIGHTS_ADMIN", "권한 관리", "사용자를 등록하고 권한을 주거나 거둠"))),
+    CodeGroup("APPROVAL_ACTION", "결재 행위", "주문 요청에 일어난 일. 순서는 DB가 지켜요 (R-100).",
+              "order_approvals.action", (
+                  ("REQUEST", "결재 요청", "작성자가 요청을 올림"),
+                  ("APPROVE", "승인", "승인자가 승인함. 작성자 본인이면 셀프 승인"),
+                  ("REJECT", "반려", "승인자가 사유와 함께 돌려보냄"),
+                  ("CANCEL", "요청 취소", "작성자가 전송 전에 거둠"),
+                  ("EXPIRE", "만료", "주문일 장 마감까지 나가지 않음"))),
+    CodeGroup("REQUEST_STATUS", "주문 요청 상태", "결재 이력의 마지막 행과 줄별 전송 결과로 정해지는 요청의 상태.",
+              "order_requests_v.status", (
+                  ("PENDING", "결재 대기", ""),
+                  ("APPROVED", "승인", "전송 대기"),
+                  ("REJECTED", "반려", ""),
+                  ("CANCELED", "취소", ""),
+                  ("SENT", "전송", "모든 줄을 처리했고 한 줄 이상 나감"),
+                  ("SEND_FAILED", "전송 실패", "모든 줄이 전송 실패"),
+                  ("EXPIRED", "만료", ""))),
+    CodeGroup("ORDER_TYPE", "주문 유형", "요청 한 건에 담긴 주문의 모양. 결재는 요청 단위로 해요 (R-99).",
+              "order_requests.order_type", (
+                  ("SINGLE", "단건", "종목 한 줄"),
+                  ("BASKET", "바스켓", "종목 여러 줄을 한 번에 결재해요. 승인·반려·취소는 요청 전체로"))),
+    CodeGroup("SEND_OUTCOME", "전송 결과", "승인된 요청의 줄마다 한 번 남는 전송 결과 (R-101).",
+              "order_sends.outcome", (
+                  ("SENT", "전송", "주문 경로로 보냄. 주문 ID가 붙어요"),
+                  ("FAILED", "전송 실패", "보내기 직전 검증에 걸리거나 주문 경로가 거부함"))),
     CodeGroup("AUDIT_CHANNEL", "감사 로그 경로", "어디로 들어온 요청인지.", "audit_log.channel", (
         ("CLI", "명령", "PC의 명령 창에서 실행"),
         ("UI", "화면", "업무화면의 처리 버튼"),
@@ -217,7 +245,14 @@ SEED: tuple[CodeGroup, ...] = (
         ("CASH_TRANSFER", "계좌 간 대체", "같은 고객의 두 계좌 사이로 옮긴 돈"),
         ("ADJUSTMENT_ADD", "수동 조정", "예탁금 이용료나 증권사와의 차이를 사유와 함께 기록"),
         ("ADJUSTMENT_CANCEL", "수동 조정 취소", "조정을 반대 전표로 되돌림"),
-        ("MASTER_LOAD", "종목 마스터 적재", "받은 마스터 파일에서 바뀐 종목만 이력으로 넣음"))),
+        ("MASTER_LOAD", "종목 마스터 적재", "받은 마스터 파일에서 바뀐 종목만 이력으로 넣음"),
+        ("USER_ADD", "사용자 등록", ""),
+        ("RIGHT_GRANT", "권한 부여", "결재 권한을 주거나 한도를 바꿈"),
+        ("RIGHT_REVOKE", "권한 회수", ""),
+        ("ORDER_REQUEST", "주문 결재 요청", "묶음 검증(R-98)을 통과한 요청만 남아요"),
+        ("ORDER_APPROVE", "주문 승인", "셀프 승인 포함"),
+        ("ORDER_REJECT", "주문 반려", ""),
+        ("ORDER_REQUEST_CANCEL", "주문 요청 취소", "작성자가 전송 전에 거둠"))),
 )
 
 
@@ -259,6 +294,7 @@ def seed_sql() -> str:
 
 def program_codes() -> dict[str, set[str]]:
     """The codes the program itself defines, by group. `check()` holds the table to them."""
+    from . import approval
     from .accounts import STATUSES
     from .instruments import AssetType, Market
     from .ledger import ADJUSTMENT_ACCOUNTS, DIVIDEND_STATUSES, Side
@@ -286,6 +322,11 @@ def program_codes() -> dict[str, set[str]]:
         "ADJUSTMENT_REASON": set(ADJUSTMENT_ACCOUNTS),
         "SECURITY_GROUP": set(MASTER_GROUPS),
         "MASTER_MATCH": set(MATCH_STATUSES),
+        "USER_RIGHT": set(approval.RIGHTS),
+        "APPROVAL_ACTION": set(approval.ACTIONS),
+        "REQUEST_STATUS": set(approval.STATUSES),
+        "ORDER_TYPE": set(approval.ORDER_TYPES),
+        "SEND_OUTCOME": set(approval.SEND_OUTCOMES),
     }
 
 
@@ -409,7 +450,7 @@ def _check_list(conn: psycopg.Connection, table: str, column: str) -> set[str] |
 
 
 # Columns that store the codes of a group whose `used_by` names another column: checked the same way.
-SAME_CODES = {"instrument_master.market": "MARKET"}
+SAME_CODES = {"instrument_master.market": "MARKET", "order_request_lines.side": "ORDER_SIDE"}
 
 
 def check(conn: psycopg.Connection) -> list[str]:

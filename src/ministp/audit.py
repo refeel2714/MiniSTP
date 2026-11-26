@@ -55,6 +55,13 @@ ACTIONS = {
     "ADJUSTMENT_ADD": "수동 조정",
     "ADJUSTMENT_CANCEL": "수동 조정 취소",
     "MASTER_LOAD": "종목 마스터 적재",
+    "USER_ADD": "사용자 등록",
+    "RIGHT_GRANT": "권한 부여",
+    "RIGHT_REVOKE": "권한 회수",
+    "ORDER_REQUEST": "주문 결재 요청",
+    "ORDER_APPROVE": "주문 승인",
+    "ORDER_REJECT": "주문 반려",
+    "ORDER_REQUEST_CANCEL": "주문 요청 취소",
 }
 MESSAGE_MAX = 500
 
