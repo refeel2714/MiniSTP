@@ -239,8 +239,8 @@ button.day:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--panel), 0 
 .card { padding: 10px 14px; border-right: 1px solid var(--grid-line); }
 .card:last-child { border-right: 0; }
 .cl { color: var(--muted); font-size: 12px; }
-.cv { font-size: 18px; font-weight: 650; margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }   /* 값은 한 줄 */
-.cv.dt { font-size: 15px; line-height: 27px; }   /* 날짜와 시각은 길어서 조금 작게 */
+.cv { font-size: 18px; font-weight: 650; margin-top: 2px; }
+.cv.dt { font-size: 15px; line-height: 27px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }   /* 날짜·시각은 한 줄, 조금 작게 */
 
 .chart { border-bottom: 1px solid var(--line); padding: 4px 8px 0; }
 .line { width: 100%; height: 160px; display: block; }
