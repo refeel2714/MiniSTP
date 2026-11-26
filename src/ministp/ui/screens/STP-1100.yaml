@@ -1,6 +1,6 @@
 id: STP-1100
 title: 실시간 잔고
-purpose: 장중 보유·예수금·주문가능금액(IBOR)을 한 화면에서 확인해요. 보유는 `run`이 1분마다 받은 현재가로 평가하고, `run`이 꺼져 있으면 원장이 아는 가장 최근 종가로 평가해요(R-68). 어떤 가격인지는 목록 위 "평가 기준"과 가격 칸 아래 시각에 적혀요. 구성 지도로 바꿔 보면 어느 종목이 얼마나 큰지(면적)와 평가손익(색)이 한눈에 보여요. 주문가능금액은 주문 검증과 같은 계산(R-37)이에요.
+purpose: 장중 보유·예수금·주문가능금액(IBOR)을 한 화면에서 확인해요. 보유는 `run`이 1분마다 받은 현재가로 평가하고, `run`이 꺼져 있으면 원장이 아는 가장 최근 종가로 평가해요(R-68). 어떤 가격인지는 목록 위 "평가 기준"과 가격 칸 아래 시각에 적혀요. 가운데 줄은 주식·ETF 같은 자산 유형별 평가금액과 비중이에요. 종목별 비중은 목록의 비중 막대로 봐요. 주문가능금액은 주문 검증과 같은 계산(R-37)이에요.
 grids:
   - id: cash
     title: 예수금과 주문가능금액
@@ -14,6 +14,18 @@ grids:
       - {name: pending_buy_value, label: 미체결 매수 예약, format: money}
       - {name: available_cash, label: 주문가능금액, format: money}
       - {name: unpriced_buy_orders, label: 가격 미정 시장가 매수, format: number}
+  - id: mix
+    title: 자산 유형별
+    live: true
+    tx: STP1100R01
+    dataset: mix
+    load: open
+    columns:
+      - {name: asset_type_name, label: 자산 유형}
+      - {name: count, label: 종목 수, format: number}
+      - {name: market_value, label: 평가금액, format: money}
+      - {name: weight, label: 비중(평가금액), format: rate, display: meter}
+      - {name: unrealized_pnl, label: 평가손익, format: money, color: sign}
   - id: holdings
     title: 종목별 보유
     live: true
@@ -22,7 +34,6 @@ grids:
     meta: {basis: 평가 기준}
     totals: [market_value, unrealized_pnl, book_cost]
     drill: {screen: STP-3100, params: {symbol: symbol}}
-    map: {label: instrument_name, size: book_cost, tone: unrealized_pnl}
     columns:
       - {name: symbol, source: instruments.symbol, format: code}
       - {name: instrument_name, source: instruments.name, display: badge, code: symbol, shape: asset_type}
