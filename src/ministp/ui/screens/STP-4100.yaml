@@ -2,7 +2,7 @@ id: STP-4100
 title: 종목정보
 layout: split
 left: 44
-purpose: 시장에 상장된 전 종목과 원장에 등록한 종목을 한 목록으로 보여줘요. 시장 종목은 KIS 마스터 파일을 master load로 적재한 이력에서 기준일 시점의 값을 꺼내요(가격은 담지 않아요. 종가는 시세 STP-2300). 등록 종목은 원장이 거래하는 종목이라 맨 위에 오고, 대조 결과는 등록한 이름·시장·자산 유형이 기준일의 마스터와 같은지예요. 왼쪽에서 종목을 고르면 그날의 속성과 각 속성이 그 값이 된 날, 언제 무엇이 바뀌었는지, 그 종목을 거래할 때 적용되는 기준(수수료, 매도 세금, 결제주기, 호가단위)이 오른쪽에 나와요. 등록 종목을 두 번 누르면 주문가능 조회로, 변경 이력을 두 번 누르면 그날의 적재 이력(STP-4101)으로 가요. 목록은 한 번에 500행까지라 조회조건으로 좁혀요. 종목 등록·변경은 지금은 CLI(instrument 명령)로만 해요.
+purpose: 시장에 상장된 전 종목과 원장에 등록한 종목을 한 목록으로 보여줘요. 시장 종목은 KIS 마스터 파일을 master load로 적재한 이력에서 기준일 시점의 값을 꺼내요(가격은 담지 않아요. 종가는 시세 STP-2300). 등록 종목은 원장이 거래하는 종목이라 맨 위에 오고, 대조 결과는 등록한 이름·시장·자산 유형이 기준일의 마스터와 같은지예요. 왼쪽에서 종목을 고르면 그날의 속성이 오른쪽에 두 줄 양식으로 나와요. 주요 항목(종목명, 시장, 증권그룹, 거래 상태, 상장일)이 먼저 오고, 값 아래 작은 글씨는 그 값이 된 날이에요. 거래정지·정리매매·관리종목·시장경고·상장 여부는 '거래 상태' 한 줄로 모았어요. 언제 무엇이 바뀌었는지는 속성을 두 번 눌러 이 종목을 마지막으로 바꾼 적재 이력(STP-4101)에서 보고, 거래할 때 적용되는 기준(수수료, 매도 세금, 결제주기, 호가단위)은 거래 기준(STP-4300)에서 봐요. 등록 종목을 두 번 누르면 주문가능 조회로 가요. 목록은 한 번에 500행까지라 조회조건으로 좁혀요. 종목 등록·변경은 지금은 CLI(instrument 명령)로만 해요.
 conditions:
   - {name: date, type: date, label: 기준일}
   - {name: market, type: select, source: instruments.market, options: [KOSPI, KOSDAQ]}
@@ -31,38 +31,17 @@ grids:
       - {name: master_match, source: instrument_master_match_v.status, format: code, color: status, display: pill}
   - id: attrs
     title: 기준일의 종목 속성
-    tx: STP4100R02
-    weight: 3
+    tx: STP4100R06
     load: master
     master: instruments
     link: {symbol: symbol, date: as_of}
-    columns:
-      - {name: item, label: 항목}
-      - {name: value, label: 값}
-      - {name: since, label: 이 값이 된 날, format: date}
-  - id: history
-    title: 속성 변경 이력
-    tx: STP4100R03
-    weight: 2
-    load: master
-    master: instruments
-    link: {symbol: symbol, date: as_of}
+    key: item_l
     drill: {screen: STP-4101, params: {load_id: load_id}}
     columns:
-      - {name: valid_from, source: instrument_master.valid_from, format: date}
-      - {name: item, label: 바뀐 항목}
-      - {name: before, label: 이전 값}
-      - {name: after, label: 새 값}
-      - {name: load_id, source: instrument_master.load_id, format: number}
-  - id: rules
-    title: 이 종목에 적용되는 거래 기준 (주권·ETF)
-    tx: STP4100R04
-    weight: 2
-    load: master
-    master: instruments
-    link: {symbol: symbol, date: as_of}
-    columns:
-      - {name: kind, label: 구분}
-      - {name: item, label: 항목}
-      - {name: value, label: 값}
-      - {name: note, label: 비고}
+      - {name: item_l, label: 항목}
+      - {name: value_l, label: 값, sub: since_l}
+      - {name: since_l, label: 이 값이 된 날, format: date, hidden: true}
+      - {name: item_r, label: 항목}
+      - {name: value_r, label: 값, sub: since_r}
+      - {name: since_r, label: 이 값이 된 날, format: date, hidden: true}
+      - {name: load_id, source: instrument_master.load_id, format: number, hidden: true}
