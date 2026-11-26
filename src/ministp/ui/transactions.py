@@ -466,8 +466,13 @@ def _risk(c: TxContext, p) -> TxResult:
 
 
 def _accounts(c: TxContext, p) -> TxResult:
-    """Every account, whichever one the screens are looking at."""
-    return TxResult({"main": q.account_list(c.conn)}, {"selected": c.account_id})
+    """Every account, whichever one the screens are looking at. 계좌번호 is not in the database: it is masked
+    from this PC's environment variable as the rows are answered (`accounts.masked_account_no`)."""
+    from ..accounts import masked_account_no
+    ds = q.account_list(c.conn)
+    ref = ds.columns.index("credential_ref")
+    rows = tuple(r + (masked_account_no(r[ref]) or "이 PC에 없음",) for r in ds.rows)
+    return TxResult({"main": Dataset(ds.columns + ("masked_no",), rows)}, {"selected": c.account_id})
 
 
 def _account_status(c: TxContext, p) -> TxResult:
