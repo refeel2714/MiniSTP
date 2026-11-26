@@ -13,3 +13,23 @@ symbol:
     - {name: instrument_name, source: instruments.name}
     - {name: market, source: instruments.market, format: code}
     - {name: asset_type, source: instruments.asset_type, format: code}
+code:
+  # 공통코드 팝업: lookup_params로 그룹을 정해요 (예: {group_id: ACCOUNT_STATUS})
+  title: 코드 찾기
+  tx: STP4600R02
+  value: code
+  shows: name
+  columns:
+    - {name: code, source: common_codes.code, format: code}
+    - {name: name, source: common_codes.name}
+    - {name: description, source: common_codes.description}
+    - {name: in_use, source: common_codes.in_use}
+customer:
+  title: 고객 찾기
+  tx: STP1400R01
+  value: customer_id
+  shows: alias
+  columns:
+    - {name: customer_id, source: customers.customer_id, format: code}
+    - {name: alias, source: customers.alias}
+    - {name: accounts, label: 계좌 수, format: number}

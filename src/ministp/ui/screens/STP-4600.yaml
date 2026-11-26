@@ -1,8 +1,8 @@
 id: STP-4600
-title: 코드 조회
+title: 코드 관리
 layout: split
 left: 48
-purpose: 시스템에 코드로 들어 있는 값과 그 이름을 한곳에서 봐요. 왼쪽에서 코드 그룹을 고르면 오른쪽에 그 그룹의 코드와 코드명이 나와요. 계정과목은 원장 분개가 직접 참조하는 코드라서 전용 테이블에 있고, 나머지는 공통코드예요. 공통코드가 스키마 제약, 프로그램, 저장된 값과 어긋나면 "스키마·프로그램과 일치"가 아니오로 바뀌어요. 코드명 변경은 CLI(code rename)로만 해요.
+purpose: 시스템에 코드로 들어 있는 값과 그 이름을 한곳에서 봐요. 왼쪽에서 코드 그룹을 고르면 오른쪽에 그 그룹의 코드와 코드명이 나와요. 계정과목은 원장 분개가 직접 참조하는 코드라서 전용 테이블에 있고, 나머지는 공통코드예요. 공통코드가 스키마 제약, 프로그램, 저장된 값과 어긋나면 "스키마·프로그램과 일치"가 아니오로 바뀌어요. 코드명 변경, 코드 추가, 사용 여부 변경은 그리드 오른쪽 위 버튼으로 해요 (CLI의 code 명령과 같은 처리). 프로그램이 정한 그룹은 코드명만 바꿀 수 있고, 코드는 지우지 않고 사용 안 함으로 꺼요.
 grids:
   - id: groups
     title: 코드 그룹
@@ -17,6 +17,15 @@ grids:
       - {name: store, label: 관리 위치}
       - {name: codes, label: 코드 수, format: number}
       - {name: used_by, source: code_groups.used_by, format: code}
+    actions:
+      - id: group_add
+        label: 그룹 추가
+        tx: STP4600U01
+        note: 운영자가 관리하는 그룹을 만들어요. 그룹 ID는 영문 대문자·숫자·밑줄이에요 (MEMO_KIND처럼).
+        fields:
+          - {name: group_id, source: code_groups.group_id}
+          - {name: name, source: code_groups.name}
+          - {name: description, source: code_groups.description}
   - id: codes
     title: 이 그룹의 코드
     tx: STP4600R02
@@ -28,3 +37,32 @@ grids:
       - {name: name, source: common_codes.name}
       - {name: description, source: common_codes.description}
       - {name: in_use, source: common_codes.in_use}
+    actions:
+      - id: add
+        label: 코드 추가
+        tx: STP4600U02
+        note: 운영자가 관리하는 그룹에만 추가할 수 있어요. 프로그램이 정한 그룹의 코드는 스키마 제약과 함께 마이그레이션으로 늘려요.
+        fields:
+          - {name: group_id, source: common_codes.group_id, column: group_id, readonly: true}
+          - {name: code, source: common_codes.code}
+          - {name: name, source: common_codes.name}
+          - {name: description, source: common_codes.description}
+      - id: rename
+        label: 코드명 변경
+        tx: STP4600U03
+        needs_row: true
+        note: 코드 자체와 이미 저장된 값은 바뀌지 않아요. 이름과 설명만 바뀌어요.
+        fields:
+          - {name: group_id, source: common_codes.group_id, column: group_id, readonly: true}
+          - {name: code, source: common_codes.code, column: code, readonly: true}
+          - {name: name, source: common_codes.name, column: name}
+          - {name: description, source: common_codes.description, column: description}
+      - id: use
+        label: 사용 여부
+        tx: STP4600U04
+        needs_row: true
+        note: 코드는 지우지 않아요. 사용 안 함으로 끄면 목록에는 남고 새로 고를 수 없게 표시돼요.
+        fields:
+          - {name: group_id, source: common_codes.group_id, column: group_id, readonly: true}
+          - {name: code, source: common_codes.code, column: code, readonly: true}
+          - {name: in_use, source: common_codes.in_use, type: select, options: [사용, 사용 안 함], column: in_use}
