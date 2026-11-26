@@ -30,7 +30,8 @@ APPEND_ONLY_TABLES = ("ledger_events", "journal_entries", "journal_lines", "posi
                       "customers", "trading_accounts", "account_status_history", "day_closes", "audit_log",
                       "corporate_actions", "master_loads", "instrument_master",
                       "app_users", "user_rights", "order_requests", "order_request_lines", "order_approvals",
-                      "order_sends", "erp_exports", "erp_export_docs", "erp_export_voids")
+                      "order_sends", "erp_exports", "erp_export_docs", "erp_export_voids",
+                      "close_checks", "close_check_steps")
 BALANCE_TRIGGERS = ("journal_entries_balanced", "journal_lines_balanced")
 # R-78 in the database: no entry, cash row or close dated inside a closed day (ERD v2.2).
 CLOSED_DAY_TRIGGERS = ("journal_entries_closed_day", "cash_ledger_closed_day", "day_closes_closed_day")

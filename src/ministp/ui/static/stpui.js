@@ -33,7 +33,7 @@
     "결제 완료": "ok", "결제 대기": "info", "체결 대기": "info", "부분 체결": "warn",   // info: on its way, nothing to do
     "접수 거부": "bad", "결제 지연": "bad", "접수 기록 없음": "miss",
     "정상": "ok", "주의": "warn", "확인 필요": "bad", "평가 전": "info",
-    "완료": "ok", "대기": "info", "누락": "miss", "점검 완료": "ok", "진행 중": "info",
+    "완료": "ok", "대기": "info", "누락": "miss", "필수 완료": "ok", "모두 끝남": "ok", "진행 중": "info",
     RENAMED: "warn", DIFFERENT: "bad", DELISTED: "bad", MISSING: "miss",   // 종목 마스터 대조 (R-95)
     "등록": "info", "신규": "info", "변경": "warn", "빠짐": "miss", "상장폐지": "miss",
     "거래정지": "bad", "정리매매": "bad", "관리종목": "warn", "투자주의": "warn", "투자경고": "warn", "투자위험": "bad",

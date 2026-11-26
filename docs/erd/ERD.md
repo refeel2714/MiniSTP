@@ -1,6 +1,6 @@
 # MiniSTP ERD
 
-ERD 버전: v2.11 · 스키마 해시: `b444c7179379`
+ERD 버전: v2.12 · 스키마 해시: `679720111a70`
 
 이 문서는 `scripts/gen_erd.py`가 `src/ministp/store/schema.sql`로 만든 DB에서 읽어 생성해요. 직접 고치지 말고 스키마의 한글 주석(COMMENT)을 고친 뒤 다시 생성하세요. 모든 원장 테이블은 append-only(수정·삭제 불가)예요.
 
@@ -283,6 +283,37 @@ erDiagram
         text voided_by "처리자 (PC 로그인 이름)"
         timestamptz voided_at "처리 시각"
     }
+    close_steps {
+        text step_code PK "단계 코드 (프로그램의 점검 로직과 짝)"
+        text name "단계 이름"
+        integer sort_order "순서"
+        boolean in_use "사용 여부 (끄면 점검에서 빠짐)"
+        boolean required "필수 여부 (선택 단계는 상태만 보이고 그날의 점검 완료를 막지 않음)"
+        text screen "상세 화면"
+        text asset_type "적용 자산 유형 (비어 있으면 모든 계좌, 있으면 그 자산을 거래·보유한 계좌에만)"
+        text description "설명"
+        timestamptz updated_at "마지막 변경 시각"
+    }
+    close_checks {
+        bigint check_id PK "점검 번호"
+        text account_id FK "계좌 ID"
+        date check_date "영업일"
+        text day_state "그날 상태 (DONE 점검 완료 / OPEN 진행 중 / ATTENTION 확인 필요)"
+        integer done "끝난 필수 단계 수"
+        integer steps "필수 단계 수"
+        text command "점검한 명령 (daily, close, close-check)"
+        text checked_by "점검한 사람 (PC 로그인 이름)"
+        timestamptz checked_at "점검 시각"
+    }
+    close_check_steps {
+        bigint check_id PK,FK "점검 번호"
+        integer step_no PK "순서"
+        text step_code FK "단계 코드"
+        text name "단계 이름 (점검 때의 이름)"
+        boolean required "필수 여부 (점검 때의 기준)"
+        text state "상태 (DONE 완료 / NONE 대상 없음 / WAIT 대기 / WARN 주의 / BAD 확인 필요 / MISSING 누락)"
+        text detail "내용 (그렇게 본 까닭)"
+    }
     code_groups {
         text group_id PK "코드 그룹 ID"
         text name "코드 그룹명"
@@ -341,6 +372,9 @@ erDiagram
     erp_exports ||--o{ erp_export_docs : "export_id"
     trading_accounts ||--o{ erp_export_docs : "account_id"
     erp_exports ||--o{ erp_export_voids : "export_id"
+    trading_accounts ||--o{ close_checks : "account_id"
+    close_checks ||--o{ close_check_steps : "check_id"
+    close_steps ||--o{ close_check_steps : "step_code"
     code_groups ||--o{ common_codes : "group_id"
 ```
 
@@ -705,6 +739,46 @@ erDiagram
 | `voided_by` | 처리자 (PC 로그인 이름) | text | Y |  |
 | `voided_at` | 처리 시각 | timestamp with time zone | Y |  |
 
+### close_steps — 마감 점검 단계 기준 (단계마다 한 행, 이름·순서·사용·필수·화면·자산 유형을 고침, 삭제 불가) (테이블)
+
+| 컬럼 | 한글명 | 타입 | 필수 | 키 |
+|---|---|---|---|---|
+| `step_code` | 단계 코드 (프로그램의 점검 로직과 짝) | text | Y | PK |
+| `name` | 단계 이름 | text | Y |  |
+| `sort_order` | 순서 | integer | Y |  |
+| `in_use` | 사용 여부 (끄면 점검에서 빠짐) | boolean | Y |  |
+| `required` | 필수 여부 (선택 단계는 상태만 보이고 그날의 점검 완료를 막지 않음) | boolean | Y |  |
+| `screen` | 상세 화면 | text |  |  |
+| `asset_type` | 적용 자산 유형 (비어 있으면 모든 계좌, 있으면 그 자산을 거래·보유한 계좌에만) | text |  |  |
+| `description` | 설명 | text | Y |  |
+| `updated_at` | 마지막 변경 시각 | timestamp with time zone | Y |  |
+
+### close_checks — 마감 점검 결과 (점검할 때마다 계좌·영업일마다 한 행, 수정·삭제 불가) (테이블)
+
+| 컬럼 | 한글명 | 타입 | 필수 | 키 |
+|---|---|---|---|---|
+| `check_id` | 점검 번호 | bigint | Y | PK |
+| `account_id` | 계좌 ID | text | Y | FK → trading_accounts.account_id |
+| `check_date` | 영업일 | date | Y |  |
+| `day_state` | 그날 상태 (DONE 점검 완료 / OPEN 진행 중 / ATTENTION 확인 필요) | text | Y |  |
+| `done` | 끝난 필수 단계 수 | integer | Y |  |
+| `steps` | 필수 단계 수 | integer | Y |  |
+| `command` | 점검한 명령 (daily, close, close-check) | text | Y |  |
+| `checked_by` | 점검한 사람 (PC 로그인 이름) | text | Y |  |
+| `checked_at` | 점검 시각 | timestamp with time zone | Y |  |
+
+### close_check_steps — 마감 점검 단계 결과 (점검 한 번의 단계마다 한 행, 수정·삭제 불가) (테이블)
+
+| 컬럼 | 한글명 | 타입 | 필수 | 키 |
+|---|---|---|---|---|
+| `check_id` | 점검 번호 | bigint | Y | PK, FK → close_checks.check_id |
+| `step_no` | 순서 | integer | Y | PK |
+| `step_code` | 단계 코드 | text | Y | FK → close_steps.step_code |
+| `name` | 단계 이름 (점검 때의 이름) | text | Y |  |
+| `required` | 필수 여부 (점검 때의 기준) | boolean | Y |  |
+| `state` | 상태 (DONE 완료 / NONE 대상 없음 / WAIT 대기 / WARN 주의 / BAD 확인 필요 / MISSING 누락) | text | Y |  |
+| `detail` | 내용 (그렇게 본 까닭) | text | Y |  |
+
 ### code_groups — 공통코드 그룹 (테이블)
 
 | 컬럼 | 한글명 | 타입 | 필수 | 키 |
@@ -1015,6 +1089,20 @@ erDiagram
 | `voided_by` | 무효 처리자 | text |  |  |
 | `voided_at` | 무효 처리 시각 | timestamp with time zone |  |  |
 
+### close_checks_last_v — 계좌·영업일마다 마지막 마감 점검 결과 (뷰)
+
+| 컬럼 | 한글명 | 타입 | 필수 | 키 |
+|---|---|---|---|---|
+| `account_id` | 계좌 ID | text |  |  |
+| `check_date` | 영업일 | date |  |  |
+| `check_id` | 점검 번호 | bigint |  |  |
+| `day_state` | 그날 상태 (DONE 점검 완료 / OPEN 진행 중 / ATTENTION 확인 필요) | text |  |  |
+| `done` | 끝난 필수 단계 수 | integer |  |  |
+| `steps` | 필수 단계 수 | integer |  |  |
+| `command` | 점검한 명령 | text |  |  |
+| `checked_by` | 점검한 사람 | text |  |  |
+| `checked_at` | 점검 시각 | timestamp with time zone |  |  |
+
 ## 변경 이력
 
 | 버전 | 일자 | 변경 내용 |
@@ -1033,3 +1121,4 @@ erDiagram
 | v2.9 | 2026-11-24 | 주문 결재 요청 번호 체계(11/24 사용자 피드백, v2.8 초안을 적용 전에 고침). 요청 키를 `Q날짜-순번` 글자에서 주문일 + 요청 번호(주문일마다 1부터, 계좌와 무관)로 바꾸고, 주문 유형 `order_type`(단건 SINGLE / 바스켓 BASKET)을 따로 둔다. 바스켓은 종목마다 요청이 아니라 요청 한 건이다: 종목 줄은 새 테이블 `order_request_lines`(요청 뒤에는 줄을 더하지 못함, 트리거 `ministp_order_lines_fixed`), 묶음 번호 `batch_id`는 없앤다. 결재 이력 `order_approvals`는 요청 단위(요청·승인·반려·취소·만료), 전송은 새 테이블 `order_sends`에 줄마다 한 번(전송·전송 실패, 주문 ID 유일, 승인 다음에만: 트리거 `ministp_order_send_flow`). 한 줄이라도 나간 요청은 취소·만료하지 않는다. 뷰 `order_requests_v`(요청마다 상태, 줄 수, 금액 합계, 전송·실패 줄 수)를 바꾸고 `order_request_lines_v`(줄마다 전송 결과) 추가. 수정·삭제·비우기 금지 테이블 24개. 공통코드 그룹 2개(주문 유형, 전송 결과) 추가, 결재 행위에서 전송·전송 실패를 뺀다. 마이그레이션은 `0009_order_approval` 하나(v2.7 → v2.9). |
 | v2.10 | 2026-11-24 | 주문 결과 미확인 처리(R-103). 테이블은 그대로다. 뷰 `order_requests_v`가 증권사 접수 결과(`oms_order_acks`)를 함께 읽어서 상태에 결과 미확인 `SEND_UNKNOWN`(보낸 줄 가운데 답이 없는 줄이 있음)을 더하고, 전송한 줄을 다시 증권사가 접수·거부한 줄로 나누며(접수·거부·미확인 줄 수 컬럼 추가), 모든 줄이 거부되면 전송 실패로 본다. 뷰 `order_request_lines_v`에 접수 결과·증권사 주문번호·내용·결과 대기 여부 컬럼 추가. 공통코드에 요청 상태 `SEND_UNKNOWN`과 감사 행위 `ORDER_CONFIRM`(사람이 답 없던 주문을 확인) 추가(마이그레이션 `0010_send_unknown`). 기존 데이터는 바뀌지 않는다. |
 | v2.11 | 2026-11-25 | ERP 전송 이력(R-104, 초안). ERP 전송 이력 `erp_exports`(`erp export`가 만든 파일마다 한 행: 계좌, 기간, 전표 단위, 회사코드·전표유형, 매핑 파일 해시, 전표 수·줄 수·차대 합계, 파일 이름과 SHA-256, 내보낸 사람), 전송 전표 `erp_export_docs`(파일에 든 증빙번호마다 한 행: 계좌, 전표일자), 전송 무효 `erp_export_voids`(ERP가 받지 않은 파일, 사유) 신설, 셋 다 수정·삭제·비우기 금지(테이블 27개). 무효가 아닌 내보내기에 이미 든 증빙번호와, 같은 계좌·같은 날을 다른 단위(건별 ↔ 일별 합계)로 낸 전표는 DB 트리거 `ministp_erp_doc_once`가 거부한다(계좌·날마다 잠그고 읽음). 뷰 `erp_exports_v`(무효 여부 포함) 추가. 공통코드 그룹 2개(ERP 전표 단위, ERP 전송 상태)와 감사 행위 `ERP_EXPORT`, `ERP_EXPORT_VOID` 추가(마이그레이션 `0011_erp_exports`). 기존 데이터는 바뀌지 않는다. |
+| v2.12 | 2026-11-25 | 마감 점검 단계 기준과 점검 결과 이력(R-105, 초안). 단계 기준 `close_steps`(단계 코드마다 한 행: 이름, 순서, 사용 여부, 필수 여부, 상세 화면, 적용 자산 유형, 설명. 고칠 수 있지만 지우거나 코드를 바꾸지 못함: 트리거 `ministp_guard_close_steps`) 신설, 기본 단계 9개(결제, 주문·체결, 배당, 시세, 기준가, 증권사 대사, 일 마감, ERP 전송(선택), 원장 내부 대사)를 넣는다. 점검 결과 `close_checks`(점검할 때마다 계좌·영업일마다 한 행: 그날 상태, 끝난 필수 단계 수, 점검한 명령과 사람)와 `close_check_steps`(그 점검의 단계마다 한 행: 그때의 이름·필수 여부, 상태, 내용) 신설, 둘 다 수정·삭제·비우기 금지(테이블 29개). 뷰 `close_checks_last_v`(계좌·영업일마다 마지막 점검) 추가. 공통코드 그룹 2개(마감 점검 단계 상태, 마감 점검 일 상태)와 감사 행위 `CLOSE_STEP_SET` 추가(마이그레이션 `0012_close_steps`). 기존 데이터는 바뀌지 않는다. |

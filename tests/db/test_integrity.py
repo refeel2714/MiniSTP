@@ -53,7 +53,7 @@ def test_a_database_built_by_the_real_operations_is_clean(conn):
     assert list(r) == ["events", "guards", "balanced", "audit", "rights", "transfers", "master", "erp", "journal", "accounts", "positions", "cash", "closes", "dividends",
                        "movements", "adjustments"]
     assert all(c.ok for c in r.values()), [c for c in r.values() if not c.ok]
-    assert "빈 번호 없음" in r["events"].detail and "27개 테이블" in r["guards"].detail and "마감일 잠금" in r["guards"].detail
+    assert "빈 번호 없음" in r["events"].detail and "29개 테이블" in r["guards"].detail and "마감일 잠금" in r["guards"].detail
 
 
 def test_the_report_only_reads(conn):

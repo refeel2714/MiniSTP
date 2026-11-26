@@ -65,6 +65,7 @@ ACTIONS = {
     "ORDER_CONFIRM": "주문 결과 확인",
     "ERP_EXPORT": "ERP 전표 내보내기",
     "ERP_EXPORT_VOID": "ERP 전송 무효",
+    "CLOSE_STEP_SET": "마감 점검 단계 변경",
 }
 MESSAGE_MAX = 500
 

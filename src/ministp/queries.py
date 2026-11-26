@@ -681,23 +681,59 @@ def _close_board(conn: psycopg.Connection, calendar, fees, today: dt.date,
             " left join oms_order_acks a using (client_id) where o.account_id = %s order by o.created_at",
             (account_id,)):
         orders.setdefault(day, []).append((qty, outcome, order_no))
+    steps = cb.load_steps(conn)
     outside = cb.Outside(orders, recon_days(conn, account_id=account_id), len(checks),
-                         sum(not c.ok for c in checks))
+                         sum(not c.ok for c in checks), _dividend_days(conn, account_id), _erp_days(conn, account_id))
     try:
         ledger = replay(conn, calendar, fees, instruments, account_id)
     except Exception:       # events the rules reject: no day can be read, the one thing to show is that
-        return {today: [cb.integrity_step(outside)]}
-    return cb.board(ledger, calendar, today, outside)
+        return {today: [cb.integrity_step(outside, steps)]}
+    kinds = {instruments[s].asset_type.value for s in _symbols_had(ledger) if s in instruments}
+    from dataclasses import replace
+    return cb.board(ledger, calendar, today, replace(outside, asset_types=frozenset(kinds)), steps)
+
+
+def _dividend_days(conn: psycopg.Connection, account_id: str) -> list:
+    """(accrued_on, pay_date, paid_on, status) of the account's dividends, for the 배당 step."""
+    if not conn.execute("select to_regclass('dividends_v') is not null").fetchone()[0]:
+        return []
+    return conn.execute("select d.accrued_on, a.pay_date, d.paid_on, d.status from dividends_v d"
+                        " join corporate_actions_v a using (action_id) where d.account_id = %s",
+                        (account_id,)).fetchall()
+
+
+def _erp_days(conn: psycopg.Connection, account_id: str) -> frozenset:
+    """Days of the account that an ERP export not voided holds (R-104), for the ERP 전송 step."""
+    if not conn.execute("select to_regclass('erp_export_docs') is not null").fetchone()[0]:
+        return frozenset()
+    return frozenset(d for (d,) in conn.execute(
+        "select distinct d.doc_date from erp_export_docs d where d.account_id = %s"
+        " and not exists (select 1 from erp_export_voids v where v.export_id = d.export_id)", (account_id,)))
+
+
+def _symbols_had(ledger: Ledger) -> set[str]:
+    """Every stock the account has traded or held."""
+    from .ledger import ExecutionEvent, OpeningPositionEvent
+    return {e.symbol for e in ledger.events if isinstance(e, (ExecutionEvent, OpeningPositionEvent))}
 
 
 def close_days(conn: psycopg.Connection, calendar, fees, today: dt.date, date_from: dt.date | None = None,
                date_to: dt.date | None = None, account_id: str = DEFAULT_ACCOUNT) -> Dataset:
     """영업일 목록, newest first: how many of the day's steps are finished and whether anything needs a decision."""
     from . import closeboard as cb
-    rows = [(day, cb.finished(steps), len(steps), cb.needing(steps), cb.day_state(steps))
+    rows = [(day, cb.finished(steps), cb.required(steps), cb.needing(steps), cb.day_state(steps), cb.optional_left(steps))
             for day, steps in _close_board(conn, calendar, fees, today, account_id).items()
             if (date_from is None or day >= date_from) and (date_to is None or day <= date_to)]
-    return Dataset(("date", "done", "steps", "attention", "state"), tuple(rows))
+    return Dataset(("date", "done", "steps", "attention", "state", "optional"), tuple(rows))
+
+
+def close_day_steps(conn: psycopg.Connection, calendar, fees, today: dt.date, date: dt.date,
+                    account_id: str = DEFAULT_ACCOUNT) -> list:
+    """One day's closeboard.Step list (what `close-check` keeps). KeyError for a day not on the board."""
+    days = _close_board(conn, calendar, fees, today, account_id)
+    if date not in days:
+        raise KeyError(f"{date}은 영업일이 아니거나 원장을 시작하기 전이에요")
+    return days[date]
 
 
 def close_steps(conn: psycopg.Connection, calendar, fees, today: dt.date, date: dt.date,
@@ -707,8 +743,9 @@ def close_steps(conn: psycopg.Connection, calendar, fees, today: dt.date, date: 
     days = _close_board(conn, calendar, fees, today, account_id)
     if date not in days:
         raise KeyError(f"{date}은 영업일이 아니거나 원장을 시작하기 전이에요")
-    return Dataset(("no", "step", "state", "detail", "screen", "date"),
-                   tuple((s.no, s.name, s.state, s.detail, s.screen, date) for s in days[date]))
+    return Dataset(("no", "step", "kind", "state", "detail", "screen", "date"),
+                   tuple((s.no, s.name, "필수" if s.required else "선택", s.state, s.detail, s.screen, date)
+                         for s in days[date]))
 
 
 # ---------- STP-6100 수익률 ----------

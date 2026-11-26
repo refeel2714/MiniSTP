@@ -178,6 +178,8 @@ GROUPS = [
      ["audit_log"]),
     ("ERP 전송", "ERP로 내보낸 일반전표 파일과 그 안의 전표. 무효로 하지 않은 파일에 든 전표는 다시 내지 않아요.",
      ["erp_exports", "erp_export_docs", "erp_export_voids"]),
+    ("마감 점검", "하루 작업 단계의 기준(이름·순서·사용·필수·화면·자산 유형, 고치되 지우지 않음)과 점검할 때마다 남는 단계별 결과.",
+     ["close_steps", "close_checks", "close_check_steps"]),
 ]
 
 
@@ -198,6 +200,7 @@ LAYOUT = [
     ("종목 마스터 이력", [["master_loads"], ["instrument_master"], [], []]),
     ("주문 결재", [["app_users"], ["user_rights"], ["order_requests", "order_request_lines"], ["order_approvals", "order_sends"]]),
     ("ERP 전송", [["erp_exports"], ["erp_export_docs"], ["erp_export_voids"], []]),
+    ("마감 점검", [["close_steps"], ["close_checks"], ["close_check_steps"], []]),
 ]
 BOX_W, COL_GAP, MARGIN = 232, 84, 28
 HEAD_H, ROW_H, MORE_H, BOX_GAP, BAND_TOP, BAND_PAD = 54, 40, 28, 28, 44, 22
