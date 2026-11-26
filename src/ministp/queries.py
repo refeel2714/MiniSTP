@@ -45,25 +45,29 @@ _EVENT_DATE = "coalesce(e.payload->>'trade_date', e.payload->>'date')::date"
 # ---------- STP-3100 원장 조회 · STP-3200 분개 조회 · STP-3300 시산표 ----------
 
 def ledger_events(conn: psycopg.Connection, date_from: dt.date | None = None, date_to: dt.date | None = None,
-                  event_type: str | None = None, symbol: str | None = None, seq: int | None = None) -> Dataset:
-    """이벤트 원장 목록, newest first. Dates are business dates, not recording times.
+                  event_type: str | None = None, symbol: str | None = None, seq: int | None = None,
+                  account_id: str = DEFAULT_ACCOUNT) -> Dataset:
+    """One account's 이벤트 원장 목록, newest first. Dates are business dates, not recording times.
     `seq` narrows the list to one event: how another screen opens this one on the event it had picked."""
     return _q(conn, f"""
         select e.seq, e.event_type, {_EVENT_DATE} as date, e.payload->>'symbol' as symbol,
                e.recorded_at, e.payload
           from ledger_events e
-         where (%(f)s::date is null or {_EVENT_DATE} >= %(f)s)
+         where e.account_id = %(a)s
+           and (%(f)s::date is null or {_EVENT_DATE} >= %(f)s)
            and (%(t)s::date is null or {_EVENT_DATE} <= %(t)s)
            and (%(ty)s::text is null or e.event_type = %(ty)s)
            and (%(sym)s::text is null or e.payload->>'symbol' = %(sym)s)
            and (%(seq)s::bigint is null or e.seq = %(seq)s)
-         order by e.seq desc""", {"f": date_from, "t": date_to, "ty": event_type, "sym": symbol, "seq": seq})
+         order by e.seq desc""",
+              {"f": date_from, "t": date_to, "ty": event_type, "sym": symbol, "seq": seq, "a": account_id})
 
 
 def journal_events(conn: psycopg.Connection, date_from: dt.date | None = None, date_to: dt.date | None = None,
-                   event_type: str | None = None, symbol: str | None = None, seq: int | None = None) -> Dataset:
-    """The events that wrote a journal, newest first, each with how much it wrote: 전표 수, 분개 줄 수, 차변 합계.
-    An event that books nothing (a NAV strike) is not listed: this is the list a journal is picked from."""
+                   event_type: str | None = None, symbol: str | None = None, seq: int | None = None,
+                   account_id: str = DEFAULT_ACCOUNT) -> Dataset:
+    """One account's events that wrote a journal, newest first, each with how much it wrote: 전표 수, 분개 줄 수,
+    차변 합계. An event that books nothing (a NAV strike) is not listed: this is the list a journal is picked from."""
     return _q(conn, f"""
         select e.seq, e.event_type, {_EVENT_DATE} as date, e.payload->>'symbol' as symbol,
                count(distinct j.entry_id)::int as entries, count(l.line_id)::int as lines,
@@ -71,13 +75,15 @@ def journal_events(conn: psycopg.Connection, date_from: dt.date | None = None, d
           from ledger_events e
           join journal_entries j on j.event_seq = e.seq
           join journal_lines l using (entry_id)
-         where (%(f)s::date is null or {_EVENT_DATE} >= %(f)s)
+         where e.account_id = %(a)s
+           and (%(f)s::date is null or {_EVENT_DATE} >= %(f)s)
            and (%(t)s::date is null or {_EVENT_DATE} <= %(t)s)
            and (%(ty)s::text is null or e.event_type = %(ty)s)
            and (%(sym)s::text is null or e.payload->>'symbol' = %(sym)s)
            and (%(seq)s::bigint is null or e.seq = %(seq)s)
          group by e.seq
-         order by e.seq desc""", {"f": date_from, "t": date_to, "ty": event_type, "sym": symbol, "seq": seq})
+         order by e.seq desc""",
+              {"f": date_from, "t": date_to, "ty": event_type, "sym": symbol, "seq": seq, "a": account_id})
 
 
 @dataclass(frozen=True)
@@ -110,18 +116,20 @@ def _journal_of(conn: psycopg.Connection, seq: int) -> Dataset:
          where j.event_seq = %s order by j.entry_id, l.line_id""", (json.dumps(JOURNAL_KIND_NAMES), seq))
 
 
-def event_journal(conn: psycopg.Connection, seq: int) -> tuple[Dataset, bool]:
-    """이벤트 하나가 만든 분개 전부 (전표와 줄), and whether every 전표 balances."""
-    if not conn.execute("select 1 from ledger_events where seq = %s", (seq,)).fetchone():
+def event_journal(conn: psycopg.Connection, seq: int, account_id: str = DEFAULT_ACCOUNT) -> tuple[Dataset, bool]:
+    """이벤트 하나가 만든 분개 전부 (전표와 줄), and whether every 전표 balances.
+    An event of another account is not found."""
+    if not conn.execute("select 1 from ledger_events where seq = %s and account_id = %s",
+                        (seq, account_id)).fetchone():
         raise KeyError(f"no ledger event {seq}")
     journal = _journal_of(conn, seq)
     return journal, _balanced(journal)
 
 
-def event_trace(conn: psycopg.Connection, seq: int) -> EventTrace:
-    """이벤트 하나 → 분개 → 보유·예수금 변동 (원장 추적)."""
+def event_trace(conn: psycopg.Connection, seq: int, account_id: str = DEFAULT_ACCOUNT) -> EventTrace:
+    """이벤트 하나 → 분개 → 보유·예수금 변동 (원장 추적). An event of another account is not found."""
     event = _q(conn, f"select e.seq, e.event_type, {_EVENT_DATE} as date, e.recorded_at, e.payload"
-                     " from ledger_events e where e.seq = %s", (seq,))
+                     " from ledger_events e where e.seq = %s and e.account_id = %s", (seq, account_id))
     if not event.rows:
         raise KeyError(f"no ledger event {seq}")
     journal = _journal_of(conn, seq)
@@ -219,8 +227,9 @@ def integrity_compared(conn: psycopg.Connection, title: str, calendar, fees,
 # ---------- STP-2100 대사 결과 ----------
 
 def recon_history(conn: psycopg.Connection, date_from: dt.date | None = None, date_to: dt.date | None = None,
-                  kind: str = "DAILY_RECON", only_breaks: bool = False) -> Dataset:
-    """대사 결과 with each break's latest owner judgement next to it (RESOLVED rows are not listed alone).
+                  kind: str = "DAILY_RECON", only_breaks: bool = False,
+                  account_id: str = DEFAULT_ACCOUNT) -> Dataset:
+    """One account's 대사 결과 with each break's latest owner judgement next to it (RESOLVED rows are not listed alone).
 
     Within a run the rows that need someone come first: a break nobody has judged, then judged breaks, then the
     matches, so a break of one holding out of a hundred is not lost in the middle. `key_name` names the
@@ -244,12 +253,13 @@ def recon_history(conn: psycopg.Connection, date_from: dt.date | None = None, da
           left join lateral (select x.id, x.cause_code, x.note, x.created_at from recon_results x
                               where x.supersedes_id = r.id order by x.id desc limit 1) j on true
          where r.status <> 'RESOLVED'
+           and r.account_id = %(a)s
            and s.kind = %(kind)s
            and (%(f)s::date is null or r.date >= %(f)s)
            and (%(t)s::date is null or r.date <= %(t)s)
            and (not %(ob)s or r.status = 'BREAK')
          order by r.date desc, r.run_id desc, (r.status = 'BREAK' and j.id is null) desc, r.status = 'BREAK' desc, r.id""",
-              {"kind": kind, "f": date_from, "t": date_to, "ob": only_breaks,
+              {"kind": kind, "f": date_from, "t": date_to, "ob": only_breaks, "a": account_id,
                "items": json.dumps(RECON_ITEM_NAMES), "causes": json.dumps(RECON_CAUSE_NAMES)})
 
 
@@ -304,8 +314,10 @@ def recon_calendar(conn: psycopg.Connection, calendar, today: dt.date, date_from
 
 # ---------- STP-1200 주문·체결 블로터 ----------
 
-def order_blotter(conn: psycopg.Connection, day: dt.date) -> Dataset:
-    """그날 주문: 전송(주문 의도 기록) → 접수 → 반영된 체결, 체결통보 반영 지연."""
+def order_blotter(conn: psycopg.Connection, day: dt.date, account_id: str = DEFAULT_ACCOUNT) -> Dataset:
+    """One account's orders of the day: 전송(주문 의도 기록) → 접수 → 반영된 체결, 체결통보 반영 지연.
+
+    Brokers number orders per account, so fills and notices are matched inside the order's account."""
     return _q(conn, """
         select o.client_id, o.trade_date, o.created_at, o.symbol, i.name as instrument_name, i.asset_type,
                o.side, o.qty, o.limit_price, a.outcome, a.order_no, a.detail,
@@ -318,13 +330,15 @@ def order_blotter(conn: psycopg.Connection, day: dt.date) -> Dataset:
                                     sum((e.payload->>'qty')::bigint * (e.payload->>'price')::bigint) as filled_amount
                                from ledger_events e
                               where e.event_type = 'ExecutionEvent' and a.order_no is not null
+                                and e.account_id = o.account_id
                                 and e.payload->>'exec_id' like to_char(o.trade_date, 'YYYYMMDD') || '-' || a.order_no || '-%%') f on true
           left join lateral (select count(*) as notices, max((s.payload->>'booking_ms')::int) as max_booking_ms
                                from broker_snapshots s
                               where s.kind = 'FILL_NOTICE' and s.date = o.trade_date
+                                and s.account_id = o.account_id
                                 and s.payload->'notice'->>'order_no' = a.order_no) n on true
-         where o.trade_date = %s
-         order by o.created_at desc""", (day,))
+         where o.trade_date = %s and o.account_id = %s
+         order by o.created_at desc""", (day, account_id))
 
 
 # 주문 진행 단계: where an order stands on its way to cash. Each step is done · now · stop · wait.
@@ -594,7 +608,8 @@ def _close_board(conn: psycopg.Connection, calendar, fees, today: dt.date,
             " left join oms_order_acks a using (client_id) where o.account_id = %s order by o.created_at",
             (account_id,)):
         orders.setdefault(day, []).append((qty, outcome, order_no))
-    outside = cb.Outside(orders, recon_days(conn), len(checks), sum(not c.ok for c in checks))
+    outside = cb.Outside(orders, recon_days(conn, account_id=account_id), len(checks),
+                         sum(not c.ok for c in checks))
     try:
         ledger = replay(conn, calendar, fees, instruments, account_id)
     except Exception:       # events the rules reject: no day can be read, the one thing to show is that
@@ -951,7 +966,8 @@ def account_summary(books, calendar, today: dt.date) -> Dataset:
         "select b.date, b.taken_at, count(*) filter (where r.status = 'BREAK' and not exists"
         " (select 1 from recon_results x where x.supersedes_id = r.id))"
         " from broker_snapshots b join recon_results r on r.run_id = b.snapshot_id"
-        " where b.kind = 'DAILY_RECON' group by b.snapshot_id order by b.snapshot_id desc limit 1").fetchone()
+        " where b.kind = 'DAILY_RECON' and b.account_id = %s"
+        " group by b.snapshot_id order by b.snapshot_id desc limit 1", (books.account_id,)).fetchone()
     last_nav = max((r.date for r in led.nav_history()), default=None)
     return Dataset(
         ("opened", "cash_d0", "receivables", "payables", "projected_cash", "unsettled", "holdings",
@@ -959,7 +975,7 @@ def account_summary(books, calendar, today: dt.date) -> Dataset:
         ((opened, led.cash_balance(), sum(s.signed for s in pending if s.signed > 0),
           -sum(s.signed for s in pending if s.signed < 0), led.projected_cash(), len(pending), len(held),
           market_value, close_day, recon[0] if recon else None, recon[1] if recon else None,
-          recon[2] if recon else None, clean_streak(books.conn, calendar, last_nav) if last_nav else 0),))
+          recon[2] if recon else None, clean_streak(books.conn, calendar, last_nav, books.account_id) if last_nav else 0),))
 
 
 def cash_ladder(books, calendar, today: dt.date) -> Dataset:

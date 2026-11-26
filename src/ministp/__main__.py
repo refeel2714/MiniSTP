@@ -196,6 +196,7 @@ def run(argv, *, environ=os.environ, client_factory=KisClient, connect=psycopg.c
     p.add_argument("note")
     p = sub.add_parser("sample-db")
     p.add_argument("--days", type=int, default=40, help="시뮬레이션할 영업일 수")
+    p.add_argument("--accounts", type=int, default=3, choices=[1, 2, 3], help="계좌 수 (기본 3: 고객 2명, 계좌 3개)")
     p = sub.add_parser("db-migrate", help="기존 DB를 다음 ERD 버전으로 (기본은 상태와 계획만 보여줘요)")
     how = p.add_mutually_exclusive_group()
     how.add_argument("--dry-run", action="store_true", help="적용해 보고 전부 되돌려요 (리허설)")
@@ -252,7 +253,7 @@ def run(argv, *, environ=os.environ, client_factory=KisClient, connect=psycopg.c
             return 0
 
         if args.cmd == "sample-db":
-            return _sample_db(url, environ, connect, calendar, args.days)
+            return _sample_db(url, environ, connect, calendar, args.days, args.accounts)
 
         if args.cmd == "ui":
             return _ui(url, environ, calendar, fees, args.sample, args.port, write=args.write)
@@ -467,13 +468,13 @@ def _run_intraday(books, broker, today, environ, feed_factory, console, now, pre
 SAMPLE_DB = "ministp_sample"
 
 
-def _sample_db(url: str, environ, connect, calendar, days: int) -> int:
+def _sample_db(url: str, environ, connect, calendar, days: int, accounts: int = 3) -> int:
     from .sample import SampleError, build_sample
     sample_url = environ.get("MINISTP_SAMPLE_DATABASE_URL") or psycopg.conninfo.make_conninfo(url, dbname=SAMPLE_DB)
     _create_database(sample_url, connect)
     with connect(sample_url, autocommit=True) as conn:
         try:
-            s = build_sample(conn, calendar, FeeSchedule.kis_paper(), days=days)
+            s = build_sample(conn, calendar, FeeSchedule.kis_paper(), days=days, accounts=accounts)
         except SampleError as e:
             print(f"오류: {e}")
             return 1
@@ -482,6 +483,11 @@ def _sample_db(url: str, environ, connect, calendar, days: int) -> int:
               f"무오류 연속 {s.streak}일")
         for n in s.notes:
             print(f"  {n}")
+        for a in s.others:
+            print(f"  계좌 {a.account_id} {a.alias}: {a.opened_on} 개설, 주문 {a.orders}건, 체결 {a.fills}건, "
+                  f"거부 {a.refused}건, 불일치 판단 {a.breaks_resolved}건, 무오류 연속 {a.streak}일, 상태 {a.status}")
+        if s.others:
+            print("화면은 아직 기본 계좌 A0001만 보여줘요. 다른 계좌는 pgAdmin이나 verify --sample로 확인할 수 있어요.")
     print("운영 DB(ministp)는 건드리지 않았어요. pgAdmin에서 ministp_sample을 열어 보세요.")
     return 0
 

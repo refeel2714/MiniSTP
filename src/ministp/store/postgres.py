@@ -85,8 +85,11 @@ class PostgresLedgerStore:
 
     # ----- schema -----
 
-    def init_schema(self) -> None:
+    def init_schema(self, opened_on=None) -> None:
         """Build a new database at the current ERD version (`db-init`).
+
+        `opened_on` is the opening date of the default account (today unless given;
+        the sample database starts in the past).
 
         A database that already holds the ledger is never rebuilt from `schema.sql`:
         it moves forward only through migrations (`db-migrate`), which prove the
@@ -119,10 +122,10 @@ class PostgresLedgerStore:
             self.conn.execute(
                 "insert into trading_accounts (account_id, customer_id, alias, broker, env, account_type,"
                 " credential_ref, opened_on) values (%s, %s, '기본 계좌', 'KIS', 'PAPER', 'GENERAL', 'KIS',"
-                " current_date)", (DEFAULT_ACCOUNT, DEFAULT_CUSTOMER))
+                " coalesce(%s, current_date))", (DEFAULT_ACCOUNT, DEFAULT_CUSTOMER, opened_on))
             self.conn.execute(
                 "insert into account_status_history (account_id, status, effective_from, reason)"
-                " values (%s, 'OPEN', current_date, '기본 계좌')", (DEFAULT_ACCOUNT,))
+                " values (%s, 'OPEN', coalesce(%s, current_date), '기본 계좌')", (DEFAULT_ACCOUNT, opened_on))
 
     # ----- write path -----
 
