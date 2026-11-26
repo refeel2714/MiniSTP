@@ -49,7 +49,7 @@
 | [STP-3200](STP-3200.md) | 분개 조회 | 2 | `STP3200R01`, `STP3200R02` |
 | [STP-3300](STP-3300.md) | 시산표 | 1 | `STP3300R01` |
 | [STP-3400](STP-3400.md) | 계좌정보 | 3 | `STP3400R01`, `STP3400R02`, `STP3400R03` |
-| [STP-4100](STP-4100.md) | 종목정보 | 4 | `STP4100R01`, `STP4100R02`, `STP4100R03`, `STP4100R04` |
+| [STP-4100](STP-4100.md) | 종목정보 | 2 | `STP4100R01`, `STP4100R06` |
 | [STP-4101](STP-4101.md) | 마스터 적재 이력 | 2 | `STP4101R01`, `STP4101R02` |
 | [STP-4300](STP-4300.md) | 거래 기준 | 5 | `STP4300R01`, `STP4300R02`, `STP4300R03`, `STP4300R04`, `STP4300R05` |
 | [STP-4400](STP-4400.md) | 계좌 관리 | 2 | `STP4400R01`, `STP4400R02`, `STP4400U01`, `STP4400U02` |
@@ -105,12 +105,11 @@
 | `customer_positions_v.symbol` | 종목코드 | STP-1400 positions |
 | `customers.alias` | 고객 별칭 | STP-1400 customers, STP-1400 customers 버튼 add, STP-4400 accounts |
 | `customers.customer_id` | 고객 ID | STP-1400 customers, STP-1400 customers 버튼 add |
-| `instrument_master.load_id` | 적재 번호 | STP-4100 history |
+| `instrument_master.load_id` | 적재 번호 | STP-4100 attrs |
 | `instrument_master.market` | 시장 | STP-4100 instruments |
 | `instrument_master.name` | 종목명 | STP-4100 instruments, STP-4101 changes |
 | `instrument_master.sec_group` | 증권그룹 구분 | STP-4100 instruments, STP-4100 조회조건, STP-4101 changes |
 | `instrument_master.symbol` | 단축코드 | STP-4100 instruments, STP-4101 changes |
-| `instrument_master.valid_from` | 적용 시작일 | STP-4100 history |
 | `instrument_master_match_v.status` | 대조 결과 | STP-4100 instruments |
 | `instruments.asset_type` | 자산 유형 | STP-1100 holdings, STP-1200 orders, STP-1200 lines, STP-1210 lines, STP-1300 symbols, STP-1400 positions, STP-1500 basket, STP-1500 plan, STP-2300 symbols, STP-3400 settlements, STP-4300 fees, STP-4300 ticks, STP-5100 requests, STP-5100 lines |
 | `instruments.market` | 시장 | STP-4100 조회조건, STP-4300 fees |
