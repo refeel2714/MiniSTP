@@ -272,8 +272,8 @@ def _journal(c: TxContext, p) -> TxResult:
 
 
 def _trial(c: TxContext, p) -> TxResult:
-    ds, balanced = q.trial_balance(c.conn)
-    return TxResult({"main": ds}, {"balanced": balanced})
+    ds, meta = q.trial_balance(c.conn, p.get("day") or c.today)
+    return TxResult({"main": ds}, meta)
 
 
 def _journal_templates(c: TxContext, p) -> TxResult:
@@ -438,7 +438,7 @@ TRANSACTIONS: dict[str, Tx] = {t.tx_id: t for t in [
     Tx("STP3200R01", "분개를 만든 이벤트 목록", {"date_from": "date", "date_to": "date", "event_type": "text",
                                             "symbol": "text", "seq": "int"}, _journal_events),
     Tx("STP3200R02", "이벤트의 분개", {"seq": "int"}, _journal),
-    Tx("STP3300R01", "시산표", {}, _trial),
+    Tx("STP3300R01", "시산표", {"day": "date"}, _trial),
     Tx("STP4500R01", "분개 모형", {}, _journal_templates),
     Tx("STP4500R02", "분개 모형의 줄", {"code": "text"}, _journal_template_lines),
     Tx("STP3400R01", "계좌 요약", {}, _account),

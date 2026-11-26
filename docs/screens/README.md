@@ -63,10 +63,8 @@
 
 | DB 컬럼 | 한글명 | 쓰는 화면·그리드 |
 |---|---|---|
-| `account_balances_v.balance` | 잔액 | STP-3300 trial |
 | `accounts_chart.code` | 계정코드 | STP-2210 bridge, STP-3300 trial, STP-4500 lines |
 | `accounts_chart.name` | 계정명 | STP-2210 bridge, STP-3200 journal, STP-3300 trial, STP-4500 lines |
-| `accounts_chart.normal_side` | 정상잔액 방향 | STP-3300 trial |
 | `broker_snapshots.kind` | 유형 | STP-2100 days, STP-2100 조회조건 |
 | `broker_snapshots.taken_at` | 수신 시각 | STP-2100 results |
 | `cash_ledger.amount` | 금액 | STP-3100 cash |
