@@ -136,6 +136,11 @@ def session_for(books: Books, broker: BrokerGateway, day: dt.date) -> TradingSes
     # Next number after the highest stored one. Orders refused by the order check never reach the DB,
     # so counting rows would hand out a number already used today (S…-0003 twice).
     session._seq = max((int(r[0].rsplit("-", 1)[1]) for r in rows), default=0)
+    # fill notices an earlier process of today already took (R-76): a resent one is not booked again
+    for (n,) in books.conn.execute("select payload -> 'notice' from broker_snapshots"
+                                   " where kind = 'FILL_NOTICE' and date = %s", (day,)):
+        if n and n.get("is_fill"):
+            session._seen_notices.add((n["order_no"], n["time"], n["qty"], n["price"]))
 
     def on_submit(cid, d, symbol, side, qty, limit_price):
         books.conn.execute("insert into oms_orders (client_id, trade_date, symbol, side, qty, limit_price)"
@@ -395,7 +400,8 @@ class IntradayRunner:
             self.out(f"[{received_at:%H:%M:%S}] 접수 {n.side} {n.symbol} x{n.qty} (주문 {n.order_no})")
             return
         t0 = self.monotonic()
-        booked = self.session.sync(self.day)
+        # R-76 (v1.27): the notice's own quantity and price, once the broker's query shows it
+        booked = self.session.sync(self.day, notices=[n] if n.is_fill else (), gap="hold")
         ms = int((self.monotonic() - t0) * 1000)
         self.stats.fills_booked += len(booked)
         if booked:
@@ -429,9 +435,11 @@ class IntradayRunner:
             self.out(f"결제 {len(settled)}건 반영, 예수금 D+0 {self.books.ledger.cash_balance():,}")
         return settled
 
-    def poll(self, why: str = "") -> list[str]:
+    def poll(self, why: str = "", gap: str | None = None) -> list[str]:
+        """While the feed is up a fill nobody announced is booked only if it is still unannounced at the
+        next poll (its notice may be on the way); without the feed it is booked at once."""
         self.settle()
-        booked = self.session.sync(self.day)
+        booked = self.session.sync(self.day, gap=gap or ("grace" if self.feed_up else "now"))
         self._last_poll = self.monotonic()
         if booked:
             self.stats.polls_booked += len(booked)
@@ -619,6 +627,7 @@ class IntradayRunner:
         self.quote()
         while self.now().time() < until and self.step():
             pass
+        self.poll("종료 전 확인", gap="now")
         self.recon(verbose=True)
         self.print_status()
         self.out("장중 실행 종료. 15:40 이후 daily를 실행해 주세요.")
