@@ -281,7 +281,7 @@ def test_live_endpoint_is_an_event_stream(client):
     assert "GET" in route.methods
 
 
-# ---------- STP-4100 종목정보·STP-4300 거래 기준, STP-3400 계좌정보 ----------
+# ---------- STP-4100 종목정보·STP-4300 거래 기준, STP-3400 예수금·결제 현황 ----------
 
 def _rows(client, tx, params=None, dataset="main"):
     body = client.post(f"/api/tx/{tx}", json={"params": params or {}}).json()
@@ -358,7 +358,7 @@ def test_journal_templates_show_each_event_types_entry_and_its_lines(client):
 # ---------- 셀 표시 유형 (실시간 잔고) ----------
 
 def test_holdings_are_valued_at_the_last_close_when_run_has_no_quotes(client, conn, sample):
-    """R-68: `run`이 오늘 현재가를 남기지 않았으면 원장의 최근 종가로 평가해요. 계좌정보의 평가금액과 같은 값이에요."""
+    """R-68: `run`이 오늘 현재가를 남기지 않았으면 원장의 최근 종가로 평가해요. 예수금·결제 현황의 평가금액과 같은 값이에요."""
     from ministp.ledger import Ledger
     from ministp.ops import load_books
     from ministp.queries import Dataset, holdings_view, last_closes
@@ -432,7 +432,9 @@ def test_holdings_screen_draws_the_badge_meter_and_the_lines_under_prices(client
     shown = [c["name"] for c in grid["columns"] if not c["inside"] and not c["hidden"]]
     assert shown == ["instrument_name", "qty", "price", "market_value", "unrealized_pnl", "book_cost", "weight", "today_qty"]
     assert grid["meta"] == {"basis": "평가 기준"} and grid["totals"] == ["market_value", "unrealized_pnl", "book_cost"]
-    assert grid["map"] == {"label": "instrument_name", "size": "book_cost", "tone": "unrealized_pnl"}
+    assert grid["map"] is None      # 구성 지도는 뺐어요(11/26): 자산 유형별 줄과 비중 막대로 봐요
+    mix = next(g for g in screen["grids"] if g["id"] == "mix")
+    assert [c["name"] for c in mix["columns"]] == ["asset_type_name", "count", "market_value", "weight", "unrealized_pnl"]
     spec = client.get("/spec/STP-1100").text
     assert "배지 안에 표시" in spec and "칸 아래에 작게 표시" in spec
 
@@ -445,9 +447,9 @@ def test_recon_calendar_opens_on_the_latest_day_and_counts_the_gate(client, samp
     assert days[0]["date"] == last
     assert meta == {"clean_streak": sample.streak, "gate_left": 20 - sample.streak, "selected": last}
     states = {r["state"] for r in days}
-    assert "판단 완료" in states and states <= {"일치", "판단 완료", "휴장"}   # 샘플은 불일치를 모두 판단해 둬요
+    assert "불일치(판단함)" in states and states <= {"일치", "불일치(판단함)", "휴장"}   # 샘플은 불일치를 모두 판단해 둬요
     # 오른쪽 상세는 달력의 한 칸이 가리키는 그날의 대사 결과
-    judged = next(r for r in days if r["state"] == "판단 완료")
+    judged = next(r for r in days if r["state"] == "불일치(판단함)")
     detail, _ = _rows(client, "STP2100R01", {"date_from": judged["date"], "date_to": judged["date"], "kind": judged["kind"]})
     assert len(detail) == judged["items"] and sum(r["status"] == "BREAK" for r in detail) == judged["breaks"]
     assert all(r["resolved_cause"] for r in detail if r["status"] == "BREAK") and judged["open_breaks"] == 0

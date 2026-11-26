@@ -27,7 +27,7 @@
     MATCH: "ok", ACCEPTED: "ok", FILLED: "ok", true: "ok",
     BREAK: "bad", REJECTED: "bad", false: "bad",
     RESOLVED: "warn", UNKNOWN: "warn", CANCELED: "warn", PENDING: "warn", "적용 중": "ok", "예정": "warn",
-    "일치": "ok", "판단 완료": "warn", "불일치": "bad", "대사 없음": "miss",   // miss: something owed is not there
+    "일치": "ok", "불일치(판단함)": "warn", "불일치": "bad", "대사 없음": "miss",   // miss: something owed is not there
     "결제 완료": "ok", "결제 대기": "info", "체결 대기": "info", "부분 체결": "warn",   // info: on its way, nothing to do
     "접수 거부": "bad", "결제 지연": "bad", "접수 기록 없음": "miss",
     "정상": "ok", "주의": "warn", "확인 필요": "bad", "평가 전": "info",
@@ -1197,8 +1197,10 @@
       const r = rows[0];
       if (!r) return body.replaceChildren(h("div", { class: "empty", text: "조회된 내역이 없어요" }));
       const old = previous.get("card");
-      const values = g.columns.map(c => h("div", { class: ["cv", tone(r[c.name], c.color, r)].join(" ").trim(),
-        text: fmt(r[c.name], c.format) || "-" }));
+      const values = g.columns.map(c => h("div", { class: ["cv", c.format === "datetime" ? "dt" : "", tone(r[c.name], c.color, r)].filter(Boolean).join(" "),
+        // a card has room for the minute, not the second: the full time is in the tooltip
+        text: (c.format === "datetime" ? fmt(r[c.name], c.format).slice(0, 16) : fmt(r[c.name], c.format)) || "-",
+        title: fmt(r[c.name], c.format) || null }));
       body.replaceChildren(h("div", { class: "cards" }, g.columns.map((c, i) =>
         h("div", { class: values[i].textContent.length > 18 ? "card long" : "card" }, h("div", { class: "cl", text: c.label }), values[i]))));
       if (old) g.columns.forEach((c, i) => {

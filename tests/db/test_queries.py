@@ -97,7 +97,7 @@ def test_recon_calendar_reads_each_day_the_way_the_gate_does(conn, broker):
     today = D("2026-11-25")
     rows = {r["date"]: r for r in recon_calendar(conn, CAL, today).records()}
     assert list(rows) == sorted(rows, reverse=True)
-    assert (rows[DAY]["state"], rows[DAY]["breaks"], rows[DAY]["open_breaks"]) == ("판단 완료", 2, 0)
+    assert (rows[DAY]["state"], rows[DAY]["breaks"], rows[DAY]["open_breaks"]) == ("불일치(판단함)", 2, 0)
     assert (rows[late]["state"], rows[late]["breaks"], rows[late]["open_breaks"]) == ("불일치", 2, 2)
     assert rows[DAY]["items"] == len(recon_history(conn, DAY, DAY))
     assert (rows[D("2026-11-23")]["state"], rows[D("2026-11-23")]["items"]) == ("대사 없음", None)   # 빠진 영업일
