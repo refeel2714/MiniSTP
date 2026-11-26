@@ -21,6 +21,7 @@ from ministp.accounting import Account  # noqa: E402
 from ministp.calendar import BusinessCalendar  # noqa: E402
 from ministp.fees import FeeSchedule  # noqa: E402
 from ministp.instruments import AssetType, Instrument, Market  # noqa: E402
+from ministp.journal_templates import template_of  # noqa: E402
 from ministp.ledger import Ledger, Side  # noqa: E402
 
 # 연말 휴장일을 넣어 결제일이 휴장일을 건너뛰는 경우도 섞이게 해요.
@@ -183,6 +184,11 @@ class LedgerMachine(RuleBasedStateMachine):
         assert acct(Account.COMMISSION) == self.commission
         assert acct(Account.TAXES) == self.taxes
         assert acct(Account.CONTRIBUTED_CAPITAL) == self.contributed
+
+    @invariant()
+    def every_entry_fits_a_journal_template(self):
+        # 분개 모형 표(STP-4500)가 원장이 실제로 만드는 전표를 빠짐없이 설명하는지
+        assert all(template_of(e) is not None for e in self.led.journal)
 
     @invariant()
     def replay_rebuilds_the_same_ledger(self):
