@@ -1,5 +1,5 @@
 -- MiniSTP ledger schema (spec 03).
--- ERD version: 2.6  (bump on every schema change, then run scripts/gen_erd.py) Append-only tables are enforced in the DB,
+-- ERD version: 2.7  (bump on every schema change, then run scripts/gen_erd.py) Append-only tables are enforced in the DB,
 -- not just in application code.
 
 create table if not exists accounts_chart (
@@ -165,6 +165,48 @@ create table if not exists corporate_actions (
 );
 create index if not exists corporate_actions_symbol_idx on corporate_actions (symbol, record_date);
 
+-- 종목 마스터 이력 (ERD v2.7, R-94~95). 시장 전 종목의 속성(가격 제외)이 바뀐 날에만 한 행이 들어간다.
+-- 적재(master load) 한 번에 master_loads 한 행. 등록 종목(instruments)과는 FK로 묶지 않고 대조 뷰가 맞춰 본다.
+create table if not exists master_loads (
+    load_id       bigserial primary key,
+    base_date     date not null,
+    fetched_at    timestamptz not null,
+    kospi_sha256  text not null check (kospi_sha256 ~ '^[0-9a-f]{64}$'),
+    kosdaq_sha256 text not null check (kosdaq_sha256 ~ '^[0-9a-f]{64}$'),
+    rows_total    integer not null check (rows_total >= 0),
+    rows_new      integer not null check (rows_new >= 0),
+    rows_changed  integer not null check (rows_changed >= 0),
+    rows_delisted integer not null check (rows_delisted >= 0),
+    loaded_at     timestamptz not null default now(),
+    constraint master_loads_base_date_key unique (base_date),
+    constraint master_loads_files_key unique (kospi_sha256, kosdaq_sha256)
+);
+
+-- 2. 종목 마스터 이력: 속성이 바뀐 날에만 한 행 (가격은 담지 않는다) ------------------------------
+create table if not exists instrument_master (
+    master_id       bigserial primary key,
+    symbol          text not null,
+    valid_from      date not null,
+    load_id         bigint not null references master_loads (load_id),
+    listed          boolean not null,
+    isin            text not null check (isin ~ '^[A-Z0-9]{12}$'),
+    name            text not null check (name <> ''),
+    market          text not null check (market in ('KOSPI', 'KOSDAQ')),
+    sec_group       text not null check (sec_group ~ '^[A-Z]{2}$'),
+    lot             integer not null check (lot >= 0),
+    par_value       bigint not null check (par_value >= 0),
+    listed_on       date,
+    listed_shares_k bigint not null check (listed_shares_k >= 0),
+    preferred       text not null,
+    spac            boolean not null,
+    halted          boolean not null,
+    liquidation     boolean not null,
+    managed         boolean not null,
+    warning         text not null,
+    constraint instrument_master_symbol_key unique (symbol, valid_from)
+);
+create index if not exists instrument_master_load_idx on instrument_master (load_id);
+
 -- R-40: the order intent is stored before it is sent, the broker's answer after.
 create table if not exists oms_orders (
     client_id   text primary key,
@@ -272,7 +314,7 @@ begin
                              'position_ledger', 'cash_ledger', 'instruments', 'oms_orders',
                              'oms_order_acks', 'broker_snapshots', 'recon_results',
                              'customers', 'trading_accounts', 'account_status_history', 'day_closes',
-                             'audit_log', 'corporate_actions'] loop
+                             'audit_log', 'corporate_actions', 'master_loads', 'instrument_master'] loop
         if not exists (select 1 from pg_trigger where tgname = t || '_append_only') then
             execute format('create trigger %I before update or delete on %I
                             for each row execute function ministp_forbid_change()',
@@ -472,6 +514,26 @@ select a.account_id, (a.payload ->> 'adjustment_id')::bigint as adjustment_id, a
   left join ledger_events c on c.event_type = 'AdjustmentCancelEvent'
        and c.payload ->> 'adjustment_id' = a.payload ->> 'adjustment_id'
  where a.event_type = 'AdjustmentEvent';
+
+-- v2.7 종목 마스터 (R-94~95): 종목마다 최근 이력 행, 그리고 등록 종목과의 대조.
+create or replace view instrument_master_current_v as
+select distinct on (m.symbol) m.symbol, m.listed, m.name, m.market, m.sec_group, m.isin, m.lot, m.par_value,
+       m.listed_on, m.listed_shares_k, m.preferred, m.spac, m.halted, m.liquidation, m.managed, m.warning,
+       m.valid_from, m.load_id
+  from instrument_master m
+ order by m.symbol, m.valid_from desc;
+
+create or replace view instrument_master_match_v as
+select i.symbol, i.name, i.market, i.asset_type,
+       c.name as master_name, c.market as master_market, c.sec_group as master_group, c.listed,
+       c.halted, c.liquidation, c.managed, c.warning, c.valid_from,
+       case when c.symbol is null then 'MISSING'
+            when not c.listed then 'DELISTED'
+            when c.market <> i.market
+              or c.sec_group <> case i.asset_type when 'STOCK' then 'ST' when 'ETF' then 'EF' end then 'DIFFERENT'
+            when replace(c.name, ' ', '') <> replace(i.name, ' ', '') then 'RENAMED'
+            else 'MATCH' end as status
+  from instruments i left join instrument_master_current_v c using (symbol);
 
 -- Korean names (한글 명칭). Shown in pgAdmin and in docs/erd. Every table, view and
 -- column must have one; tests/db/test_erd.py fails otherwise.
@@ -755,6 +817,75 @@ comment on column audit_log.detail is '입력 내용 (인증키·계좌번호 �
 comment on column audit_log.message is '결과 메시지 (거부·실패 사유)';
 comment on column audit_log.prev_hash is '앞 행의 해시';
 comment on column audit_log.hash is '이 행의 해시 (앞 행 해시 + 이 행 내용)';
+
+comment on table master_loads is '종목 마스터 적재 기록 (KIS 마스터 파일을 DB에 넣은 날마다 한 행, 수정·삭제 불가)';
+comment on column master_loads.load_id is '적재 번호';
+comment on column master_loads.base_date is '기준일 (파일을 받은 날)';
+comment on column master_loads.fetched_at is '파일을 받은 시각';
+comment on column master_loads.kospi_sha256 is '코스피 파일 해시 (SHA-256)';
+comment on column master_loads.kosdaq_sha256 is '코스닥 파일 해시 (SHA-256)';
+comment on column master_loads.rows_total is '종목 수';
+comment on column master_loads.rows_new is '신규 (처음 나타난 종목 수)';
+comment on column master_loads.rows_changed is '변경 (속성이 바뀐 종목 수)';
+comment on column master_loads.rows_delisted is '빠짐 (파일에서 빠진 종목 수)';
+comment on column master_loads.loaded_at is '적재 시각';
+
+comment on table instrument_master is '종목 마스터 이력 (시장 전 종목, 속성이 바뀐 날에만 한 행, 수정·삭제 불가)';
+comment on column instrument_master.master_id is '이력 번호';
+comment on column instrument_master.symbol is '단축코드';
+comment on column instrument_master.valid_from is '적용 시작일 (이 속성이 처음 보인 기준일)';
+comment on column instrument_master.load_id is '적재 번호';
+comment on column instrument_master.listed is '상장 여부 (파일에서 빠지면 거짓인 행이 생김)';
+comment on column instrument_master.isin is '표준코드 (ISIN)';
+comment on column instrument_master.name is '종목명';
+comment on column instrument_master.market is '시장 (KOSPI / KOSDAQ)';
+comment on column instrument_master.sec_group is '증권그룹 구분 (ST 주권, EF ETF 등)';
+comment on column instrument_master.lot is '매매수량단위';
+comment on column instrument_master.par_value is '액면가 (원)';
+comment on column instrument_master.listed_on is '상장일';
+comment on column instrument_master.listed_shares_k is '상장주수 (천 주)';
+comment on column instrument_master.preferred is '우선주 구분 (0 보통주)';
+comment on column instrument_master.spac is '스팩 여부';
+comment on column instrument_master.halted is '거래정지 여부';
+comment on column instrument_master.liquidation is '정리매매 여부';
+comment on column instrument_master.managed is '관리종목 여부';
+comment on column instrument_master.warning is '시장경고 구분 (00 없음, 01 투자주의, 02 투자경고, 03 투자위험)';
+
+comment on view instrument_master_current_v is '종목 마스터 현재 (종목마다 가장 최근 이력 행)';
+comment on column instrument_master_current_v.symbol is '단축코드';
+comment on column instrument_master_current_v.listed is '상장 여부';
+comment on column instrument_master_current_v.name is '종목명';
+comment on column instrument_master_current_v.market is '시장';
+comment on column instrument_master_current_v.sec_group is '증권그룹 구분';
+comment on column instrument_master_current_v.isin is '표준코드 (ISIN)';
+comment on column instrument_master_current_v.lot is '매매수량단위';
+comment on column instrument_master_current_v.par_value is '액면가 (원)';
+comment on column instrument_master_current_v.listed_on is '상장일';
+comment on column instrument_master_current_v.listed_shares_k is '상장주수 (천 주)';
+comment on column instrument_master_current_v.preferred is '우선주 구분';
+comment on column instrument_master_current_v.spac is '스팩 여부';
+comment on column instrument_master_current_v.halted is '거래정지 여부';
+comment on column instrument_master_current_v.liquidation is '정리매매 여부';
+comment on column instrument_master_current_v.managed is '관리종목 여부';
+comment on column instrument_master_current_v.warning is '시장경고 구분';
+comment on column instrument_master_current_v.valid_from is '적용 시작일';
+comment on column instrument_master_current_v.load_id is '적재 번호';
+
+comment on view instrument_master_match_v is '등록 종목과 종목 마스터 대조 (원장이 쓰는 종목마다 한 행)';
+comment on column instrument_master_match_v.symbol is '종목코드';
+comment on column instrument_master_match_v.name is '등록 종목명';
+comment on column instrument_master_match_v.market is '등록 시장';
+comment on column instrument_master_match_v.asset_type is '등록 자산 유형';
+comment on column instrument_master_match_v.master_name is '마스터 종목명';
+comment on column instrument_master_match_v.master_market is '마스터 시장';
+comment on column instrument_master_match_v.master_group is '마스터 증권그룹 구분';
+comment on column instrument_master_match_v.listed is '마스터 상장 여부';
+comment on column instrument_master_match_v.halted is '거래정지 여부';
+comment on column instrument_master_match_v.liquidation is '정리매매 여부';
+comment on column instrument_master_match_v.managed is '관리종목 여부';
+comment on column instrument_master_match_v.warning is '시장경고 구분';
+comment on column instrument_master_match_v.valid_from is '마스터 적용 시작일';
+comment on column instrument_master_match_v.status is '대조 결과 (MATCH 일치 / RENAMED 이름만 다름 / DIFFERENT 시장·구분 다름 / DELISTED 상장폐지 / MISSING 마스터에 없음)';
 
 -- 마이그레이션 적용 기록. 새 DB는 이 스키마로 만들어지면서 그때까지의 마이그레이션이 적용된 것으로 기록된다.
 create table if not exists schema_migrations (

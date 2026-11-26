@@ -241,6 +241,20 @@ def kept_days(root: Path) -> list[dt.date]:
     return sorted(days)
 
 
+@dataclass(frozen=True)
+class KeptDay:
+    day: dt.date
+    fetched_at: dt.datetime
+    sha256: dict[Market, str]
+
+
+def kept_day(root: Path, day: dt.date) -> KeptDay:
+    """When the files of `day` were fetched and their hashes, as the manifest records them."""
+    manifest = json.loads((root / day.isoformat() / "manifest.json").read_text(encoding="utf-8"))
+    return KeptDay(day, dt.datetime.fromisoformat(manifest["fetched_at"]),
+                   {m: manifest["files"][stem + ".mst.zip"]["sha256"] for m, stem in FILES.items()})
+
+
 def load_day(root: Path, day: dt.date) -> dict[str, MasterRow]:
     folder = root / day.isoformat()
     manifest = json.loads((folder / "manifest.json").read_text(encoding="utf-8"))

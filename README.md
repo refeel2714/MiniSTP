@@ -241,6 +241,7 @@ MINISTP_TEST_DATABASE_URL=postgresql://postgres:postgres@localhost:5432/ministp_
 .venv\Scripts\python -m ministp close                         :: 불일치를 판단한 날을 직접 마감 (--date 날짜)
 .venv\Scripts\python -m ministp master fetch                  :: 시장 전체 종목정보 받기 (아침, 키 필요 없음)
 .venv\Scripts\python -m ministp master check                  :: 받은 종목정보 점검 (읽기만)
+.venv\Scripts\python -m ministp master load                   :: 받은 종목정보를 DB 이력에 넣기 (바뀐 종목만)
 .venv\Scripts\python -m ministp erp export --from 2026-11-18 :: 분개를 ERP 일반전표 업로드 CSV로 (읽기만)
 .venv\Scripts\python -m ministp basket simulate --amount 10000000 :: 바스켓 주문 시뮬레이션 (계산만, 주문 안 함)
 ```
@@ -316,6 +317,8 @@ MiniSTP는 돈을 옮기지 않습니다. 증권사 앱에서 넣거나 뺀 돈�
 `daily`는 결제, 체결 반영, 배당 인식과 입금(등록된 권리가 있을 때), 종가 평가와 NAV, 대사를 차례로 하고 무오류 연속 영업일을 보여줍니다. 대사가 모두 일치하면 그날 장부를 마감합니다(일 마감, R-77). 마감한 날짜로는 원장도 DB도 더 기록을 받지 않고, 마감 뒤에 알게 된 그날의 체결은 실제 매매일을 그대로 둔 채 다음 열린 날의 정정 전표로 남습니다(R-78). 마감 시점의 장부(ABOR)는 따로 쌓지 않고 마감 이벤트까지를 다시 재생해 만들기 때문에, 장중 장부(IBOR)와의 차이는 마감 뒤에 쌓인 이벤트로만 설명됩니다(R-79). 불일치가 있던 날은 `resolve`로 원인을 판단한 뒤 `close`로 마감하고, `status`가 어디까지 마감했는지 보여줍니다. 증권사 앱에서 직접 낸 주문은 원장에 들어가지 않고 이상 거래로 표시됩니다.
 
 `master fetch`는 한국투자증권이 매일 아침 공개하는 코스피·코스닥 종목정보 마스터 파일(상장 종목과 ETF·ETN·리츠 전부, 기준가, 거래정지·관리종목, 상장주수 등)을 받아 `data/master/날짜/`에 받은 그대로 두고 해시를 남깁니다(`--csv`를 붙이면 엑셀용 `master.csv`도 만듭니다). `master check`는 상품 구분별 종목 수, 전날 대비 신규·빠짐·이름 변경, 등록 종목의 이름·시장·구분, 보유 종목의 기준가와 원장이 평가한 전 영업일 종가를 대조합니다. DB에는 쓰지 않아서 `run`과 함께 돌려도 됩니다(R-90~92). `--no-db`를 붙이면 DB 없이 파일만 점검합니다.
+
+`master load`는 받아 둔 날의 파일을 DB 이력(`instrument_master`, ERD v2.7)에 넣습니다. 종목명·시장·구분·상장주수·거래정지 같은 속성이 바뀐 종목만 그 기준일로 한 행이 더해지고, 파일에서 빠진 종목은 비상장 행으로 남습니다. 가격은 넣지 않습니다. 기준일 하나는 한 번만, 날짜 순서로만 넣고(날짜를 주지 않으면 아직 넣지 않은 날을 모두), 끝나면 등록 종목이 마스터와 다른 곳을 보여 줍니다(R-94, R-95).
 
 `erp export`는 분개를 회사 ERP의 일반전표 업로드 파일(CSV)로 내보냅니다(R-96, D9 "체결이 곧 전표다"). 회계 담당자가 증권사 거래내역을 보고 전표를 다시 치는 대신 이 파일을 ERP 엑셀 업로드로 올리면 됩니다. `--by entry`(기본)는 분개 1건이 전표 1건이고 증빙번호가 `MSTP-이벤트번호-순번`이라, ERP가 이미 받은 전표를 다시 받지 않게 할 수 있습니다. 평가 역분개 같은 반대전표에는 되돌리는 전표의 증빙번호가 붙습니다. `--by day`는 일 마감이 끝난 날마다 계정별 순액 전표 1건입니다. 계정은 기본으로 MiniSTP 계정을 그대로 쓰고, `--mapping`으로 회사 계정코드 매핑 파일을 주면 바꿔서 냅니다([예시](docs/erp/mapping.example.yaml): 투자원금은 법인 장부에서 보통예금 이체, 원천징수 법인세는 선납세금). 매핑이 빠진 계정이 있거나 차대가 안 맞거나 같은 파일이 이미 있으면 만들지 않습니다. 끝에 ERP 총계정원장과 맞춰 볼 계정별 합계를 보여 줍니다. DB에는 쓰지 않아서 `run`과 함께 돌려도 됩니다. 샘플 DB로 보려면 `erp export --sample --from 2026-09-01 --to 2026-09-30 --mapping docs/erp/mapping.example.yaml`.
 

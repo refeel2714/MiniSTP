@@ -28,7 +28,7 @@ from .postgres import DEFAULT_ACCOUNT, cash_rows, close_row, from_payload, posit
 APPEND_ONLY_TABLES = ("ledger_events", "journal_entries", "journal_lines", "position_ledger", "cash_ledger",
                       "instruments", "oms_orders", "oms_order_acks", "broker_snapshots", "recon_results",
                       "customers", "trading_accounts", "account_status_history", "day_closes", "audit_log",
-                      "corporate_actions")
+                      "corporate_actions", "master_loads", "instrument_master")
 BALANCE_TRIGGERS = ("journal_entries_balanced", "journal_lines_balanced")
 # R-78 in the database: no entry, cash row or close dated inside a closed day (ERD v2.2).
 CLOSED_DAY_TRIGGERS = ("journal_entries_closed_day", "cash_ledger_closed_day", "day_closes_closed_day")
@@ -158,6 +158,20 @@ def check_audit(conn: psycopg.Connection) -> Check:
     if n == 0:
         return Check("audit", "감사 로그", True, "기록이 아직 없어요")
     return Check("audit", "감사 로그", True, f"{n:,}줄의 번호와 해시 사슬이 이어짐 (마지막 줄 {n:,}번, 해시 {last[:12]})")
+
+
+def check_master(conn: psycopg.Connection) -> Check:
+    """R-95: the market master history holds changes only, each row where its load says it is."""
+    from .. import master_db
+    bad = master_db.problems(conn)
+    if bad:
+        return Check("master", "종목 마스터", False, f"적재 기록과 맞지 않는 이력: {_some(bad)}")
+    last = master_db.last_load(conn)
+    if last is None:
+        return Check("master", "종목 마스터", True, "적재한 마스터가 아직 없어요")
+    n, rows = conn.execute("select count(*), (select count(*) from instrument_master) from master_loads").fetchone()
+    return Check("master", "종목 마스터", True,
+                 f"적재 {n:,}번, 이력 {rows:,}행이 적재 기록과 맞음 (마지막 {last.ref} {last.base_date}, {last.rows_total:,}종목)")
 
 
 # ---------- stored rows against a replay of the events ----------
@@ -341,7 +355,7 @@ def integrity_report(conn: psycopg.Connection, calendar, fees, instruments) -> l
             conn.execute("set transaction isolation level repeatable read read only")
         stream = check_event_stream(conn)
         checks = [stream, check_guards(conn), check_balanced(conn), check_audit(conn), check_rights(conn),
-                  check_transfers(conn)]
+                  check_transfers(conn), check_master(conn)]
         if not stream.ok:
             return checks + [Check("replay", "이벤트 재생", False, "순번에 빈 곳이 있어 재생하지 않았어요")]
         for (account_id,) in conn.execute("select account_id from trading_accounts order by account_id").fetchall():

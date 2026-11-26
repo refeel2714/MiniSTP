@@ -194,6 +194,24 @@ Phase 2 구현(v1.4)은 위 설계를 단순화했다. 주문 생성 정보는 `
 6. **명령**: `adjust list [--account 계좌]`, `adjust add 사유 금액 --memo 메모 [--tax 세금] [--break 불일치행] [--confirm] [--date 날짜]`, `adjust cancel 조정번호 사유 [--date 날짜]`. 모두 감사 로그에 남는다(`ADJUSTMENT_ADD`, `ADJUSTMENT_CANCEL`, 거부된 요청 포함).
 7. **한계**: 화면은 다음 PR. 조정 금액에 상한은 두지 않았다(사유 목록, 메모, 감사 로그, 취소 전표로 통제하고, 차이 사유의 1,000원 초과는 `--confirm`을 요구한다). 증권사 거래내역 조회로 자동 기록하지 않는다.
 
+## 종목 마스터 이력 (v1.28, ERD v2.7)
+
+| 테이블 | 주요 컬럼 | 비고 |
+|---|---|---|
+| master_loads | load_id, base_date, fetched_at, kospi_sha256, kosdaq_sha256, rows_total, rows_new, rows_changed, rows_delisted, loaded_at | 적재 한 번에 한 행. 기준일 하나에 한 번, 같은 두 파일은 한 번 |
+| instrument_master | master_id, symbol, valid_from, load_id, listed, isin, name, market, sec_group, lot, par_value, listed_on, listed_shares_k, preferred, spac, halted, liquidation, managed, warning | 속성이 바뀐 날에만 한 행. `(symbol, valid_from)` 유일 |
+
+| 뷰 | 주요 컬럼 | 비고 |
+|---|---|---|
+| instrument_master_current_v | symbol, listed, name, market, sec_group, … , valid_from, load_id | 종목마다 가장 최근 이력 행 |
+| instrument_master_match_v | symbol, name, market, asset_type, master_name, master_market, master_group, listed, halted, liquidation, managed, warning, valid_from, status | 등록 종목마다 한 행, 대조 결과(R-95) |
+
+1. **적용 시작일 이력**: 어떤 날의 종목 상태는 `valid_from`이 그날 이하인 가장 최근 행이다. 행을 고치지 않으므로 "그날 시장이 이 코드를 무엇이라고 했나"가 파일이 지워진 뒤에도 남는다.
+2. **원장과의 경계**: 이력은 기준정보다. 원장 이벤트를 만들지 않고, 등록 종목과 FK로 묶지 않는다(시장 전 종목 중 원장이 쓰는 것은 몇 개뿐이다). 대조 뷰가 둘의 차이를 보여 준다.
+3. **공통코드**: 증권그룹 구분(`SECURITY_GROUP`, 코드는 `master.GROUPS`)과 대조 결과(`MASTER_MATCH`). KIS가 새 그룹을 더하면 이력에는 들어가고 `code check`가 코드명 없는 값으로 알려 준다. 시장 컬럼은 등록 종목과 같은 `MARKET` 코드라 `codes.SAME_CODES`로 함께 점검한다.
+4. **명령**: `master load [--date 날짜]`. 쓰기 잠금을 잡고, 감사 로그에 남는다(`MASTER_LOAD`, 거부된 요청 포함).
+5. **한계**: 첫 적재는 그날 파일의 전 종목(약 4천 행)이 신규로 들어간다. 그보다 앞선 날의 상태는 알 수 없다. 화면은 다음 PR.
+
 ## 원장 무결성 점검 (v1.11)
 
 `python -m ministp verify`는 저장된 원장이 이벤트를 처음부터 다시 계산한 결과와 같은지 읽기 전용으로 확인한다. 쓰기 잠금을 잡지 않으므로 `run`이 떠 있어도 실행할 수 있다. 하나라도 어긋나면 종료 코드 1을 돌려준다.
