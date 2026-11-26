@@ -1,9 +1,10 @@
 id: STP-2300
 title: 시세 추이
-purpose: 장부가 평가와 기준가에 쓴 종가가 기간 동안 어떻게 움직였는지 봐요. 왼쪽은 그 기간에 종가를 받은 종목마다 마지막 종가, 기간 등락, 추세예요. 종목을 고르면 오른쪽에 그 종목의 날짜별 종가가 그래프와 표로 나오고, 날마다 전일 대비와 그날 체결단가와의 차이를 보여줘요. 기간을 비워 두면 원장을 시작한 날부터 전부예요. 점검 열은 종가가 장부에 쓸 수 있는 값인지만 봐요(호가단위에 맞는지, 평가와 기준가가 같은 종가를 썼는지, 가격제한폭 안인지). 왼쪽 목록은 점검 결과가 나쁜 종목부터 나와요. 가격이 왜 움직였는지는 이 화면이 판단하지 않아요. 종가를 원장이 받은 날에만 값이 있어요(보유 종목, 하루 한 번).
+purpose: 장부가 평가와 기준가에 쓴 종가가 기간 동안 어떻게 움직였는지 봐요. 왼쪽은 그 기간에 종가를 받은 종목마다 마지막 종가, 기간 등락, 추세예요. 종목을 고르면 오른쪽에 그 종목의 날짜별 종가가 그래프와 표로 나오고, 날마다 전일 대비와 그날 체결단가와의 차이를 보여줘요. 기간은 30일·60일·90일·1년·전체 가운데 고르고(처음은 30일), 시작일을 넣으면 그 날부터예요. 기간 추세는 그 기간의 종가를 이은 선이에요. 점검 열은 종가가 장부에 쓸 수 있는 값인지만 봐요(호가단위에 맞는지, 평가와 기준가가 같은 종가를 썼는지, 가격제한폭 안인지). 왼쪽 목록은 점검 결과가 나쁜 종목부터 나와요. 가격이 왜 움직였는지는 이 화면이 판단하지 않아요. 종가를 원장이 받은 날에만 값이 있어요(보유 종목, 하루 한 번).
 layout: split
 left: 46
 conditions:
+  - {name: period, type: select, label: 기간, options: [30일, 60일, 90일, 1년, 전체], default: 30일}
   - {name: date_from, type: date, label: 시작일}
   - {name: date_to, type: date, label: 종료일}
 grids:
@@ -20,7 +21,7 @@ grids:
       - {name: asset_type, source: instruments.asset_type, format: code}
       - {name: last_close, label: 마지막 종가, format: money}
       - {name: change, label: 기간 등락(%), format: rate, color: sign}
-      - {name: trend, label: 추세, format: series, display: spark}
+      - {name: trend, label: 기간 추세, format: series, display: spark}
       - {name: level, label: 점검, color: status, display: pill}
       - {name: days, label: 종가 수, format: number, hidden: true}
       - {name: base_close, label: 기준 종가, format: money, hidden: true}
