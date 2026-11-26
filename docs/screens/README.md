@@ -20,8 +20,9 @@
 |  | 32 분개 | [STP-3200](STP-3200.md) 분개 조회 |
 |  | 33 시산표 | [STP-3300](STP-3300.md) 시산표 |
 |  | 34 계좌 현황 | [STP-3400](STP-3400.md) 계좌정보 |
-| **4 기준정보**<br>위 세 단계가 함께 쓰는, 계좌와 무관한 종목과 거래 기준 | 41 종목 | [STP-4100](STP-4100.md) 종목정보 |
+| **4 기준정보**<br>위 세 단계가 함께 쓰는, 계좌와 무관한 종목, 거래 기준, 분개 모형 | 41 종목 | [STP-4100](STP-4100.md) 종목정보 |
 |  | 43 거래 기준 | [STP-4300](STP-4300.md) 거래 기준 |
+|  | 45 회계 기준 | [STP-4500](STP-4500.md) 분개 모형 |
 | **6 성과**<br>원장과 기준가에서 나온 결과. 입출금은 좌수로 들어가서 기준가 수익률에 섞이지 않아요 | 61 수익률 | [STP-6100](STP-6100.md) 수익률 |
 
 ## 화면
@@ -44,6 +45,7 @@
 | [STP-3400](STP-3400.md) | 계좌정보 | 3 | `STP3400R01`, `STP3400R02`, `STP3400R03` |
 | [STP-4100](STP-4100.md) | 종목정보 | 2 | `STP4100R01`, `STP4100R02` |
 | [STP-4300](STP-4300.md) | 거래 기준 | 5 | `STP4300R01`, `STP4300R02`, `STP4300R03`, `STP4300R04`, `STP4300R05` |
+| [STP-4500](STP-4500.md) | 분개 모형 | 2 | `STP4500R01`, `STP4500R02` |
 | [STP-6100](STP-6100.md) | 수익률 | 2 | `STP6100R01`, `STP6100R02` |
 
 ## 바로 가기 창 (Ctrl+K)
@@ -52,7 +54,7 @@
 
 | 찾는 것 | 목록을 주는 트랜잭션 | 열 수 있는 화면 (넘기는 조회조건) |
 |---|---|---|
-| 화면 | - | 화면 17개 모두 |
+| 화면 | - | 화면 18개 모두 |
 | 종목 | `STP4100R01` | STP-1300 주문가능 조회(`symbol`), STP-3100 원장 조회(`symbol`), STP-3200 분개 조회(`symbol`) |
 
 ## 영향도: DB 컬럼 → 화면
@@ -62,8 +64,8 @@
 | DB 컬럼 | 한글명 | 쓰는 화면·그리드 |
 |---|---|---|
 | `account_balances_v.balance` | 잔액 | STP-3300 trial |
-| `accounts_chart.code` | 계정코드 | STP-2210 bridge, STP-3300 trial |
-| `accounts_chart.name` | 계정명 | STP-2210 bridge, STP-3200 journal, STP-3300 trial |
+| `accounts_chart.code` | 계정코드 | STP-2210 bridge, STP-3300 trial, STP-4500 lines |
+| `accounts_chart.name` | 계정명 | STP-2210 bridge, STP-3200 journal, STP-3300 trial, STP-4500 lines |
 | `accounts_chart.normal_side` | 정상잔액 방향 | STP-3300 trial |
 | `broker_snapshots.kind` | 유형 | STP-2100 days, STP-2100 조회조건 |
 | `broker_snapshots.taken_at` | 수신 시각 | STP-2100 results |
@@ -77,13 +79,13 @@
 | `instruments.symbol` | 종목코드 | STP-1100 holdings, STP-1300 symbols, STP-1300 조회조건, STP-1500 basket, STP-1500 plan, STP-2300 symbols, STP-3100 events, STP-3100 조회조건, STP-3200 events, STP-3200 조회조건, STP-3400 settlements, STP-4100 instruments |
 | `journal_entries.date` | 회계일 | STP-3200 journal |
 | `journal_entries.entry_id` | 전표 번호 | STP-3200 journal |
-| `journal_entries.kind` | 전표 유형 | STP-3200 journal |
+| `journal_entries.kind` | 전표 유형 | STP-3200 journal, STP-4500 templates |
 | `journal_entries.reverses_entry_id` | 역분개 대상 전표 번호 | STP-3200 journal |
 | `journal_entries.source_id` | 원천 참조 | STP-3200 journal |
 | `journal_lines.account_code` | 계정코드 | STP-3200 journal |
 | `journal_lines.credit` | 대변 금액 | STP-3200 journal |
 | `journal_lines.debit` | 차변 금액 | STP-3200 journal |
-| `ledger_events.event_type` | 이벤트 유형 | STP-3100 events, STP-3100 조회조건, STP-3200 events, STP-3200 조회조건 |
+| `ledger_events.event_type` | 이벤트 유형 | STP-3100 events, STP-3100 조회조건, STP-3200 events, STP-3200 조회조건, STP-4500 templates |
 | `ledger_events.payload` | 이벤트 내용 | STP-3100 events |
 | `ledger_events.recorded_at` | 기록 시각 | STP-3100 events |
 | `ledger_events.seq` | 이벤트 순번 | STP-3100 events, STP-3100 조회조건, STP-3200 events, STP-3200 조회조건 |

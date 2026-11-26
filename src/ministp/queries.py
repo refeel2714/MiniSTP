@@ -952,6 +952,34 @@ def risk_rules() -> Dataset:
                    ((r.max_order_value, _pct(r.cash_buffer_rate), "금지 (매도가능수량까지만)"),))
 
 
+# ---------- STP-4500 분개 모형 ----------
+
+def journal_templates() -> Dataset:
+    """분개 모형 목록: 원장이 이벤트 유형마다 만드는 전표의 모양 (코드에 있는 규칙, DB를 읽지 않아요)."""
+    from .journal_templates import KIND_NAMES, SIDE_NAMES, TEMPLATES
+
+    def shape(t):
+        return " / ".join(f"{SIDE_NAMES[ln.side]} {ln.account.value[1] if ln.account else '직전 평가 전표'}"
+                          for ln in t.lines)
+    return Dataset(("code", "event_type", "kind", "kind_name", "case", "shape", "line_count", "note"),
+                   tuple((t.code, t.event_type, t.kind, KIND_NAMES.get(t.kind, t.kind), t.case, shape(t), len(t.lines),
+                          t.note) for t in TEMPLATES))
+
+
+def journal_template_lines(code: str) -> tuple[Dataset, dict]:
+    """모형 하나의 줄(차변·대변, 계정, 금액 산식, 업무 규칙 번호)과 그 모형의 참고 한 줄.
+    KeyError when there is no such template."""
+    from .journal_templates import SIDE_NAMES, TEMPLATES
+    t = next((t for t in TEMPLATES if t.code == code), None)
+    if t is None:
+        raise KeyError(f"없는 분개 모형: {code}")
+    return (Dataset(("side_name", "account_code", "account_name", "amount", "rule"),
+                    tuple((SIDE_NAMES[ln.side], ln.account.code if ln.account else None,
+                           ln.account.value[1] if ln.account else "직전 평가 전표의 계정", ln.amount, ln.rule or None)
+                          for ln in t.lines)),
+            {"case": t.case, "note": t.note or "없음"})
+
+
 # Transaction id -> service. Ids follow the screen numbers (화면번호 + R + 일련번호).
 TRANSACTIONS = {
     "STP1100R01": holdings,
@@ -964,6 +992,8 @@ TRANSACTIONS = {
     "STP3200R02": event_journal,
     "STP3300R01": trial_balance,
     "STP3400R01": account_summary,
+    "STP4500R01": journal_templates,
+    "STP4500R02": journal_template_lines,
     "STP3400R02": cash_ladder,
     "STP3400R03": pending_settlements,
     "STP2100R01": recon_history,

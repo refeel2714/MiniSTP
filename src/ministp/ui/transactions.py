@@ -262,6 +262,20 @@ def _trial(c: TxContext, p) -> TxResult:
     return TxResult({"main": ds}, {"balanced": balanced})
 
 
+def _journal_templates(c: TxContext, p) -> TxResult:
+    return TxResult({"main": q.journal_templates()})
+
+
+def _journal_template_lines(c: TxContext, p) -> TxResult:
+    if not p.get("code"):
+        raise TxError("분개 모형 코드가 필요해요")
+    try:
+        lines, meta = q.journal_template_lines(p["code"])
+    except KeyError as e:
+        raise TxError(e.args[0]) from e
+    return TxResult({"main": lines}, meta)
+
+
 def _instruments(c: TxContext, p) -> TxResult:
     return TxResult({"main": q.instrument_master(c.books)})
 
@@ -411,6 +425,8 @@ TRANSACTIONS: dict[str, Tx] = {t.tx_id: t for t in [
                                             "symbol": "text", "seq": "int"}, _journal_events),
     Tx("STP3200R02", "이벤트의 분개", {"seq": "int"}, _journal),
     Tx("STP3300R01", "시산표", {}, _trial),
+    Tx("STP4500R01", "분개 모형", {}, _journal_templates),
+    Tx("STP4500R02", "분개 모형의 줄", {"code": "text"}, _journal_template_lines),
     Tx("STP3400R01", "계좌 요약", {}, _account),
     Tx("STP3400R02", "예수금 D+n", {}, _ladder),
     Tx("STP3400R03", "결제 예정", {}, _settlements),
