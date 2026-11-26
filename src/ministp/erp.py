@@ -8,8 +8,12 @@ codes; then a file is written only when every account in the range is mapped. Ev
 Two shapes:
 - 건별 (`entry`): one document per journal entry. 증빙번호 `MSTP-<이벤트 번호>-<k>` (k-th entry the event
   wrote), so the ERP can refuse a document it already has. A reversal points at the document it reverses.
-- 일별 합계 (`day`): one document per day, net amount per ERP account. Only for days whose daily close is
-  done (NAV recorded), since a day still open can gain entries and its total would change.
+- 일별 합계 (`day`): one document per day and account, net amount per ERP account. Only for days whose daily
+  close is done (NAV recorded), since a day still open can gain entries and its total would change.
+
+One account at a time by default (the CLI's `--account`); `account_id=None` takes every account into one file.
+Every line carries its account (계좌, 계좌명) and, when the entry is about one stock, the stock (종목코드): the
+관리항목 an ERP keeps beside the account code, so one ERP account can still be split by brokerage account and stock.
 """
 import csv
 import datetime as dt
@@ -21,10 +25,11 @@ import psycopg
 import yaml
 
 from .accounting import Account
+from .store import DEFAULT_ACCOUNT
 
 BY = ("entry", "day")
 HEADER = ["회사코드", "전표유형", "증빙번호", "전표일자", "통화", "줄번호", "계정코드", "계정명", "차변", "대변", "적요",
-          "MiniSTP계정", "원장이벤트", "반대전표대상"]
+          "계좌", "계좌명", "종목코드", "MiniSTP계정", "원장이벤트", "반대전표대상"]
 KIND_NAMES = {"DEPOSIT": "투자원금 입금", "OPENING": "기초 보유", "EXECUTION": "체결", "SETTLEMENT": "결제",
               "VALUATION": "공정가치 평가", "VALUATION_REVERSAL": "전일 평가 역분개"}
 SIDE_NAMES = {"BUY": "매수", "SELL": "매도"}
@@ -72,6 +77,9 @@ class DocLine:
     ministp_accounts: str
     events: str
     reverses: str = ""
+    account_id: str = ""
+    account_name: str = ""
+    symbol: str = ""
 
 
 @dataclass
@@ -79,6 +87,7 @@ class Export:
     by: str
     lines: list[DocLine]
     mapping: Mapping
+    account_id: str | None = DEFAULT_ACCOUNT     # None: every account
 
     @property
     def documents(self) -> int:
@@ -103,21 +112,49 @@ class Export:
 
 _LINES_SQL = """
 with numbered as (
-    select entry_id, event_seq, date, kind, source_id, reverses_entry_id,
+    select entry_id, event_seq, date, kind, source_id, reverses_entry_id, account_id,
            row_number() over (partition by event_seq order by entry_id) as k
       from journal_entries)
 select n.entry_id, n.event_seq, n.k, n.date, n.kind, n.source_id,
-       r.event_seq as rev_seq, r.k as rev_k, l.account_code, l.debit, l.credit
+       r.event_seq as rev_seq, r.k as rev_k, l.account_code, l.debit, l.credit, n.account_id
   from numbered n
   join journal_lines l using (entry_id)
   left join numbered r on r.entry_id = n.reverses_entry_id
  where n.date between %(f)s and %(t)s
- order by n.date, n.event_seq, n.entry_id, l.line_id
+   and (%(a)s::text is null or n.account_id = %(a)s)
+ order by n.account_id, n.date, n.event_seq, n.entry_id, l.line_id
 """
 
 
 def doc_no(seq: int, k: int) -> str:
+    """Event numbers run across all accounts, so a 건별 number is unique without the account in it."""
     return f"MSTP-{seq}-{k}"
+
+
+def day_doc_no(date: dt.date, account_id: str) -> str:
+    return f"MSTP-D{date:%Y%m%d}-{account_id}"
+
+
+def _symbols(conn: psycopg.Connection, seqs: set[int]) -> dict[int, str]:
+    """The stock an event is about (관리항목 종목), if it is about one: its own `symbol`, or a settlement's fill's."""
+    if not seqs:
+        return {}
+    out, exec_of = {}, {}
+    for seq, t, p in conn.execute("select seq, event_type, payload from ledger_events where seq = any(%s)", (sorted(seqs),)):
+        if p.get("symbol"):
+            out[seq] = p["symbol"]
+        elif t == "SettlementEvent" and p.get("exec_id"):
+            exec_of[seq] = p["exec_id"]
+    if exec_of:
+        sym = dict(conn.execute("select payload->>'exec_id', payload->>'symbol' from ledger_events"
+                                " where event_type in ('ExecutionEvent', 'LateExecutionEvent')"
+                                " and payload->>'exec_id' = any(%s)", (sorted(set(exec_of.values())),)).fetchall())
+        out.update({seq: sym[e] for seq, e in exec_of.items() if e in sym})
+    return out
+
+
+def _aliases(conn: psycopg.Connection) -> dict[str, str]:
+    return dict(conn.execute("select account_id, alias from trading_accounts").fetchall())
 
 
 def _memos(conn: psycopg.Connection, seqs: set[int]) -> dict[int, str]:
@@ -152,9 +189,10 @@ def _memos(conn: psycopg.Connection, seqs: set[int]) -> dict[int, str]:
     return out
 
 
-def _closed_days(conn: psycopg.Connection, f: dt.date, t: dt.date) -> set[dt.date]:
-    return {dt.date.fromisoformat(d) for (d,) in conn.execute(
-        "select payload->>'date' from ledger_events where event_type = 'NavEvent'"
+def _closed_days(conn: psycopg.Connection, f: dt.date, t: dt.date) -> set[tuple[str, dt.date]]:
+    """(account, day) pairs whose daily close is done."""
+    return {(a, dt.date.fromisoformat(d)) for a, d in conn.execute(
+        "select account_id, payload->>'date' from ledger_events where event_type = 'NavEvent'"
         " and (payload->>'date')::date between %s and %s", (f, t))}
 
 
@@ -164,36 +202,40 @@ def own_chart(conn: psycopg.Connection) -> Mapping:
 
 
 def export(conn: psycopg.Connection, mapping: Mapping | None, date_from: dt.date, date_to: dt.date,
-           by: str = "entry") -> Export:
-    """The documents for [date_from, date_to]. Raises ErpError instead of returning a file that would mislead.
-    `mapping` None means MiniSTP's own account codes."""
+           by: str = "entry", account_id: str | None = DEFAULT_ACCOUNT) -> Export:
+    """The documents for [date_from, date_to] of one account (`account_id`), or of all of them (None).
+    Raises ErpError instead of returning a file that would mislead. `mapping` None means MiniSTP's own codes."""
     mapping = mapping or own_chart(conn)
     if by not in BY:
         raise ErpError(f"by는 {', '.join(BY)} 중 하나예요.")
     if date_from > date_to:
         raise ErpError("시작일이 종료일보다 늦어요.")
-    rows = conn.execute(_LINES_SQL, {"f": date_from, "t": date_to}).fetchall()
+    aliases = _aliases(conn)
+    if account_id is not None and account_id not in aliases:
+        raise ErpError(f"계좌 {account_id}가 없어요. account list로 확인하세요.")
+    rows = conn.execute(_LINES_SQL, {"f": date_from, "t": date_to, "a": account_id}).fetchall()
     unmapped = sorted({r[8] for r in rows} - set(mapping.accounts))
     if unmapped:
         raise ErpError("매핑이 없는 계정이 있어 파일을 만들지 않았어요: "
                        + ", ".join(f"{c} {MINISTP_NAMES.get(c, '')}".strip() for c in unmapped))
     if by == "entry":
-        result = Export(by, _by_entry(conn, rows, mapping), mapping)
+        result = Export(by, _by_entry(conn, rows, mapping, aliases), mapping, account_id)
     else:
         closed = _closed_days(conn, date_from, date_to)
-        open_days = sorted({r[3] for r in rows} - closed)
+        open_days = sorted({(r[11], r[3]) for r in rows} - closed)
         if open_days:
             raise ErpError("일 마감 전인 날은 일별 합계를 만들 수 없어요(전표가 더 생길 수 있어요): "
-                           + ", ".join(d.isoformat() for d in open_days))
-        result = Export(by, _by_day(rows, mapping), mapping)
+                           + ", ".join(f"{a} {d.isoformat()}" for a, d in open_days))
+        result = Export(by, _by_day(rows, mapping, aliases), mapping, account_id)
     _check_balanced(result.lines)
     return result
 
 
-def _by_entry(conn, rows, mapping: Mapping) -> list[DocLine]:
-    memos = _memos(conn, {r[1] for r in rows})
+def _by_entry(conn, rows, mapping: Mapping, aliases: dict[str, str]) -> list[DocLine]:
+    seqs = {r[1] for r in rows}
+    memos, symbols = _memos(conn, seqs), _symbols(conn, seqs)
     out, line_no, current = [], 0, None
-    for entry_id, seq, k, date, kind, source_id, rev_seq, rev_k, code, dr, cr in rows:
+    for entry_id, seq, k, date, kind, source_id, rev_seq, rev_k, code, dr, cr, acct in rows:
         if entry_id != current:
             current, line_no = entry_id, 0
         line_no += 1
@@ -202,24 +244,26 @@ def _by_entry(conn, rows, mapping: Mapping) -> list[DocLine]:
         reverses = doc_no(rev_seq, rev_k) if rev_seq is not None else ""
         if reverses:
             memo = f"{KIND_NAMES.get(kind, kind)} (반대전표: {reverses})"
-        out.append(DocLine(doc_no(seq, k), date, line_no, erp_code, erp_name, dr, cr, memo, code, str(seq), reverses))
+        out.append(DocLine(doc_no(seq, k), date, line_no, erp_code, erp_name, dr, cr, memo, code, str(seq), reverses,
+                           acct, aliases.get(acct, ""), symbols.get(seq, "")))
     return out
 
 
-def _by_day(rows, mapping: Mapping) -> list[DocLine]:
-    days: dict[dt.date, dict] = {}
-    for entry_id, seq, k, date, kind, source_id, rev_seq, rev_k, code, dr, cr in rows:
-        d = days.setdefault(date, {"net": defaultdict(int), "src": defaultdict(set), "entries": set(), "seqs": set()})
+def _by_day(rows, mapping: Mapping, aliases: dict[str, str]) -> list[DocLine]:
+    """One document per (account, day): an ERP posts each brokerage account's day on its own."""
+    days: dict[tuple[str, dt.date], dict] = {}
+    for entry_id, seq, k, date, kind, source_id, rev_seq, rev_k, code, dr, cr, acct in rows:
+        d = days.setdefault((acct, date), {"net": defaultdict(int), "src": defaultdict(set), "entries": set(), "seqs": set()})
         erp = mapping.accounts[code]
         d["net"][erp] += dr - cr
         d["src"][erp].add(code)
         d["entries"].add(entry_id)
         d["seqs"].add(seq)
     out = []
-    for date in sorted(days):
-        d = days[date]
-        no = f"MSTP-D{date:%Y%m%d}"
-        memo = f"MiniSTP {date.isoformat()} 일계 (전표 {len(d['entries'])}건)"
+    for acct, date in sorted(days):
+        d = days[(acct, date)]
+        no = day_doc_no(date, acct)
+        memo = f"MiniSTP {acct} {date.isoformat()} 일계 (전표 {len(d['entries'])}건)"
         events = f"{min(d['seqs'])}~{max(d['seqs'])}"
         line_no = 0
         for (erp_code, erp_name), net in sorted(d["net"].items()):
@@ -227,7 +271,7 @@ def _by_day(rows, mapping: Mapping) -> list[DocLine]:
                 continue
             line_no += 1
             out.append(DocLine(no, date, line_no, erp_code, erp_name, max(net, 0), max(-net, 0), memo,
-                               ",".join(sorted(d["src"][(erp_code, erp_name)])), events))
+                               ",".join(sorted(d["src"][(erp_code, erp_name)])), events, "", acct, aliases.get(acct, "")))
     return out
 
 
@@ -255,11 +299,11 @@ def write_csv(result: Export, path: str | pathlib.Path) -> pathlib.Path:
         for ln in result.lines:
             w.writerow([mapping.company, mapping.document_type, ln.doc_no, ln.date.isoformat(), mapping.currency,
                         ln.line_no, ln.erp_code, ln.erp_name, ln.debit, ln.credit, ln.memo,
-                        ln.ministp_accounts, ln.events, ln.reverses])
+                        ln.account_id, ln.account_name, ln.symbol, ln.ministp_accounts, ln.events, ln.reverses])
     return p
 
 
-def default_out(date_from: dt.date, date_to: dt.date, by: str) -> pathlib.Path:
+def default_out(date_from: dt.date, date_to: dt.date, by: str, account_id: str | None = DEFAULT_ACCOUNT) -> pathlib.Path:
     kind = "건별" if by == "entry" else "일별"
     span = f"{date_from:%Y%m%d}" if date_from == date_to else f"{date_from:%Y%m%d}-{date_to:%Y%m%d}"
-    return pathlib.Path("erp-export") / f"전표_{span}_{kind}.csv"
+    return pathlib.Path("erp-export") / f"전표_{account_id or '전체계좌'}_{span}_{kind}.csv"
