@@ -1529,6 +1529,11 @@
       let lo = Math.min(...ys), hi = Math.max(...ys);
       if (hi === lo) { hi += 1; lo -= 1; }
       const pad = (hi - lo) * 0.1; lo -= pad; hi += pad;
+      // Axis ticks in 억/만 so ten-digit won fit the margin, with just enough decimals to tell ticks apart.
+      const [u, uName] = !money ? [1, ""] : Math.max(Math.abs(hi), Math.abs(lo)) >= 1e8 ? [1e8, "억"]
+        : Math.max(Math.abs(hi), Math.abs(lo)) >= 1e4 ? [1e4, "만"] : [1, ""];
+      const dec = Math.min(4, Math.max(0, Math.ceil(-Math.log10((hi - lo) / 3 / u)) + 1));
+      const af = v => u === 1 ? yf(v) : (v / u).toLocaleString("ko-KR", { minimumFractionDigits: dec, maximumFractionDigits: dec }) + uName;
       const px = i => L + (W - L - R) * i / (pts.length - 1);
       const py = v => T + (H - T - B) * (1 - (v - lo) / (hi - lo));
       const s = svg("svg", { viewBox: `0 0 ${W} ${H}`, class: "line", role: "img",
@@ -1536,7 +1541,7 @@
       for (let k = 0; k <= 3; k++) {
         const v = lo + (hi - lo) * k / 3;
         s.append(svg("line", { x1: L, x2: W - R, y1: py(v), y2: py(v), class: "gl" }));
-        const t = svg("text", { x: L - 8, y: py(v) + 4, class: "ax", "text-anchor": "end" }); t.textContent = yf(v); s.append(t);
+        const t = svg("text", { x: L - 8, y: py(v) + 4, class: "ax", "text-anchor": "end" }); t.textContent = af(v); s.append(t);
       }
       [0, Math.floor((pts.length - 1) / 2), pts.length - 1].forEach(i => {
         const t = svg("text", { x: px(i), y: H - 6, class: "ax", "text-anchor": i === 0 ? "start" : i === pts.length - 1 ? "end" : "middle" });
