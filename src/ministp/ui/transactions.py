@@ -56,7 +56,8 @@ def _holdings(c: TxContext, p) -> TxResult:
     base = q.holdings(c.conn, p.get("day") or c.today)
     view = q.holdings_view(base, c.books.ledger, quotes, now)
     symbols = [r[view.columns.index("symbol")] for r in view.rows]
-    return TxResult({"main": view}, {"basis": q.valuation_basis(c.books.ledger, symbols, quotes, now)})
+    return TxResult({"main": view, "mix": q.holdings_mix(view)},
+                    {"basis": q.valuation_basis(c.books.ledger, symbols, quotes, now)})
 
 
 def _cash(c: TxContext, p) -> TxResult:

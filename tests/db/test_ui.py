@@ -418,7 +418,9 @@ def test_holdings_screen_draws_the_badge_meter_and_the_lines_under_prices(client
     shown = [c["name"] for c in grid["columns"] if not c["inside"] and not c["hidden"]]
     assert shown == ["instrument_name", "qty", "price", "market_value", "unrealized_pnl", "book_cost", "weight", "today_qty"]
     assert grid["meta"] == {"basis": "평가 기준"} and grid["totals"] == ["market_value", "unrealized_pnl", "book_cost"]
-    assert grid["map"] == {"label": "instrument_name", "size": "book_cost", "tone": "unrealized_pnl"}
+    assert grid["map"] is None      # 구성 지도는 뺐어요(11/26): 자산 유형별 줄과 비중 막대로 봐요
+    mix = next(g for g in screen["grids"] if g["id"] == "mix")
+    assert [c["name"] for c in mix["columns"]] == ["asset_type_name", "count", "market_value", "weight", "unrealized_pnl"]
     spec = client.get("/spec/STP-1100").text
     assert "배지 안에 표시" in spec and "칸 아래에 작게 표시" in spec
 
