@@ -16,6 +16,7 @@
   const DATA = JSON.parse(document.getElementById("stpui-data").textContent);
   const app = document.getElementById("app");
   const NUMERIC = new Set(["number", "money", "rate"]);
+  const LEVELS = new Set(["class", "total"]);   // emphasis: rows drawn as 분류 합계 and 총합계
   const nf = new Intl.NumberFormat("ko-KR");
   const rf = new Intl.NumberFormat("ko-KR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   const pf = new Intl.NumberFormat("ko-KR", { style: "percent", minimumFractionDigits: 1, maximumFractionDigits: 1 });
@@ -28,7 +29,7 @@
     BREAK: "bad", REJECTED: "bad", false: "bad",
     RESOLVED: "warn", UNKNOWN: "warn", CANCELED: "warn", PENDING: "warn", "적용 중": "ok", "예정": "warn",
     OPEN: "ok", SUSPENDED: "warn", CLOSED: "bad",
-    "일치": "ok", "판단 완료": "warn", "불일치": "bad", "대사 없음": "miss",   // miss: something owed is not there
+    "일치": "ok", "불일치(판단함)": "warn", "불일치": "bad", "대사 없음": "miss",   // miss: something owed is not there
     "결제 완료": "ok", "결제 대기": "info", "체결 대기": "info", "부분 체결": "warn",   // info: on its way, nothing to do
     "접수 거부": "bad", "결제 지연": "bad", "접수 기록 없음": "miss",
     "정상": "ok", "주의": "warn", "확인 필요": "bad", "평가 전": "info",
@@ -901,7 +902,9 @@
     let changed = new Map();   // row key -> Set of changed columns ("*" = new row), shown once
     let previous = new Map();  // row key -> the row before this fill (numbers roll from here)
     let loaded = false;
-    let mode = g.view;         // a T계정 grid or one with a 구성 지도 can be turned into a table and back (buttons next to the count)
+    // a T계정 grid opens as 전표 (an entry's lines down the page, as a journal is written) and turns into T계정 or a
+    // table; a grid with a 구성 지도 turns into a table and back (buttons next to the count)
+    let mode = g.view === "taccount" ? "voucher" : g.view;
     const keyCol = g.key || g.columns[0].name;
     const rowKey = g.view === "cards" ? () => "card" : r => String(r[keyCol]);   // cards show one row
     const count = h("span", { class: "count" });
@@ -915,8 +918,8 @@
     const body = h("div", { class: "gbody" });
     const chartBox = g.chart ? h("div", { class: "chart" }) : null;
     const FILTER_FROM = 20;
-    const MODES = { taccount: "T계정", map: "지도", grid: "표" };
-    const offered = [...new Set([g.view, g.map ? "map" : null, "grid"])].filter(m => m in MODES);
+    const MODES = { voucher: "전표", taccount: "T계정", map: "지도", grid: "표" };
+    const offered = [...new Set([g.view === "taccount" ? "voucher" : null, g.view, g.map ? "map" : null, "grid"])].filter(m => m in MODES);
     const modes = offered.length > 1 ? offered.map(m =>
       h("button", { type: "button", "aria-pressed": m === mode ? "true" : "false", "data-m": m, onclick: () => {
         if (m === mode) return;
@@ -1126,7 +1129,7 @@
       }
       count.textContent = g.view === "grid" || g.view === "taccount"
         ? (q ? `${nf.format(view.length)} / ${nf.format(rows.length)}건` : `${nf.format(rows.length)}건`) : "";
-      mode === "cards" ? renderCards() : mode === "calendar" ? renderCalendar() : mode === "taccount" ? renderTAccounts()
+      mode === "cards" ? renderCards() : mode === "calendar" ? renderCalendar() : mode === "taccount" ? renderTAccounts() : mode === "voucher" ? renderVouchers()
         : mode === "map" ? renderMap() : renderTable();
     }
 
@@ -1266,6 +1269,52 @@
       })));
     }
 
+    // 전표 보기: the way a 전표 is printed in an ERP. One table for the whole event: 차변계정 · 차변과목 · 차변금액 next to
+    // 대변계정 · 대변과목 · 대변금액, the k-th debit line beside the k-th credit line, a dotted line between 전표.
+    // The 전표's own facts (번호, 회계일, 유형, 원천) sit in a column of their own on the left, over all its lines,
+    // so they are not read as one more line; the foot row carries both sums.
+    function renderVouchers() {
+      if (!rows.length) return body.replaceChildren(h("div", { class: "empty", text: "조회된 내역이 없어요" }));
+      const t = g.taccount;
+      const facts = g.columns.filter(c => ![t.entry, t.account, t.name, t.debit, t.credit].includes(c.name));
+      const entryCol = g.columns.find(c => c.name === t.entry);
+      const blocks = new Map();
+      for (const r of view) {
+        const k = t.entry ? String(r[t.entry]) : "";
+        if (!blocks.has(k)) blocks.set(k, []);
+        blocks.get(k).push(r);
+      }
+      const money = v => fmt(v, "money");
+      const sum = (rs, c) => rs.reduce((a, r) => a + (Number(r[c]) || 0), 0);
+      const side = (r, c) => {           // the credit half starts with a rule on its left
+        const edge = c === t.credit ? " vsplit" : "";
+        return r ? [h("td", { class: "vcode" + edge, text: r[t.account] }), h("td", { class: "vname", text: t.name ? r[t.name] : "" }),
+          h("td", { class: "num", text: money(r[c]) })] : [h("td", { class: edge.trim() || null }), h("td", {}), h("td", {})];
+      };
+      let DR = 0, CR = 0;
+      const groups = [...blocks.values()].map(lines => {
+        const drs = lines.filter(r => Number(r[t.debit])), crs = lines.filter(r => Number(r[t.credit]));
+        const dr = sum(lines, t.debit), cr = sum(lines, t.credit);
+        DR += dr; CR += cr;
+        const first = lines[0];
+        const shown = facts.filter(c => first[c.name] !== null && first[c.name] !== undefined && first[c.name] !== "");
+        const n = Math.max(drs.length, crs.length, 1);
+        const card = h("td", { class: "vfacts", rowspan: String(n) },
+          entryCol ? h("div", { class: "vno" }, entryCol.label, h("b", { text: fmt(first[t.entry], entryCol.format) })) : null,
+          h("dl", {}, shown.flatMap(c => [h("dt", { text: c.label }), h("dd", { text: fmt(first[c.name], c.format) })])),
+          dr === cr ? null : h("span", { class: "pill st-bad", text: `차대 불일치 ${money(dr - cr)}` }));
+        return h("tbody", {}, Array.from({ length: n }, (_, i) =>
+          h("tr", {}, i ? null : card, side(drs[i], t.debit), side(crs[i], t.credit))));
+      });
+      body.replaceChildren(h("div", { class: "vwrap" }, h("table", { class: "vtable" },
+        h("thead", {}, h("tr", {}, ["전표", "차변계정", "차변과목", "차변금액", "대변계정", "대변과목", "대변금액"].map((x, i) =>
+          h("th", { class: i === 0 ? "vfacts" : i % 3 === 0 ? "num" : i === 4 ? "vsplit" : null, text: x })))),
+        groups,
+        h("tfoot", {}, h("tr", {}, h("td", { colspan: "3" }, "합계", h("span", { class: "pill " + (DR === CR ? "st-ok" : "st-bad"),
+          text: DR === CR ? "차대 일치" : `차대 불일치 ${money(DR - CR)}` })), h("td", { class: "num", text: money(DR) }),
+          h("td", { colspan: "2", class: "vsplit" }), h("td", { class: "num", text: money(CR) }))))));
+    }
+
     function flashed(r, col) {
       const set = changed.get(rowKey(r));
       return !!set && (set.has("*") || set.has(col));
@@ -1275,9 +1324,11 @@
       const r = rows[0];
       if (!r) return body.replaceChildren(h("div", { class: "empty", text: "조회된 내역이 없어요" }));
       const old = previous.get("card");
-      const values = g.columns.map(c => h("div", { class: ["cv", tone(r[c.name], c.color, r)].join(" ").trim(),
-        title: codeName(c, r[c.name]) ? String(r[c.name]) : null,
-        text: codeName(c, r[c.name]) ?? (fmt(r[c.name], c.format) || "-") }));
+      const values = g.columns.map(c => { const named = codeName(c, r[c.name]);
+        return h("div", { class: ["cv", c.format === "datetime" ? "dt" : "", tone(r[c.name], c.color, r)].filter(Boolean).join(" "),
+          // a card has room for the minute, not the second: the full time is in the tooltip
+          text: named ?? ((c.format === "datetime" ? fmt(r[c.name], c.format).slice(0, 16) : fmt(r[c.name], c.format)) || "-"),
+          title: named ? String(r[c.name]) : (fmt(r[c.name], c.format) || null) }); });
       body.replaceChildren(h("div", { class: "cards" }, g.columns.map((c, i) =>
         h("div", { class: values[i].textContent.length > 18 ? "card long" : "card" }, h("div", { class: "cl", text: c.label }), values[i]))));
       if (old) g.columns.forEach((c, i) => {
@@ -1354,13 +1405,16 @@
       const scaled = c => c.display === "bar" || (c.display === "meter" && !c.of);
       const peak = Object.fromEntries(cols.filter(scaled).map(c =>
         [c.name, Math.max(0, ...rows.map(r => Math.abs(Number(r[c.name]) || 0)))]));
-      const head = h("tr", {}, h("th", { class: "rn", scope: "col", text: "#" }), cols.map(c => {
+      const edges = new Set();   // 묶음 머리: a line down the table where each band after the first starts
+      g.bands.reduce((at, b) => { if (at) edges.add(at); return at + b.span; }, 0);
+      const head = h("tr", {}, h("th", { class: "rn", scope: "col", text: "#" }), cols.map((c, ci) => {
         const on = sortCol === c.name;
-        const th = h("th", { scope: "col", class: c.align === "right" ? "r" : null,
+        const th = h("th", { scope: "col", class: [c.align === "right" ? "r" : "", edges.has(ci) ? "edge" : ""].join(" ").trim() || null,
           "aria-sort": on ? (sortDir > 0 ? "ascending" : "descending") : null,
           title: (c.source || "화면 계산 값") + (c.display === "meter" && !c.of && peak[c.name] ? ` · 막대 끝은 이 목록에서 가장 큰 값(${pf.format(peak[c.name])})` : "") },
           c.display === "spark" ? c.label   // a run of numbers has no order to sort by
             : c.display === "steps" ? h("div", { class: "steps head" }, c.steps.map(n => h("span", { text: n })))   // each name over its dot
+            : g.bands.length ? c.label   // a banded table (시산표) is read in its own order
             : h("button", { type: "button", onclick: () => sortBy(c.name) }, c.label, on ? (sortDir > 0 ? " ▲" : " ▼") : ""));
         if (c.width) th.style.width = c.width + "px";
         return th;
@@ -1368,17 +1422,18 @@
       const rolls = [];
       const tbody = h("tbody", {}, view.map((r, i) => h("tr", {
         "data-k": rowKey(r),
-        class: [i === sel ? "sel" : "", changed.get(rowKey(r))?.has("*") ? "new" : ""].join(" ").trim() || null,
+        class: [i === sel ? "sel" : "", changed.get(rowKey(r))?.has("*") ? "new" : "",
+          g.emphasis && LEVELS.has(r[g.emphasis]) ? "lv-" + r[g.emphasis] : ""].join(" ").trim() || null,
         "aria-selected": i === sel ? "true" : "false",
         onclick: () => select(i), ondblclick: () => onDrill(view[i]),
-      }, h("td", { class: "rn", text: i + 1 }), cols.map(c => {
+      }, h("td", { class: "rn", text: i + 1 }), cols.map((c, ci) => {
         if (ed && c.name === ed.column) return h("td", { class: "r ecell" }, editCell(r));
         const v = r[c.name];
         const named = codeName(c, v);
         const text = named ?? fmt(v, c.format);
         const drawn = c.display && c.display !== "bar";   // the cell holds an element, not just text
         const td = h("td", { class: [c.align === "right" ? "r" : "", drawn ? "" : tone(v, c.color, r), c.format === "json" ? "js" : "",
-          c.display ? "d-" + c.display : "", flashed(r, c.name) ? "flash" : ""].filter(Boolean).join(" ") || null,
+          c.display ? "d-" + c.display : "", flashed(r, c.name) ? "flash" : "", edges.has(ci) ? "edge" : ""].filter(Boolean).join(" ") || null,
           title: c.format === "json" ? text : named !== null ? String(v) : null, text: drawn ? null : text });
         if (c.sub) {   // a second, smaller line under the value: its time, its rate
           const sc = g.columns.find(x => x.name === c.sub), sv = fmt(r[c.sub], sc ? sc.format : "text");
@@ -1403,8 +1458,10 @@
           ? (sum => h("td", { class: ("r " + (c.color === "sign" ? tone(sum, "sign") : "")).trim(), text: fmt(sum, c.format) }))(
               (q ? view : rows).reduce((s, r) => s + (Number(r[c.name]) || 0), 0))
           : h("td", {})))) : null;
-      const table = h("table", { class: "grid", tabindex: "0", role: "grid", "aria-rowcount": rows.length,
-        onkeydown: key }, h("thead", {}, head), tbody, foot);
+      const table = h("table", { tabindex: "0", role: "grid", "aria-rowcount": rows.length,
+        onkeydown: key, class: g.bands.length ? "grid banded" : "grid" },
+        h("thead", {}, g.bands.length ? h("tr", { class: "band" }, h("th", { class: "rn", "aria-hidden": "true" }),
+          g.bands.map(b => h("th", { scope: "colgroup", colspan: b.span, text: b.label }))) : null, head), tbody, foot);
       body.replaceChildren(table, h("div", { class: "selbar", "aria-hidden": "true" }));
       showEditTotal();
       rolls.forEach(a => roll(...a));
