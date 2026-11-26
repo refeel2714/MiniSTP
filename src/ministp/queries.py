@@ -307,7 +307,7 @@ def recon_calendar(conn: psycopg.Connection, calendar, today: dt.date, date_from
 # ---------- STP-1200 주문·체결 블로터 ----------
 
 def order_blotter(conn: psycopg.Connection, day: dt.date) -> Dataset:
-    """그날 주문: 의도 → 접수 → 반영된 체결, 체결통보 반영 지연."""
+    """그날 주문: 전송(주문 의도 기록) → 접수 → 반영된 체결, 체결통보 반영 지연."""
     return _q(conn, """
         select o.client_id, o.trade_date, o.created_at, o.symbol, i.name as instrument_name, i.asset_type,
                o.side, o.qty, o.limit_price, a.outcome, a.order_no, a.detail,
@@ -330,7 +330,7 @@ def order_blotter(conn: psycopg.Connection, day: dt.date) -> Dataset:
 
 
 # 주문 진행 단계: where an order stands on its way to cash. Each step is done · now · stop · wait.
-ORDER_STEPS = ("의도", "접수", "체결", "결제")
+ORDER_STEPS = ("전송", "접수", "체결", "결제")   # 전송: 보내기 직전에 주문을 기록하고 보냄 (oms_orders, 주문 의도)
 
 
 def order_progress(outcome: str | None, qty: int, filled: int, settled: int, day_over: bool,
