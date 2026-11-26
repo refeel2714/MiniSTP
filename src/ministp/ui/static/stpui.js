@@ -1197,8 +1197,10 @@
       const r = rows[0];
       if (!r) return body.replaceChildren(h("div", { class: "empty", text: "조회된 내역이 없어요" }));
       const old = previous.get("card");
-      const values = g.columns.map(c => h("div", { class: ["cv", tone(r[c.name], c.color, r)].join(" ").trim(),
-        text: fmt(r[c.name], c.format) || "-" }));
+      const values = g.columns.map(c => h("div", { class: ["cv", c.format === "datetime" ? "dt" : "", tone(r[c.name], c.color, r)].filter(Boolean).join(" "),
+        // a card has room for the minute, not the second: the full time is in the tooltip
+        text: (c.format === "datetime" ? fmt(r[c.name], c.format).slice(0, 16) : fmt(r[c.name], c.format)) || "-",
+        title: fmt(r[c.name], c.format) || null }));
       body.replaceChildren(h("div", { class: "cards" }, g.columns.map((c, i) =>
         h("div", { class: values[i].textContent.length > 18 ? "card long" : "card" }, h("div", { class: "cl", text: c.label }), values[i]))));
       if (old) g.columns.forEach((c, i) => {

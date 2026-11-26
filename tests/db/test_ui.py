@@ -281,7 +281,7 @@ def test_live_endpoint_is_an_event_stream(client):
     assert "GET" in route.methods
 
 
-# ---------- STP-4100 종목정보·STP-4300 거래 기준, STP-3400 계좌정보 ----------
+# ---------- STP-4100 종목정보·STP-4300 거래 기준, STP-3400 예수금·결제 현황 ----------
 
 def _rows(client, tx, params=None, dataset="main"):
     body = client.post(f"/api/tx/{tx}", json={"params": params or {}}).json()
@@ -344,7 +344,7 @@ def test_reference_data_is_read_from_what_the_ledger_uses(client):
 # ---------- 셀 표시 유형 (실시간 잔고) ----------
 
 def test_holdings_are_valued_at_the_last_close_when_run_has_no_quotes(client, conn, sample):
-    """R-68: `run`이 오늘 현재가를 남기지 않았으면 원장의 최근 종가로 평가해요. 계좌정보의 평가금액과 같은 값이에요."""
+    """R-68: `run`이 오늘 현재가를 남기지 않았으면 원장의 최근 종가로 평가해요. 예수금·결제 현황의 평가금액과 같은 값이에요."""
     from ministp.ledger import Ledger
     from ministp.ops import load_books
     from ministp.queries import Dataset, holdings_view, last_closes
