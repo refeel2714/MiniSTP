@@ -37,17 +37,14 @@ def list_transfers(conn: psycopg.Connection) -> list[Transfer]:
         "select transfer_id, date, from_account, to_account, amount from transfers_v order by transfer_id")]
 
 
-def _ready(books: Books, day: dt.date, amount: int, today: dt.date | None, out: bool) -> None:
-    """Refuse, in the owner's words, what the ledger would refuse (and what only this layer knows)."""
+def check_bookable(books: Books, day: dt.date, today: dt.date | None) -> None:
+    """Refuse, in the owner's words, a cash entry dated `day` that these books cannot take at all:
+    not opened, a closed account, a day still to come, a closed day, a day behind the last entry."""
     led, acct = books.ledger, books.account_id
-    if amount <= 0:
-        raise OpsError("금액은 0보다 커야 해요.")
     if not is_opened(books):
         raise OpsError(f"계좌 {acct}의 원장이 아직 시작되지 않았어요. 먼저 open --account {acct}를 실행해 주세요.")
     if books.status == "CLOSED":
-        raise OpsError(f"계좌 {acct}는 해지된 계좌예요. 입출금을 기록하지 않아요.")
-    if out and books.status != "OPEN":
-        raise OpsError(f"계좌 {acct}는 정지 상태({books.status})라 출금과 대체 출금을 받지 않아요. 입금은 기록할 수 있어요.")
+        raise OpsError(f"계좌 {acct}는 해지된 계좌예요. 더 기록하지 않아요.")
     if today is not None and day > today:
         raise OpsError(f"{day}은 아직 오지 않은 날짜예요. 실제로 돈이 움직인 날짜로 기록해 주세요.")
     if led.is_closed(day):
@@ -56,9 +53,25 @@ def _ready(books: Books, day: dt.date, amount: int, today: dt.date | None, out: 
     if last is not None and day < last:
         raise OpsError(f"계좌 {acct}에는 {last} 날짜의 기록이 이미 있어요. 그보다 앞선 {day}로는 넣지 않아요. "
                        f"{last} 이후 날짜로 기록해 주세요 (--date).")
-    if out and amount > led.withdrawable():
-        raise OpsError(f"계좌 {acct}의 출금가능금액은 {led.withdrawable():,}원이에요 (예수금 {led.cash_balance():,}원, "
-                       f"결제 후 {led.projected_cash():,}원). {amount:,}원은 나갈 수 없어요.")
+
+
+def check_can_leave(books: Books, amount: int) -> None:
+    """R-64: refuse cash going out beyond 출금가능금액."""
+    led = books.ledger
+    if amount > led.withdrawable():
+        raise OpsError(f"계좌 {books.account_id}의 출금가능금액은 {led.withdrawable():,}원이에요 (예수금 "
+                       f"{led.cash_balance():,}원, 결제 후 {led.projected_cash():,}원). {amount:,}원은 나갈 수 없어요.")
+
+
+def _ready(books: Books, day: dt.date, amount: int, today: dt.date | None, out: bool) -> None:
+    if amount <= 0:
+        raise OpsError("금액은 0보다 커야 해요.")
+    check_bookable(books, day, today)
+    if out and books.status != "OPEN":
+        raise OpsError(f"계좌 {books.account_id}는 정지 상태({books.status})라 출금과 대체 출금을 받지 않아요. "
+                       "입금은 기록할 수 있어요.")
+    if out:
+        check_can_leave(books, amount)
 
 
 def _verified(books: Books) -> None:

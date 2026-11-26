@@ -43,7 +43,7 @@ def run(*argv, env=ENV) -> int:
 def test_a_new_database_holds_the_seed_and_it_agrees_with_the_schema_and_the_program(conn):
     groups, rows = _rows(conn)
     want_groups, want_codes = codes.seed_rows()
-    assert groups == sorted(want_groups) and len(groups) == 23
+    assert groups == sorted(want_groups) and len(groups) == 24
     assert rows == sorted([(*c, True) for c in want_codes], key=lambda r: (r[0], r[4]))
     assert codes.check(conn) == []
     assert all(fixed for *_, fixed in groups)                      # every seeded group belongs to the program
@@ -81,7 +81,7 @@ def test_the_migration_leaves_the_same_codes_as_a_new_database(conn):
     _restore_v1_1()
     with psycopg.connect(URL, autocommit=True) as old:
         reports = mg.migrate(old)
-        assert [r.migration.version for r in reports] == [1, 2, 3, 4, 5, 6] and all(r.applied for r in reports)
+        assert [r.migration.version for r in reports] == [1, 2, 3, 4, 5, 6, 7] and all(r.applied for r in reports)
         assert _rows(old) == fresh
         assert codes.check(old) == []                              # the codes a real ledger stored all have names
 
@@ -170,7 +170,7 @@ def test_code_commands(conn, capsys):
     assert run("code", "list", "MEMO_KIND") == 0 and "[사용 안 함]" in capsys.readouterr().out
     assert run("code", "check") == 0
     seeded = sum(len(g.codes) for g in codes.SEED)
-    assert f"공통코드 24개 그룹, 코드 {seeded + 1}개가" in capsys.readouterr().out
+    assert f"공통코드 25개 그룹, 코드 {seeded + 1}개가" in capsys.readouterr().out
 
     assert run("code", "add", "RECON_STATUS", "MAYBE", "글쎄") == 1
     assert "프로그램이 정한 코드" in capsys.readouterr().out
@@ -203,7 +203,7 @@ def test_the_code_screen_lists_the_chart_of_accounts_beside_the_common_codes(con
     groups, body = rows("STP4600R01")
     assert body["meta"]["consistent"] is True
     assert (groups[0]["group_id"], groups[0]["name"], groups[0]["store"], groups[0]["codes"]) == (
-        "accounts_chart", "계정과목", "전용 테이블", 15)
+        "accounts_chart", "계정과목", "전용 테이블", 18)
     assert [g["group_id"] for g in groups[1:]] == sorted(g.group_id for g in codes.SEED)
     assert {g["store"] for g in groups[1:]} == {"공통코드"}
 

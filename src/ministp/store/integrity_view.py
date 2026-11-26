@@ -227,11 +227,32 @@ def compare_movements(conn: psycopg.Connection, ledger: Ledger, account_id: str 
                      opening + sum(m.amount for m in mem), "입출금·대체와 시작 보유의 합계")]
 
 
+def compare_adjustments(conn: psycopg.Connection, ledger: Ledger, account_id: str = DEFAULT_ACCOUNT) -> list[Compared]:
+    """R-66: the adjustment view against a replay, and every break an adjustment names is a break of this account."""
+    stored = conn.execute(
+        "select adjustment_id, date, reason, amount, tax, cash_amount, memo, recon_result_id, canceled_on,"
+        " cancel_reason from adjustments_v where account_id = %s", (account_id,)).fetchall()
+    mem = ledger.adjustments()
+    expected = [(a.adjustment_id, a.date, a.reason, a.amount, a.tax, a.cash, a.memo, a.recon_result_id,
+                 a.canceled_on, a.cancel_memo) for a in mem.values()]
+    named = sorted(a.recon_result_id for a in mem.values() if a.recon_result_id is not None)
+    breaks = {r[0] for r in conn.execute(
+        "select id from recon_results where id = any(%s) and account_id = %s and status <> 'MATCH'",
+        (named, account_id))} if named else set()
+    return [Compared("수동 조정 건수", len(stored), len(expected), REPLAY),
+            Compared("한쪽에만 있는 조정 행 수", _unlike(stored, expected), 0, "하나도 없어야 함"),
+            Compared("예수금 반영 합계(취소 제외)", int(sum(r[5] for r in stored if r[8] is None)),
+                     sum(a.cash for a in mem.values() if not a.canceled_on), REPLAY),
+            Compared("이 계좌의 불일치가 아닌 대사 행을 가리키는 조정 수", sum(i not in breaks for i in named), 0,
+                     "하나도 없어야 함")]
+
+
 PLAIN = {"events": compare_events, "guards": compare_guards, "balanced": compare_balanced, "rights": compare_rights,
          "transfers": compare_transfers,
          "audit": compare_audit}
 REPLAYED = {"journal": compare_journal, "accounts": compare_accounts, "positions": compare_positions,
-            "cash": compare_cash, "closes": compare_closes, "dividends": compare_dividends, "movements": compare_movements}
+            "cash": compare_cash, "closes": compare_closes, "dividends": compare_dividends, "movements": compare_movements,
+            "adjustments": compare_adjustments}
 
 
 def compared(conn: psycopg.Connection, key: str, calendar, fees, instruments,

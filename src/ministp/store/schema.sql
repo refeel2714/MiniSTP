@@ -1,9 +1,9 @@
 -- MiniSTP ledger schema (spec 03).
--- ERD version: 2.5  (bump on every schema change, then run scripts/gen_erd.py) Append-only tables are enforced in the DB,
+-- ERD version: 2.6  (bump on every schema change, then run scripts/gen_erd.py) Append-only tables are enforced in the DB,
 -- not just in application code.
 
 create table if not exists accounts_chart (
-    code        text primary key,
+    code        text primary key check (code ~ '^[1-5][0-9]{3}$'),   -- 채번 규칙 (스펙 D4): 대분류, 중분류, 순번, 세목
     name        text not null,
     normal_side char(1) not null check (normal_side in ('D', 'C'))
 );
@@ -50,6 +50,9 @@ create index if not exists ledger_events_account_idx on ledger_events (account_i
 -- v2.5: 대체 번호 하나에 보낸 쪽 이벤트 하나, 받은 쪽 이벤트 하나 (R-65).
 create unique index if not exists ledger_events_transfer_key on ledger_events ((payload ->> 'transfer_id'), event_type)
     where event_type in ('TransferOutEvent', 'TransferInEvent');
+-- v2.6: 조정 번호 하나에 조정 이벤트 하나, 취소 이벤트 하나 (R-66).
+create unique index if not exists ledger_events_adjustment_key on ledger_events ((payload ->> 'adjustment_id'), event_type)
+    where event_type in ('AdjustmentEvent', 'AdjustmentCancelEvent');
 
 create table if not exists journal_entries (
     entry_id          bigserial primary key,
@@ -457,6 +460,19 @@ select o.transfer_id, o.date, o.account_id as from_account, i.account_id as to_a
   from cash_movements_v o join cash_movements_v i on i.transfer_id = o.transfer_id and i.kind = 'TRANSFER_IN'
  where o.kind = 'TRANSFER_OUT';
 
+-- v2.6 수동 조정 (R-66): 조정 이벤트와 그 취소를 한 행으로. 원장 이벤트에서 바로 읽는다.
+create or replace view adjustments_v as
+select a.account_id, (a.payload ->> 'adjustment_id')::bigint as adjustment_id, a.seq as event_seq,
+       (a.payload ->> 'date')::date as date, a.payload ->> 'reason' as reason,
+       (a.payload ->> 'amount')::bigint as amount, (a.payload ->> 'tax')::bigint as tax,
+       (a.payload ->> 'amount')::bigint - (a.payload ->> 'tax')::bigint as cash_amount,
+       a.payload ->> 'memo' as memo, (a.payload ->> 'recon_result_id')::bigint as recon_result_id,
+       (c.payload ->> 'date')::date as canceled_on, c.payload ->> 'memo' as cancel_reason
+  from ledger_events a
+  left join ledger_events c on c.event_type = 'AdjustmentCancelEvent'
+       and c.payload ->> 'adjustment_id' = a.payload ->> 'adjustment_id'
+ where a.event_type = 'AdjustmentEvent';
+
 -- Korean names (한글 명칭). Shown in pgAdmin and in docs/erd. Every table, view and
 -- column must have one; tests/db/test_erd.py fails otherwise.
 comment on table accounts_chart is '계정과목';
@@ -711,6 +727,20 @@ comment on column transfers_v.to_account is '받은 계좌 ID';
 comment on column transfers_v.amount is '금액';
 comment on column transfers_v.out_seq is '보낸 쪽 원장 이벤트 순번';
 comment on column transfers_v.in_seq is '받은 쪽 원장 이벤트 순번';
+
+comment on view adjustments_v is '수동 조정 내역 (예탁금 이용료, 증권사와의 수수료·세금·배당 차이, 취소 여부 포함)';
+comment on column adjustments_v.account_id is '계좌 ID';
+comment on column adjustments_v.adjustment_id is '조정 번호';
+comment on column adjustments_v.event_seq is '원장 이벤트 순번';
+comment on column adjustments_v.date is '기록일';
+comment on column adjustments_v.reason is '조정 사유 (INTEREST 예탁금 이용료 / FEE 수수료 차이 / TAX 거래세 차이 / DIVIDEND 배당금 차이 / WITHHOLDING 원천징수 차이 / OTHER 기타)';
+comment on column adjustments_v.amount is '금액 (세전, 예수금이 늘면 +, 줄면 -)';
+comment on column adjustments_v.tax is '원천징수세액 (예탁금 이용료에서 뗀 세금)';
+comment on column adjustments_v.cash_amount is '예수금 변동액 (금액 - 세금)';
+comment on column adjustments_v.memo is '메모 (조정하는 이유)';
+comment on column adjustments_v.recon_result_id is '이 조정으로 정리하는 대사 불일치 행 ID';
+comment on column adjustments_v.canceled_on is '취소일 (취소되지 않았으면 비움)';
+comment on column adjustments_v.cancel_reason is '취소 사유';
 
 comment on table audit_log is '감사 로그 (누가 언제 무엇을 했고 어떻게 끝났는지, 수정·삭제 불가)';
 comment on column audit_log.id is '행 번호 (1부터 빈 번호 없이)';

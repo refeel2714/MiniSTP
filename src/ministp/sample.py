@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 import psycopg
 
 from .broker.sim import SimBroker
-from . import audit, cash
+from . import adjustments, audit, cash
 from .calendar import BusinessCalendar
 from .fees import FeeSchedule
 from .instruments import AssetType, Instrument, Market
@@ -36,6 +36,7 @@ SAMPLE_INSTRUMENTS = [
 ]
 OPENING_CASH = 100_000_000
 LATER_DEPOSIT, LATER_WITHDRAWAL = 10_000_000, 3_000_000   # the default account: money in at 2/5 of the run, out at 4/5
+INTEREST, INTEREST_TAX = 12_340, 1_890                    # and 예탁금 이용료 from the broker at 3/5 (R-66)
 
 
 @dataclass(frozen=True)
@@ -147,6 +148,9 @@ def _build_sample(conn, calendar, fees, start, days, seed, accounts) -> SampleSu
         elif n and n == (4 * days) // 5 and books.ledger.withdrawable() >= LATER_WITHDRAWAL:
             broker.move_cash(-LATER_WITHDRAWAL)
             cash.withdraw(books, day, LATER_WITHDRAWAL, "샘플: 일부 출금", today=day)
+        if n and n == (3 * days) // 5:        # the broker pays interest on the cash; no event of the ledger knows it
+            broker.move_cash(INTEREST - INTEREST_TAX)
+            adjustments.add(books, day, "INTEREST", INTEREST, INTEREST_TAX, "샘플: 예탁금 이용료", today=day)
         for _ in range(rng.choice((0, 1, 1, 2))):
             _random_trade(books, broker, day, rng, summary, partial=(n == partial_day))
         if n == cancel_day:

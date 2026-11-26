@@ -298,12 +298,38 @@ def check_movements(conn: psycopg.Connection, ledger: Ledger, account_id: str = 
                  f"입출금·대체 {len(mem):,}건 일치, 투자원금 {capital:,}원, 좌수 {ledger.units:,}")
 
 
+def check_adjustments(conn: psycopg.Connection, ledger: Ledger, account_id: str = DEFAULT_ACCOUNT) -> Check:
+    """R-66: the adjustment view says what a replay says, and a break an adjustment names is a break of
+    this account."""
+    stored = conn.execute(
+        "select adjustment_id, date, reason, amount, tax, cash_amount, memo, recon_result_id, canceled_on,"
+        " cancel_reason from adjustments_v where account_id = %s", (account_id,)).fetchall()
+    mem = ledger.adjustments()
+    expected = [(a.adjustment_id, a.date, a.reason, a.amount, a.tax, a.cash, a.memo, a.recon_result_id,
+                 a.canceled_on, a.cancel_memo) for a in mem.values()]
+    diff = _row_diff(stored, expected, lambda r: f"ADJ-{r[0]} {r[2]} {r[3]:+,}원")
+    named = sorted(a.recon_result_id for a in mem.values() if a.recon_result_id is not None)
+    if named:
+        breaks = {r[0] for r in conn.execute(
+            "select id from recon_results where id = any(%s) and account_id = %s and status <> 'MATCH'",
+            (named, account_id))}
+        diff += [f"불일치 행 {i}이 이 계좌의 불일치가 아님" for i in named if i not in breaks]
+    if diff:
+        return Check("adjustments", "조정", False, f"다른 행: {_some(diff)}")
+    if not mem:
+        return Check("adjustments", "조정", True, "수동 조정이 아직 없어요")
+    live = [a for a in mem.values() if not a.canceled_on]
+    return Check("adjustments", "조정", True,
+                 f"수동 조정 {len(mem):,}건(취소 {len(mem) - len(live):,}건) 일치, 예수금 반영 합계 "
+                 f"{sum(a.cash for a in live):+,}원")
+
+
 def projection_checks(conn: psycopg.Connection, ledger: Ledger, account_id: str = DEFAULT_ACCOUNT) -> list[Check]:
     """Everything derived from one account's events, against `ledger` (a replay of those events)."""
     checks = [check_journal(conn, ledger, account_id), check_accounts(conn, ledger, account_id),
               check_positions(conn, ledger, account_id), check_cash(conn, ledger, account_id),
               check_closes(conn, ledger, account_id), check_dividends(conn, ledger, account_id),
-              check_movements(conn, ledger, account_id)]
+              check_movements(conn, ledger, account_id), check_adjustments(conn, ledger, account_id)]
     return [replace(c, account=account_id) for c in checks]
 
 

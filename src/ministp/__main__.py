@@ -14,6 +14,7 @@
     python -m ministp code list                   # 공통코드 그룹. code list 그룹ID는 그 그룹의 코드와 코드명
     python -m ministp dividend list               # 현금배당 권리와 계좌별 인식·입금 현황 (등록은 dividend add)
     python -m ministp cash list                   # 입출금·대체 내역과 출금가능금액 (기록은 cash deposit | withdraw | transfer)
+    python -m ministp adjust list                 # 수동 조정 내역 (예탁금 이용료, 수수료·세금·배당 차이. 기록은 adjust add)
     python -m ministp audit                       # 감사 로그: 누가 언제 무엇을 했고 어떻게 끝났는지 (거부·실패 포함)
     python -m ministp master fetch                # 시장 전체 종목정보(KIS 마스터 파일) 받아 두기, 키 필요 없음
     python -m ministp master check                # 받은 종목정보 점검: 전일 대비, 등록 종목, 기준가 대조 (읽기 전용)
@@ -34,7 +35,7 @@ import urllib.parse
 
 import psycopg
 
-from . import audit, cash
+from . import adjustments, audit, cash
 from .broker import KisClient, KisConfig, KisError, trading_env
 from .calendar import CalendarNotLoadedError
 from .cli import ask_missing, krx_calendar
@@ -130,6 +131,14 @@ def audited(args, today: dt.date):
     if cmd == "cash" and what in CASH_ACTIONS:
         return CASH_ACTIONS[what], args.account, None, {"date": args.date or today, "amount": args.amount,
                                                        "to": getattr(args, "to", None), "memo": args.memo or None}
+    if cmd == "adjust" and what == "add":
+        return "ADJUSTMENT_ADD", args.account, None, {"date": args.date or today, "reason": args.reason,
+                                                      "amount": args.amount, "tax": args.tax or None,
+                                                      "recon_result_id": args.result_id, "memo": args.memo,
+                                                      "confirmed": args.confirm or None}
+    if cmd == "adjust" and what == "cancel":
+        return "ADJUSTMENT_CANCEL", args.account, f"ADJ-{args.adjustment_id}", {"date": args.date or today,
+                                                                                "why": args.reason}
     if cmd == "code" and what in CODE_ACTIONS:
         target = args.group_id + (f".{args.code}" if what != "group-add" else "")
         return CODE_ACTIONS[what], None, target, {"name": getattr(args, "name", None),
@@ -305,6 +314,21 @@ def _run(argv, *, environ=os.environ, client_factory=KisClient, connect=psycopg.
             q.add_argument("--to", required=True, metavar="받는계좌")
         q.add_argument("--date", type=dt.date.fromisoformat, help="돈이 실제로 움직인 날짜 (기본: 오늘)")
         q.add_argument("--memo", default="", metavar="메모")
+    p = sub.add_parser("adjust", help="수동 조정: 예탁금 이용료, 증권사와의 수수료·세금·배당 차이를 사유와 함께 기록")
+    what = p.add_subparsers(dest="what", required=True)
+    what.add_parser("list", parents=[by_account], help="이 계좌의 조정 내역")
+    q = what.add_parser("add", parents=[by_account], help="조정 기록. 사유가 상대 계정을 정해요")
+    q.add_argument("reason", metavar="사유", type=str.upper, choices=adjustments.REASONS)
+    q.add_argument("amount", type=int, metavar="금액", help="세전. 예수금이 늘면 +, 줄면 -")
+    q.add_argument("--tax", type=int, default=0, metavar="세금", help="INTEREST에서 뗀 세금")
+    q.add_argument("--memo", required=True, metavar="메모", help="왜 조정하는지")
+    q.add_argument("--break", dest="result_id", type=int, metavar="불일치행", help="이 조정으로 정리하는 대사 불일치 행")
+    q.add_argument("--confirm", action="store_true",
+                   help=f"차이 사유로 {adjustments.CONFIRM_ABOVE:,}원을 넘는 금액일 때: 증권사 거래내역과 같은 금액임을 확인했다는 뜻")
+    q.add_argument("--date", type=dt.date.fromisoformat, help="기록할 날짜 (기본: 오늘)")
+    q = what.add_parser("cancel", parents=[by_account], help="조정을 반대 전표로 되돌림 (지우지 않아요)")
+    q.add_argument("adjustment_id", type=int, metavar="조정번호"), q.add_argument("reason", metavar="사유")
+    q.add_argument("--date", type=dt.date.fromisoformat, help="기록할 날짜 (기본: 오늘)")
     p = sub.add_parser("resolve")
     p.add_argument("result_id", type=int), p.add_argument("cause", choices=[c.value for c in Cause])
     p.add_argument("note")
@@ -420,7 +444,7 @@ def _run(argv, *, environ=os.environ, client_factory=KisClient, connect=psycopg.
                 return 0
 
             if args.cmd in ("open", "order", "cancel", "daily", "close", "run", "resolve", "customer") or (
-                    args.cmd in ("dividend", "cash") and args.what != "list") or (
+                    args.cmd in ("dividend", "cash", "adjust") and args.what != "list") or (
                     args.cmd == "account" and args.what != "list") or (
                     args.cmd == "code" and args.what not in ("list", "check")):
                 acquire_writer(conn)
@@ -469,6 +493,9 @@ def _run(argv, *, environ=os.environ, client_factory=KisClient, connect=psycopg.
 
             if args.cmd == "cash":
                 return _cash(conn, args, books, calendar, fees, today)
+
+            if args.cmd == "adjust":
+                return _adjust(conn, args, books, today)
 
             if args.cmd == "dividend":   # pay: one account's books
                 day = args.date or today
@@ -749,6 +776,36 @@ def _cash(conn, args, books, calendar, fees, today: dt.date) -> int:
         print(f"[{day}] 출금 {args.amount:,}원 ({acct}): 예수금 {led.cash_balance():,}원, "
               f"출금가능 {led.withdrawable():,}원, {units(m)}")
     print("증권사 잔고와는 다음 daily의 대사에서 맞춰 봐요. 오늘 기준가를 이미 산출했다면 daily가 다시 산출해요.")
+    return 0
+
+
+def _adjust(conn, args, books, today: dt.date) -> int:
+    """`adjust list | add | cancel` on the books of `--account`."""
+    from . import codes
+    names = {code: name for code, name, *_ in codes.list_codes(conn, "ADJUSTMENT_REASON")}
+
+    def said(a) -> str:
+        tax = f"세전 {a.amount:+,}원, 세금 {a.tax:,}원, " if a.tax else ""
+        return f"{a.ref} {names.get(a.reason, a.reason)}: {tax}예수금 {a.cash:+,}원"
+
+    if args.what == "list":
+        booked = books.ledger.adjustments().values()
+        for a in booked:
+            print(f"  {a.date}  {said(a)}  ({a.memo})"
+                  + (f"  불일치 행 {a.recon_result_id}" if a.recon_result_id is not None else "")
+                  + (f"  [취소 {a.canceled_on}: {a.cancel_memo}]" if a.canceled_on else ""))
+        if not booked:
+            print("수동 조정이 아직 없어요. adjust add 사유 금액 --memo 메모")
+        return 0
+    day = args.date or today
+    if args.what == "add":
+        a = adjustments.add(books, day, args.reason, args.amount, args.tax, args.memo, args.result_id, today,
+                            confirmed=args.confirm)
+        print(f"[{day}] 조정 {said(a)} ({books.account_id})")
+    else:
+        a = adjustments.cancel(books, args.adjustment_id, day, args.reason, today)
+        print(f"[{day}] 조정 취소 {a.ref} ({books.account_id}): 예수금 {-a.cash:+,}원. 조정 전표는 그대로 두고 반대 전표를 더했어요.")
+    print(f"예수금 {books.ledger.cash_balance():,}원. 증권사 잔고와는 다음 daily의 대사에서 맞춰 봐요.")
     return 0
 
 

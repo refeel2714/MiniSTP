@@ -41,7 +41,8 @@ class CodeGroup:
 
 # The codes a new database gets (`init_schema`). An existing one gets the same rows from the migrations:
 # 0002 inserted the codes of ERD v2.1, 0003 the three of the day close (v2.2), 0004 the three audit groups (v2.3),
-# 0005 the dividend codes and two groups (v2.4).
+# 0005 the dividend codes and two groups (v2.4), 0006 the cash movement codes (v2.5),
+# 0007 the adjustment codes and their reasons (v2.6).
 SEED: tuple[CodeGroup, ...] = (
     CodeGroup("ACCOUNT_STATUS", "계좌 상태", "위탁계좌의 상태. 정상 계좌만 주문을 받아요 (R-39).",
               "account_status_history.status", (
@@ -127,7 +128,9 @@ SEED: tuple[CodeGroup, ...] = (
                   ("DividendCancelEvent", "배당 인식 취소", "취소된 권리의 인식을 되돌림"),
                   ("WithdrawalEvent", "출금", "투자원금 출금"),
                   ("TransferOutEvent", "대체 출금", "같은 고객의 다른 계좌로 보냄"),
-                  ("TransferInEvent", "대체 입금", "같은 고객의 다른 계좌에서 받음"))),
+                  ("TransferInEvent", "대체 입금", "같은 고객의 다른 계좌에서 받음"),
+                  ("AdjustmentEvent", "수동 조정", "원장이 계산할 수 없는 예수금 변동을 사유와 함께 기록"),
+                  ("AdjustmentCancelEvent", "수동 조정 취소", "조정을 반대 전표로 되돌림"))),
     CodeGroup("JOURNAL_KIND", "전표 유형", "분개 전표가 만들어진 이유.", "journal_entries.kind", (
         ("DEPOSIT", "입금", ""),
         ("OPENING", "시작 보유", ""),
@@ -141,7 +144,9 @@ SEED: tuple[CodeGroup, ...] = (
         ("DIVIDEND_CANCEL", "배당 인식 취소", "취소된 권리의 인식을 되돌림"),
         ("WITHDRAWAL", "출금", ""),
         ("TRANSFER_OUT", "대체 출금", "다른 계좌로 보낸 돈"),
-        ("TRANSFER_IN", "대체 입금", "다른 계좌에서 받은 돈"))),
+        ("TRANSFER_IN", "대체 입금", "다른 계좌에서 받은 돈"),
+        ("ADJUSTMENT", "수동 조정", "사유 코드가 정한 계정으로 기록"),
+        ("ADJUSTMENT_CANCEL", "수동 조정 취소", "조정 전표의 반대 전표"))),
     CodeGroup("CASH_REASON", "예수금 변동 사유", "예수금이 움직인 이유. 예수금은 결제일에만 변해요 (R-13).",
               "cash_ledger.reason", (
                   ("DEPOSIT", "입금", ""),
@@ -149,7 +154,9 @@ SEED: tuple[CodeGroup, ...] = (
                   ("DIVIDEND", "배당 입금", "세금을 뗀 배당금 수령"),
                   ("WITHDRAWAL", "출금", ""),
                   ("TRANSFER_OUT", "대체 출금", "다른 계좌로 보낸 돈"),
-                  ("TRANSFER_IN", "대체 입금", "다른 계좌에서 받은 돈"))),
+                  ("TRANSFER_IN", "대체 입금", "다른 계좌에서 받은 돈"),
+                  ("ADJUSTMENT", "수동 조정", "예탁금 이용료, 수수료·세금·배당 차이"),
+                  ("ADJUSTMENT_CANCEL", "수동 조정 취소", "조정을 되돌림"))),
     CodeGroup("NORMAL_SIDE", "정상잔액 방향", "계정과목의 잔액이 늘어나는 쪽.", "accounts_chart.normal_side", (
         ("D", "차변", "자산, 비용"),
         ("C", "대변", "부채, 자본, 수익"))),
@@ -160,6 +167,14 @@ SEED: tuple[CodeGroup, ...] = (
         ("ACCRUED", "인식", "미수배당금으로 잡혀 있고 아직 입금 전"),
         ("PAID", "입금", "배당금이 예수금으로 들어옴"),
         ("CANCELED", "취소", "권리가 취소돼 인식을 되돌림"))),
+    CodeGroup("ADJUSTMENT_REASON", "수동 조정 사유", "조정하는 이유. 사유가 상대 계정을 정해요 (R-66).",
+              "adjustments_v.reason", (
+                  ("INTEREST", "예탁금 이용료", "증권사가 예수금에 준 이자. 상대 계정은 이자수익, 세금은 법인세등"),
+                  ("FEE", "수수료 차이", "증권사가 실제로 뗀 수수료와 원장 계산의 차이. 상대 계정은 지급수수료"),
+                  ("TAX", "거래세 차이", "증권사가 실제로 뗀 거래세와 원장 계산의 차이. 상대 계정은 세금과공과"),
+                  ("DIVIDEND", "배당금 차이", "입금으로 기록한 배당금과 실제 금액의 차이. 상대 계정은 배당수익"),
+                  ("WITHHOLDING", "원천징수 차이", "배당에서 실제로 뗀 세금과 기록한 세금의 차이. 상대 계정은 법인세등"),
+                  ("OTHER", "기타", "위에 없는 사유. 상대 계정은 잡이익 또는 잡손실"))),
     CodeGroup("AUDIT_CHANNEL", "감사 로그 경로", "어디로 들어온 요청인지.", "audit_log.channel", (
         ("CLI", "명령", "PC의 명령 창에서 실행"),
         ("UI", "화면", "업무화면의 처리 버튼"),
@@ -189,7 +204,9 @@ SEED: tuple[CodeGroup, ...] = (
         ("DIVIDEND_PAY", "배당 입금 기록", "증권사가 실제로 준 금액으로 직접 기록"),
         ("CASH_DEPOSIT", "입금 기록", "증권사 계좌에 들어온 돈"),
         ("CASH_WITHDRAW", "출금 기록", "증권사 계좌에서 나간 돈"),
-        ("CASH_TRANSFER", "계좌 간 대체", "같은 고객의 두 계좌 사이로 옮긴 돈"))),
+        ("CASH_TRANSFER", "계좌 간 대체", "같은 고객의 두 계좌 사이로 옮긴 돈"),
+        ("ADJUSTMENT_ADD", "수동 조정", "예탁금 이용료나 증권사와의 차이를 사유와 함께 기록"),
+        ("ADJUSTMENT_CANCEL", "수동 조정 취소", "조정을 반대 전표로 되돌림"))),
 )
 
 
@@ -233,7 +250,7 @@ def program_codes() -> dict[str, set[str]]:
     """The codes the program itself defines, by group. `check()` holds the table to them."""
     from .accounts import STATUSES
     from .instruments import AssetType, Market
-    from .ledger import DIVIDEND_STATUSES, Side
+    from .ledger import ADJUSTMENT_ACCOUNTS, DIVIDEND_STATUSES, Side
     from .rights import ACTION_TYPES
     from .oms import OrderStatus
     from .recon import Cause, Status
@@ -254,6 +271,7 @@ def program_codes() -> dict[str, set[str]]:
         "AUDIT_ACTION": set(audit.ACTIONS),
         "CORPORATE_ACTION_TYPE": set(ACTION_TYPES),
         "DIVIDEND_STATUS": set(DIVIDEND_STATUSES),
+        "ADJUSTMENT_REASON": set(ADJUSTMENT_ACCOUNTS),
     }
 
 

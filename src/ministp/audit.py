@@ -52,6 +52,8 @@ ACTIONS = {
     "CASH_DEPOSIT": "입금 기록",
     "CASH_WITHDRAW": "출금 기록",
     "CASH_TRANSFER": "계좌 간 대체",
+    "ADJUSTMENT_ADD": "수동 조정",
+    "ADJUSTMENT_CANCEL": "수동 조정 취소",
 }
 MESSAGE_MAX = 500
 

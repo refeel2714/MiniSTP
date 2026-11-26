@@ -54,3 +54,15 @@ def test_dividend_entries_find_their_templates():
     cancel = entry(DAY, "DIVIDEND_CANCEL", "CA-2", Dr(Account.DIVIDEND_INCOME, 1000),
                    Cr(Account.DIVIDEND_RECEIVABLE, 1000))
     assert [template_of(e).code for e in (accrual, paid_less, cancel)] == ["JT-14", "JT-15", "JT-16"]
+
+
+def test_adjustment_entries_find_the_template_of_their_reason():
+    from ministp.ledger import ADJUSTMENT_ACCOUNTS
+    codes = {t.case: t.code for t in TEMPLATES if t.kind == "ADJUSTMENT"}
+    assert len(codes) == len(ADJUSTMENT_ACCOUNTS)
+    interest = entry(DAY, "ADJUSTMENT", "ADJ-1", Dr(Account.CASH, 846), Dr(Account.WITHHOLDING_TAX, 154),
+                     Cr(Account.INTEREST_INCOME, 1000))
+    fee = entry(DAY, "ADJUSTMENT", "ADJ-2", Dr(Account.COMMISSION, 30), Cr(Account.CASH, 30))
+    assert template_of(interest).case == "사유 예탁금 이용료" and template_of(fee).case == "사유 수수료 차이"
+    back = entry(DAY, "ADJUSTMENT_CANCEL", "ADJ-2", Dr(Account.CASH, 30), Cr(Account.COMMISSION, 30), reverses=fee)
+    assert template_of(back).code == "JT-26"

@@ -3,6 +3,8 @@ import os
 
 import pytest
 
+from ministp.accounting import Account
+
 from ministp.ops import OpsError, load_books, load_instruments
 from ministp.sample import build_sample
 from ministp.store.integrity import integrity_report
@@ -43,7 +45,7 @@ def test_every_check_of_a_clean_database_has_numbers_and_they_all_agree(conn):
         got = rows(conn, check.key)
         assert got, check.key
         assert all(r.ok and r.diff == 0 for r in got.values()), check.key
-    assert set(PLAIN) | set(REPLAYED) == {"events", "guards", "balanced", "journal", "accounts", "positions", "cash", "closes", "audit", "rights", "dividends", "transfers", "movements"}
+    assert set(PLAIN) | set(REPLAYED) == {"events", "guards", "balanced", "journal", "accounts", "positions", "cash", "closes", "audit", "rights", "dividends", "transfers", "movements", "adjustments"}
 
 
 def test_the_numbers_are_the_ones_the_books_hold(conn):
@@ -108,7 +110,7 @@ def test_the_screen_opens_on_the_break_while_every_other_screen_refuses(conn, sa
 def test_the_detail_of_one_check_is_its_verdict_and_its_numbers(conn, sample):
     one = tx(conn, sample, "STP2110R02", title="계정 잔액").datasets
     assert [r["title"] for r in one["check"].records()] == ["계정 잔액"]
-    assert len(one["rows"]) == 15 and {r["result"] for r in one["rows"].records()} == {"일치"}
+    assert len(one["rows"]) == len(Account) and {r["result"] for r in one["rows"].records()} == {"일치"}
     with pytest.raises(TxError, match="없는 점검 항목"):
         tx(conn, sample, "STP2110R02", title="없는 항목")
     with pytest.raises(TxError, match="점검 항목이 필요"):

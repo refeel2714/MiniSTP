@@ -153,6 +153,36 @@ TEMPLATES += (
 )
 
 
+# 수동 조정(R-66): 사유가 상대 계정을 정해요(ledger.ADJUSTMENT_ACCOUNTS). 예수금이 늘면 위 세 줄, 줄면 아래 두 줄이에요.
+ADJUSTMENT_REASON_NAMES = {"INTEREST": "예탁금 이용료", "FEE": "수수료 차이", "TAX": "거래세 차이",
+                           "DIVIDEND": "배당금 차이", "WITHHOLDING": "원천징수 차이", "OTHER": "기타"}
+
+
+def _adjustment_templates() -> tuple[JournalTemplate, ...]:
+    from .ledger import ADJUSTMENT_ACCOUNTS
+    out = []
+    for n, (reason, (income, expense)) in enumerate(ADJUSTMENT_ACCOUNTS.items()):
+        lines = []
+        if income is not None:
+            lines += [D(A.CASH, "+ 조정 금액 − 원천징수", "R-66"), D(A.WITHHOLDING_TAX, "+ 원천징수"),
+                      C(income, "+ 조정 금액", "R-66")]
+        if expense is not None:
+            lines += [D(expense, "− 조정 금액", "R-66"), C(A.CASH, "− 조정 금액", "R-66")]
+        out.append(JournalTemplate(f"JT-{20 + n}", "AdjustmentEvent", "ADJUSTMENT",
+                                   f"사유 {ADJUSTMENT_REASON_NAMES.get(reason, reason)}", tuple(lines),
+                                   "+는 예수금이 늘 때, −는 줄 때. 메모가 있어야 하고 대사 불일치를 가리킬 수 있어요"))
+    return tuple(out)
+
+
+TEMPLATES += _adjustment_templates()
+TEMPLATES += (
+    JournalTemplate("JT-26", "AdjustmentCancelEvent", "ADJUSTMENT_CANCEL", "조정 취소", (
+        D(None, "조정 전표의 대변 줄 그대로"),
+        C(None, "조정 전표의 차변 줄 그대로")),
+        "조정은 고치지 않고 반대 전표로 되돌려요 (R-04)"),
+)
+
+
 def template_of(e: JournalEntry) -> JournalTemplate | None:
     """The template a journal entry fits, or None (the ledger made an entry this table does not describe)."""
     return next((t for t in TEMPLATES if t.fits(e)), None)

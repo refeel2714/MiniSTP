@@ -56,6 +56,10 @@ class CashError(ValueError):
     or a date behind entries that are already booked."""
 
 
+class AdjustmentError(ValueError):
+    """R-66: an adjustment the rules do not allow (an unknown reason, no memo, cancelled twice, ...)."""
+
+
 class LedgerHaltedError(RuntimeError):
     """A listener (e.g. the DB store) failed; this in-memory ledger may no longer
     match the durable record and must be rebuilt from it."""
@@ -187,9 +191,39 @@ class DividendCancelEvent:
     symbol: str
 
 
+@dataclass(frozen=True)
+class AdjustmentEvent:
+    """R-66: cash that moved at the broker for a reason the ledger cannot work out by itself
+    (예탁금 이용료), or a difference left between what the broker booked and what the ledger
+    computed (a fee, a tax, a dividend). The reason fixes the account on the other side.
+
+    `amount` is the change of 예수금 before tax: + in, - out. `tax` is what was withheld from
+    an amount coming in. `recon_result_id` names the reconciliation break it settles, if any."""
+    date: dt.date
+    adjustment_id: int
+    reason: str
+    amount: int
+    tax: int
+    memo: str
+    recon_result_id: int | None = None
+
+
+@dataclass(frozen=True)
+class AdjustmentCancelEvent:
+    """R-66: an adjustment taken back by the opposite entry (R-04). The adjustment itself stays."""
+    date: dt.date
+    adjustment_id: int
+    memo: str
+
+
 Event = (DepositEvent | OpeningPositionEvent | ExecutionEvent | SettlementEvent | RevaluationEvent | NavEvent
          | LateExecutionEvent | DayClosedEvent | DividendAccrualEvent | DividendPaymentEvent | DividendCancelEvent
-         | WithdrawalEvent | TransferOutEvent | TransferInEvent)
+         | WithdrawalEvent | TransferOutEvent | TransferInEvent | AdjustmentEvent | AdjustmentCancelEvent)
+
+
+def adjustment_ref(adjustment_id: int) -> str:
+    """The `source_id` of an adjustment's journal entries."""
+    return f"ADJ-{adjustment_id}"
 
 
 def transfer_ref(transfer_id: int) -> str:
@@ -276,6 +310,41 @@ class CashMovement:
     counter_account: str | None = None
 
 
+# R-66: why cash is adjusted, and the account on the other side: (when cash comes in, when it goes out).
+# None: that direction does not exist for the reason. Only INTEREST may carry a withheld tax.
+ADJUSTMENT_ACCOUNTS: dict[str, tuple[Account | None, Account | None]] = {
+    "INTEREST": (Account.INTEREST_INCOME, None),                    # 예탁금 이용료
+    "FEE": (Account.COMMISSION, Account.COMMISSION),                # the broker charged another commission
+    "TAX": (Account.TAXES, Account.TAXES),                          # another transaction tax
+    "DIVIDEND": (Account.DIVIDEND_INCOME, Account.DIVIDEND_INCOME),  # a dividend paid differs from what was booked
+    "WITHHOLDING": (Account.WITHHOLDING_TAX, Account.WITHHOLDING_TAX),  # another tax withheld from it
+    "OTHER": (Account.MISC_INCOME, Account.MISC_LOSS),
+}
+
+
+@dataclass(frozen=True)
+class Adjustment:
+    """One adjustment as this account's books know it."""
+    adjustment_id: int
+    date: dt.date
+    reason: str
+    amount: int
+    tax: int
+    memo: str
+    recon_result_id: int | None = None
+    canceled_on: dt.date | None = None
+    cancel_memo: str | None = None
+
+    @property
+    def cash(self) -> int:
+        """What it did to 예수금."""
+        return self.amount - self.tax
+
+    @property
+    def ref(self) -> str:
+        return adjustment_ref(self.adjustment_id)
+
+
 DIVIDEND_STATUSES = ("ACCRUED", "PAID", "CANCELED")
 
 
@@ -317,6 +386,8 @@ class _State:
     dividends: dict[int, Dividend] = field(default_factory=dict)    # corporate action id -> its state here (R-57)
     navs: list[tuple[dt.date, Decimal]] = field(default_factory=list)  # every NAV struck, in order (R-61)
     movements: list[CashMovement] = field(default_factory=list)     # deposits, withdrawals, transfers (R-56)
+    adjustments: dict[int, Adjustment] = field(default_factory=dict)   # adjustment id -> its state here (R-66)
+    adjustment_entries: dict[int, JournalEntry] = field(default_factory=dict)   # the entry a cancel reverses
 
 
 class Ledger:
@@ -369,6 +440,35 @@ class Ledger:
             raise CashError(f"{date} is behind the books: the last entry is dated {last}")
         if out and amount > self.withdrawable():
             raise CashError(f"{amount:,} is more than can leave the account ({self.withdrawable():,})")
+
+    def adjust(self, date: dt.date, adjustment_id: int, reason: str, amount: int, tax: int = 0, memo: str = "",
+               recon_result_id: int | None = None) -> Adjustment:
+        """R-66: book cash the ledger could not have computed. The reason decides the other account."""
+        if adjustment_id in self._s.adjustments:
+            raise AdjustmentError(f"adjustment {adjustment_id} is already booked")
+        if reason not in ADJUSTMENT_ACCOUNTS:
+            raise AdjustmentError(f"unknown adjustment reason {reason}")
+        if not memo.strip():
+            raise AdjustmentError("an adjustment needs a memo that says why")
+        if amount == 0 or ADJUSTMENT_ACCOUNTS[reason][amount < 0] is None:
+            raise AdjustmentError(f"{reason} cannot be adjusted by {amount:,}")
+        if tax and (reason != "INTEREST" or not 0 < tax < amount):
+            raise AdjustmentError("a tax is withheld only from interest, and is smaller than it")
+        self.check_cash(date, abs(amount - tax), out=amount < 0)
+        self._record(AdjustmentEvent(date, adjustment_id, reason, amount, tax, memo.strip(), recon_result_id))
+        return self._s.adjustments[adjustment_id]
+
+    def cancel_adjustment(self, date: dt.date, adjustment_id: int, memo: str) -> Adjustment:
+        """R-66: take an adjustment back by the opposite entry. Once, and with a reason."""
+        a = self._s.adjustments.get(adjustment_id)
+        if a is None or a.canceled_on:
+            raise AdjustmentError(f"adjustment {adjustment_id} is not there to cancel" if a is None
+                                  else f"adjustment {adjustment_id} is already cancelled")
+        if not memo.strip():
+            raise AdjustmentError("a cancellation needs a memo that says why")
+        self.check_cash(date, abs(a.cash), out=a.cash > 0)
+        self._record(AdjustmentCancelEvent(date, adjustment_id, memo.strip()))
+        return self._s.adjustments[adjustment_id]
 
     def open_position(self, date: dt.date, symbol: str, qty: int, book_cost: int) -> None:
         """Only before any trade: the ledger's starting holdings (R-05)."""
@@ -555,6 +655,10 @@ class Ledger:
         """Every corporate action booked in this account, by id, in booking order."""
         return dict(self._s.dividends)
 
+    def adjustments(self) -> dict[int, Adjustment]:
+        """Every adjustment booked in this account, by id, in booking order (R-66)."""
+        return dict(self._s.adjustments)
+
     def account_balance(self, account: Account) -> int:
         dr = cr = 0
         for e in self._s.journal:
@@ -686,6 +790,15 @@ class Ledger:
                 self._s.journal.append(entry(ev.date, "DIVIDEND_CANCEL", dividend_ref(ev.action_id),
                                              Dr(Account.DIVIDEND_INCOME, d.accrued),
                                              Cr(Account.DIVIDEND_RECEIVABLE, d.accrued)))
+            case AdjustmentEvent():
+                self._apply_adjustment(ev)
+            case AdjustmentCancelEvent():
+                a, booked = self._s.adjustments[ev.adjustment_id], self._s.adjustment_entries[ev.adjustment_id]
+                self._s.adjustments[ev.adjustment_id] = replace(a, canceled_on=ev.date, cancel_memo=ev.memo)
+                swapped = tuple(Dr(ln.account, ln.credit) if ln.credit else Cr(ln.account, ln.debit)
+                                for ln in booked.lines)
+                self._s.journal.append(entry(ev.date, "ADJUSTMENT_CANCEL", booked.source_id, *swapped,
+                                             reverses=booked))
             case DayClosedEvent():
                 self._s.closed_through = ev.date
                 self._s.closed_days[ev.date] = self._s.last_nav_row
@@ -702,6 +815,18 @@ class Ledger:
                                      Cr(Account.DIVIDEND_RECEIVABLE, d.accrued),
                                      Cr(Account.DIVIDEND_INCOME, max(more, 0)),
                                      Dr(Account.DIVIDEND_INCOME, max(-more, 0))))   # R-57, R-23
+
+    def _apply_adjustment(self, ev: AdjustmentEvent) -> None:
+        income, expense = ADJUSTMENT_ACCOUNTS[ev.reason]
+        if ev.amount > 0:   # cash in: what is withheld never arrives
+            lines = (Dr(Account.CASH, ev.amount - ev.tax), Dr(Account.WITHHOLDING_TAX, ev.tax), Cr(income, ev.amount))
+        else:
+            lines = (Dr(expense, -ev.amount), Cr(Account.CASH, -ev.amount))
+        e = entry(ev.date, "ADJUSTMENT", adjustment_ref(ev.adjustment_id), *lines)
+        self._s.journal.append(e)
+        self._s.adjustment_entries[ev.adjustment_id] = e
+        self._s.adjustments[ev.adjustment_id] = Adjustment(ev.adjustment_id, ev.date, ev.reason, ev.amount, ev.tax,
+                                                           ev.memo, ev.recon_result_id)
 
     def _unit_price(self, date: dt.date) -> Decimal:
         """R-61: money that comes or goes on `date` is priced at the last NAV struck for an earlier

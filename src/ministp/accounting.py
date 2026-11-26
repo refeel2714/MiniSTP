@@ -16,11 +16,14 @@ class Account(Enum):
     TRADING_GAIN = ("4010", "매매이익", "C")
     VALUATION_GAIN = ("4020", "평가이익", "C")
     DIVIDEND_INCOME = ("4030", "배당수익", "C")
+    INTEREST_INCOME = ("4040", "이자수익", "C")
+    MISC_INCOME = ("4090", "잡이익", "C")
     TRADING_LOSS = ("5010", "매매손실", "D")
     VALUATION_LOSS = ("5020", "평가손실", "D")
     COMMISSION = ("5030", "지급수수료", "D")
     TAXES = ("5040", "세금과공과", "D")
     WITHHOLDING_TAX = ("5050", "법인세등(원천징수)", "D")
+    MISC_LOSS = ("5090", "잡손실", "D")
 
     @property
     def code(self) -> str:
