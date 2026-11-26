@@ -339,7 +339,7 @@ def test_a_table_can_offer_a_map_of_its_rows():
         assert validate(s, CATALOG) == []
         assert resolve(s["STP-1100"], CATALOG)["grids"][0]["map"]["size"] == "cost"
     shipped = next(g for g in load_screens()["STP-1100"].grids if g.id == "holdings")
-    assert shipped.view == "grid" and shipped.map == {"label": "instrument_name", "size": "book_cost", "tone": "unrealized_pnl"}
+    assert shipped.view == "grid" and shipped.map is None   # 11/26 실시간 잔고에서 지도를 뺐어요. 보기 자체는 남겨 둬요
 
 
 @pytest.mark.parametrize("s, problem", [
