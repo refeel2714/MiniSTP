@@ -707,8 +707,10 @@ def _order_lines(c: TxContext, p) -> TxResult:
             send = f"{user}에게 주문 승인 권한이 없어요. 결재 요청만 할 수 있어요"
         elif not right.self_approve:
             send = f"{user}의 승인 권한에 셀프 승인 허용이 없어요. 결재 요청만 할 수 있어요"
-        elif right.max_order_value is not None and any(x.amount > right.max_order_value for x in chosen):
-            send = f"1건 승인 한도 {right.max_order_value:,}원을 넘는 줄이 있어요. 결재 요청만 할 수 있어요"
+        elif approval.over_limit(right, chosen):
+            send = (f"{'바스켓 합계' if any(x.group for x in chosen) else '주문금액'} "
+                    f"{approval.over_limit(right, chosen)[1]:,}원이 1건 승인 한도 {right.max_order_value:,}원을 넘어요. "
+                    "결재 요청만 할 수 있어요")
     day = approval.order_day(c.calendar, dt.datetime.combine(c.today, dt.datetime.now().time()))
     return TxResult({"main": Dataset(ORDER_LINE_COLUMNS, tuple(rows))},
                     {"order_date": day.isoformat(), "user": user, "request_lock": lock, "send_lock": send})
@@ -716,6 +718,7 @@ def _order_lines(c: TxContext, p) -> TxResult:
 
 def _order_set(c: TxContext, p) -> TxResult:
     """STP-1210 선택 묶음 검증: 체크한 줄 + 이미 잡힌 요청(결재 대기·승인 후 미전송)."""
+    from .. import approval
     state, drafts, chosen, alone, together, _ = _drafts_checked(c, p)
     limits, weight = _limits_and_weight()
     rows = _set_rows(state, together, limits, weight, len(chosen))
@@ -726,7 +729,7 @@ def _order_set(c: TxContext, p) -> TxResult:
     elif not right.self_approve:
         who = (f"{user}: 셀프 승인 허용 없음 ({_limit_text(right)})", "요청만", None)
     else:
-        over = right.max_order_value is not None and any(x.amount > right.max_order_value for x in chosen)
+        over = approval.over_limit(right, chosen) is not None    # 요청 1건 단위: 바스켓은 합계 (C-13)
         who = (f"{user}: 셀프 승인 허용 ({_limit_text(right)})", "한도 초과, 요청만" if over else "셀프 승인 가능", None)
     basket = any(x.group for x in chosen)
     rows.append(("결재", f"{'바스켓 요청 1건' if basket else f'단건 요청 {len(chosen)}건'}, {sum(x.amount for x in chosen):,}원",
@@ -821,8 +824,9 @@ def _approval_requests(c: TxContext, p) -> TxResult:
             lock = reject = "결재 대기가 아닌 요청이 섞여 있어요 (승인·반려는 결재 대기만)"
         elif any(r.created_by == user for r in pending) and not right.self_approve:
             lock = f"본인이 쓴 요청이 있어요. {user}의 권한에 셀프 승인 허용이 없어 다른 승인자가 승인해야 해요"
-        elif right.max_order_value is not None and any(x.item.amount > right.max_order_value for x in together.lines):
-            lock = f"{_limit_text(right)}을 넘는 줄이 있어요"
+        elif approval.over_limit(right, [x.item for x in together.lines]):
+            key, amount = approval.over_limit(right, [x.item for x in together.lines])
+            lock = f"요청 {key.split(':')[0].rsplit('-', 1)[-1]}의 금액 {amount:,}원이 {_limit_text(right)}을 넘어요"
         elif not together.ok:
             lock = f"묶음 검증에 걸려요: {approval.describe(together)}"
     cancel = "" if chosen_reqs else "취소할 요청을 체크하세요"
@@ -868,19 +872,20 @@ def _request_lines(c: TxContext, p) -> TxResult:
 
 def _approval_set(c: TxContext, p) -> TxResult:
     """STP-5100 선택 묶음 검증: 체크한 결재 대기 요청 + 이미 승인했지만 아직 안 나간 요청. 내 승인 한도도."""
+    from .. import approval
     state, reqs, chosen_reqs, alone, together = _approvals_checked(c, p)
     limits, weight = _limits_and_weight()
     n = len([r for r in chosen_reqs if r.status == "PENDING"])
     rows = _set_rows(state, together, limits, weight, n)
     user, rights = _who(c)
     right = rights.get("ORDER_APPROVE")
-    biggest = max((ln.item.amount for ln in together.lines), default=0)
+    biggest = max(approval.request_amounts([ln.item for ln in together.lines]).values(), default=0)
     if right is None:
         rows.append(("내 승인 한도", f"{user}: 승인 권한 없음", "", "권한 없음" if n else NOT_PICKED, False if n else None))
     else:
         over = right.max_order_value is not None and biggest > right.max_order_value
         mine = sum(1 for r in chosen_reqs if r.created_by == user)
-        rows.append(("내 승인 한도", f"줄 1건 최대 {biggest:,}원",
+        rows.append(("내 승인 한도", f"요청 1건 최대 {biggest:,}원",
                      f"{user}: {_limit_text(right)}, 셀프 승인 {'허용' if right.self_approve else '안 됨'}"
                      + (f" (본인 요청 {mine}건)" if mine else ""),
                      NOT_PICKED if not n else ("초과" if over else ("셀프 승인 안 됨" if mine and not right.self_approve

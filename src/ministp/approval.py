@@ -1,6 +1,6 @@
 """주문 결재 (스펙 D9, R-99~101): 모든 주문은 요청으로 먼저 남고, 승인된 요청만 `run`이 보내요.
 
-- 권한(R-99): 주문 작성, 주문 승인(1건 한도, 셀프 승인 허용), 권한 관리. 계좌마다 또는 모든 계좌에 줘요.
+- 권한(R-99): 주문 작성, 주문 승인(1건 한도 = 요청 1건, 바스켓은 합계, 셀프 승인 허용), 권한 관리. 계좌마다 또는 모든 계좌에 줘요.
   권한은 부여·회수마다 한 행이 쌓이고, 오늘 적용되는 최근 행이 지금 권한이에요.
   셀프 승인은 권한에 "셀프 승인 허용"이 있는 사람만, 1건 한도 안에서만 해요. 없는 사람은 요청만 올려요.
 - 요청 번호: 키는 주문일 + 요청 번호(주문일마다 1부터, 계좌와 무관). 주문 유형은 단건(한 줄)과 바스켓(여러 줄).
@@ -283,6 +283,27 @@ def _held(state: AccountState, reqs: list[Request]) -> list[Proposed]:
     return [_from_line(state, r, ln) for r in reqs for ln in r.unsent]
 
 
+def request_amounts(items) -> dict[str, int]:
+    """요청 1건의 금액(R-99 1건 승인 한도의 기준). 바스켓은 줄 금액의 합계, 단건은 그 줄 하나예요.
+    화면에서 아직 요청하지 않은 줄은 바스켓 묶음 번호(BK)로, 저장된 줄은 요청 번호로 묶여요."""
+    out: dict[str, int] = {}
+    for p in items:
+        k = p.group or p.key
+        out[k] = out.get(k, 0) + p.amount
+    return out
+
+
+def over_limit(right: "Right | None", items) -> tuple[str, int] | None:
+    """1건 승인 한도를 넘는 요청 가운데 가장 큰 것 (요청 묶음 키, 금액). 한도가 없거나 안 넘으면 None."""
+    if right is None or right.max_order_value is None:
+        return None
+    amounts = request_amounts(items)
+    if not amounts:
+        return None
+    key, amount = max(amounts.items(), key=lambda kv: kv[1])
+    return (key, amount) if amount > right.max_order_value else None
+
+
 def snapshot(result: SetCheck) -> dict:
     """결재·전송 이력에 남기는 그때의 묶음 검증 결과."""
     return {"ok": result.ok, "issues": list(result.issues), "available_cash": result.available_cash,
@@ -401,10 +422,11 @@ def approve(books: Books, today: dt.date, keys, *, limits: RiskLimits = RiskLimi
         for r in reqs:
             if r.created_by == user and not right.self_approve:
                 raise ApprovalError(f"요청 {r.request_no}: 본인이 쓴 요청이에요. 셀프 승인 허용이 없어 다른 승인자가 승인해야 해요")
-        for p in selected:
-            if right.max_order_value is not None and p.amount > right.max_order_value:
-                raise ApprovalError(f"요청 {p.key.split(':')[0]} {p.symbol}: 주문금액 {p.amount:,}원이 1건 승인 한도 "
-                                    f"{right.max_order_value:,}원을 넘어요")
+        over = over_limit(right, selected)   # 한도는 요청 1건 단위: 바스켓은 합계 (C-13)
+        if over:
+            key, amount = over
+            raise ApprovalError(f"요청 {key.split(':')[0].rsplit('-', 1)[-1]}: {'바스켓 합계' if ':' not in key else '주문금액'} {amount:,}원이 "
+                                f"1건 승인 한도 {right.max_order_value:,}원을 넘어요")
         result = check_set(state, selected, _held(state, approved), limits, weight_limit)
         if not result.ok:
             raise ApprovalError(f"묶음 검증에 걸려 승인하지 않았어요: {describe(result)}")
