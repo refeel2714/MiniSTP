@@ -16,6 +16,7 @@
   const DATA = JSON.parse(document.getElementById("stpui-data").textContent);
   const app = document.getElementById("app");
   const NUMERIC = new Set(["number", "money", "rate"]);
+  const LEVELS = new Set(["class", "total"]);   // emphasis: rows drawn as 분류 합계 and 총합계
   const nf = new Intl.NumberFormat("ko-KR");
   const rf = new Intl.NumberFormat("ko-KR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   const pf = new Intl.NumberFormat("ko-KR", { style: "percent", minimumFractionDigits: 1, maximumFractionDigits: 1 });
@@ -1275,13 +1276,16 @@
       const scaled = c => c.display === "bar" || (c.display === "meter" && !c.of);
       const peak = Object.fromEntries(cols.filter(scaled).map(c =>
         [c.name, Math.max(0, ...rows.map(r => Math.abs(Number(r[c.name]) || 0)))]));
-      const head = h("tr", {}, h("th", { class: "rn", scope: "col", text: "#" }), cols.map(c => {
+      const edges = new Set();   // 묶음 머리: a line down the table where each band after the first starts
+      g.bands.reduce((at, b) => { if (at) edges.add(at); return at + b.span; }, 0);
+      const head = h("tr", {}, h("th", { class: "rn", scope: "col", text: "#" }), cols.map((c, ci) => {
         const on = sortCol === c.name;
-        const th = h("th", { scope: "col", class: c.align === "right" ? "r" : null,
+        const th = h("th", { scope: "col", class: [c.align === "right" ? "r" : "", edges.has(ci) ? "edge" : ""].join(" ").trim() || null,
           "aria-sort": on ? (sortDir > 0 ? "ascending" : "descending") : null,
           title: (c.source || "화면 계산 값") + (c.display === "meter" && !c.of && peak[c.name] ? ` · 막대 끝은 이 목록에서 가장 큰 값(${pf.format(peak[c.name])})` : "") },
           c.display === "spark" ? c.label   // a run of numbers has no order to sort by
             : c.display === "steps" ? h("div", { class: "steps head" }, c.steps.map(n => h("span", { text: n })))   // each name over its dot
+            : g.bands.length ? c.label   // a banded table (시산표) is read in its own order
             : h("button", { type: "button", onclick: () => sortBy(c.name) }, c.label, on ? (sortDir > 0 ? " ▲" : " ▼") : ""));
         if (c.width) th.style.width = c.width + "px";
         return th;
@@ -1289,16 +1293,17 @@
       const rolls = [];
       const tbody = h("tbody", {}, view.map((r, i) => h("tr", {
         "data-k": rowKey(r),
-        class: [i === sel ? "sel" : "", changed.get(rowKey(r))?.has("*") ? "new" : ""].join(" ").trim() || null,
+        class: [i === sel ? "sel" : "", changed.get(rowKey(r))?.has("*") ? "new" : "",
+          g.emphasis && LEVELS.has(r[g.emphasis]) ? "lv-" + r[g.emphasis] : ""].join(" ").trim() || null,
         "aria-selected": i === sel ? "true" : "false",
         onclick: () => select(i), ondblclick: () => onDrill(view[i]),
-      }, h("td", { class: "rn", text: i + 1 }), cols.map(c => {
+      }, h("td", { class: "rn", text: i + 1 }), cols.map((c, ci) => {
         if (ed && c.name === ed.column) return h("td", { class: "r ecell" }, editCell(r));
         const v = r[c.name];
         const text = fmt(v, c.format);
         const drawn = c.display && c.display !== "bar";   // the cell holds an element, not just text
         const td = h("td", { class: [c.align === "right" ? "r" : "", drawn ? "" : tone(v, c.color, r), c.format === "json" ? "js" : "",
-          c.display ? "d-" + c.display : "", flashed(r, c.name) ? "flash" : ""].filter(Boolean).join(" ") || null,
+          c.display ? "d-" + c.display : "", flashed(r, c.name) ? "flash" : "", edges.has(ci) ? "edge" : ""].filter(Boolean).join(" ") || null,
           title: c.format === "json" ? text : null, text: drawn ? null : text });
         if (c.sub) {   // a second, smaller line under the value: its time, its rate
           const sc = g.columns.find(x => x.name === c.sub), sv = fmt(r[c.sub], sc ? sc.format : "text");
@@ -1323,8 +1328,10 @@
           ? (sum => h("td", { class: ("r " + (c.color === "sign" ? tone(sum, "sign") : "")).trim(), text: fmt(sum, c.format) }))(
               (q ? view : rows).reduce((s, r) => s + (Number(r[c.name]) || 0), 0))
           : h("td", {})))) : null;
-      const table = h("table", { class: "grid", tabindex: "0", role: "grid", "aria-rowcount": rows.length,
-        onkeydown: key }, h("thead", {}, head), tbody, foot);
+      const table = h("table", { tabindex: "0", role: "grid", "aria-rowcount": rows.length,
+        onkeydown: key, class: g.bands.length ? "grid banded" : "grid" },
+        h("thead", {}, g.bands.length ? h("tr", { class: "band" }, h("th", { class: "rn", "aria-hidden": "true" }),
+          g.bands.map(b => h("th", { scope: "colgroup", colspan: b.span, text: b.label }))) : null, head), tbody, foot);
       body.replaceChildren(table, h("div", { class: "selbar", "aria-hidden": "true" }));
       showEditTotal();
       rolls.forEach(a => roll(...a));
