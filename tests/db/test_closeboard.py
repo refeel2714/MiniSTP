@@ -57,9 +57,9 @@ def test_every_day_of_the_sample_is_finished_and_each_step_agrees_with_its_own_s
         assert [s["step"] for s in steps if s["kind"] == "선택"] == ["ERP 전송"] and steps[7]["state"] == "대기"
         steps = [s for s in steps if s["step"] not in ("배당", "ERP 전송")]
         assert f"순자산 {nav[r['date']]:,}원" in steps[3]["detail"]
-        assert recon[r["date"]]["state"] in ("일치", "판단 완료")      # the same reading as the 대사 달력
+        assert recon[r["date"]]["state"] in ("일치", "불일치(판단함)")      # the same reading as the 대사 달력
         assert f"대사 {recon[r['date']]['items']}개 항목" in steps[4]["detail"]
-        assert ("판단을 마쳤어요" in steps[4]["detail"]) == (recon[r["date"]]["state"] == "판단 완료")
+        assert ("판단을 마쳤어요" in steps[4]["detail"]) == (recon[r["date"]]["state"] == "불일치(판단함)")
 
 
 def test_the_next_business_day_is_in_progress_until_daily_runs(conn, sample):
