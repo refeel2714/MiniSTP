@@ -1192,11 +1192,13 @@
 
     // 전표 보기: the way a 전표 is printed in an ERP. One table for the whole event: 차변계정 · 차변과목 · 차변금액 next to
     // 대변계정 · 대변과목 · 대변금액, the k-th debit line beside the k-th credit line, a dotted line between 전표.
-    // A thin row above each 전표 carries its facts (번호, 유형, 원천); the foot row carries both sums.
+    // The 전표's own facts (번호, 회계일, 유형, 원천) sit in a column of their own on the left, over all its lines,
+    // so they are not read as one more line; the foot row carries both sums.
     function renderVouchers() {
       if (!rows.length) return body.replaceChildren(h("div", { class: "empty", text: "조회된 내역이 없어요" }));
       const t = g.taccount;
-      const facts = g.columns.filter(c => ![t.account, t.name, t.debit, t.credit].includes(c.name));
+      const facts = g.columns.filter(c => ![t.entry, t.account, t.name, t.debit, t.credit].includes(c.name));
+      const entryCol = g.columns.find(c => c.name === t.entry);
       const blocks = new Map();
       for (const r of view) {
         const k = t.entry ? String(r[t.entry]) : "";
@@ -1215,18 +1217,21 @@
         const drs = lines.filter(r => Number(r[t.debit])), crs = lines.filter(r => Number(r[t.credit]));
         const dr = sum(lines, t.debit), cr = sum(lines, t.credit);
         DR += dr; CR += cr;
-        const shown = facts.filter(c => lines[0][c.name] !== null && lines[0][c.name] !== undefined && lines[0][c.name] !== "");
-        const head = h("tr", { class: "vhead" }, h("td", { colspan: "6" },
-          shown.map(c => h("span", {}, c.label, h("b", { text: fmt(lines[0][c.name], c.format) }))),
-          dr === cr ? null : h("span", { class: "pill st-bad", text: `차대 불일치 ${money(dr - cr)}` })));
+        const first = lines[0];
+        const shown = facts.filter(c => first[c.name] !== null && first[c.name] !== undefined && first[c.name] !== "");
         const n = Math.max(drs.length, crs.length, 1);
-        return h("tbody", {}, head, Array.from({ length: n }, (_, i) => h("tr", {}, side(drs[i], t.debit), side(crs[i], t.credit))));
+        const card = h("td", { class: "vfacts", rowspan: String(n) },
+          entryCol ? h("div", { class: "vno" }, entryCol.label, h("b", { text: fmt(first[t.entry], entryCol.format) })) : null,
+          h("dl", {}, shown.flatMap(c => [h("dt", { text: c.label }), h("dd", { text: fmt(first[c.name], c.format) })])),
+          dr === cr ? null : h("span", { class: "pill st-bad", text: `차대 불일치 ${money(dr - cr)}` }));
+        return h("tbody", {}, Array.from({ length: n }, (_, i) =>
+          h("tr", {}, i ? null : card, side(drs[i], t.debit), side(crs[i], t.credit))));
       });
       body.replaceChildren(h("div", { class: "vwrap" }, h("table", { class: "vtable" },
-        h("thead", {}, h("tr", {}, ["차변계정", "차변과목", "차변금액", "대변계정", "대변과목", "대변금액"].map((x, i) =>
-          h("th", { class: i % 3 === 2 ? "num" : i === 3 ? "vsplit" : null, text: x })))),
+        h("thead", {}, h("tr", {}, ["전표", "차변계정", "차변과목", "차변금액", "대변계정", "대변과목", "대변금액"].map((x, i) =>
+          h("th", { class: i === 0 ? "vfacts" : i % 3 === 0 ? "num" : i === 4 ? "vsplit" : null, text: x })))),
         groups,
-        h("tfoot", {}, h("tr", {}, h("td", { colspan: "2" }, "합계", h("span", { class: "pill " + (DR === CR ? "st-ok" : "st-bad"),
+        h("tfoot", {}, h("tr", {}, h("td", { colspan: "3" }, "합계", h("span", { class: "pill " + (DR === CR ? "st-ok" : "st-bad"),
           text: DR === CR ? "차대 일치" : `차대 불일치 ${money(DR - CR)}` })), h("td", { class: "num", text: money(DR) }),
           h("td", { colspan: "2", class: "vsplit" }), h("td", { class: "num", text: money(CR) }))))));
     }
