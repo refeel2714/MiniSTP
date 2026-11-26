@@ -76,7 +76,7 @@
 | `instruments.symbol` | 종목코드 | STP-1100 holdings, STP-1300 symbols, STP-1300 조회조건, STP-1310 basket, STP-1310 plan, STP-2300 symbols, STP-3100 events, STP-3100 조회조건, STP-3200 events, STP-3200 조회조건, STP-3400 settlements, STP-4100 instruments |
 | `journal_entries.date` | 회계일 | STP-3200 journal |
 | `journal_entries.entry_id` | 전표 번호 | STP-3200 journal |
-| `journal_entries.kind` | 전표 유형 | STP-3200 journal, STP-4500 templates |
+| `journal_entries.kind` | 전표 유형 | STP-4500 templates |
 | `journal_entries.reverses_entry_id` | 역분개 대상 전표 번호 | STP-3200 journal |
 | `journal_entries.source_id` | 원천 참조 | STP-3200 journal |
 | `journal_lines.account_code` | 계정코드 | STP-3200 journal |

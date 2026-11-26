@@ -12,6 +12,7 @@ from dataclasses import dataclass
 
 import psycopg
 
+from .journal_templates import KIND_NAMES as JOURNAL_KIND_NAMES  # 전표 유형 이름: 분개 모형과 같은 표
 from .ledger import Ledger
 from .risk import REASON_TEXT
 
@@ -100,11 +101,12 @@ def _balanced(journal: Dataset) -> bool:
 
 def _journal_of(conn: psycopg.Connection, seq: int) -> Dataset:
     return _q(conn, """
-        select j.entry_id, j.date, j.kind, j.source_id, j.reverses_entry_id,
+        select j.entry_id, j.date, j.kind, coalesce(%s::jsonb ->> j.kind, j.kind) as kind_name,
+               j.source_id, j.reverses_entry_id,
                l.line_id, l.account_code, a.name as account_name, l.debit, l.credit
           from journal_entries j join journal_lines l using (entry_id)
           join accounts_chart a on a.code = l.account_code
-         where j.event_seq = %s order by j.entry_id, l.line_id""", (seq,))
+         where j.event_seq = %s order by j.entry_id, l.line_id""", (json.dumps(JOURNAL_KIND_NAMES), seq))
 
 
 def event_journal(conn: psycopg.Connection, seq: int) -> tuple[Dataset, bool]:

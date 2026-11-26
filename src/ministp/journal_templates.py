@@ -40,10 +40,12 @@ class JournalTemplate:
         return all((ln.account, bool(ln.debit)) in allowed for ln in e.lines)
 
 
-# 전표 유형 코드 -> 화면에 적는 이름
+# 전표 유형 코드 -> 화면에 적는 이름 (분개 모형 STP-4500과 분개 조회 전표 보기가 함께 써요).
+# 아직 원장이 만들지 않는 유형(지연 체결, 배당, 수동 조정)도 미리 적어 둬요. 없는 코드는 코드 그대로 보여요.
 KIND_NAMES = {
-    "DEPOSIT": "입금", "OPENING": "기초 잔고", "EXECUTION": "체결", "SETTLEMENT": "결제",
-    "VALUATION": "평가", "VALUATION_REVERSAL": "평가 역분개",
+    "DEPOSIT": "입금", "OPENING": "기초 잔고", "EXECUTION": "체결", "LATE_EXECUTION": "지연 체결", "SETTLEMENT": "결제",
+    "VALUATION": "평가", "VALUATION_REVERSAL": "평가 역분개", "DIVIDEND_ACCRUAL": "배당 미수", "DIVIDEND": "배당 입금",
+    "DIVIDEND_CANCEL": "배당 취소", "ADJUSTMENT": "수동 조정", "ADJUSTMENT_CANCEL": "조정 취소",
 }
 SIDE_NAMES = {"D": "차변", "C": "대변"}
 
