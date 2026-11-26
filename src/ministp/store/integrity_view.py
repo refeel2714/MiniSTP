@@ -16,9 +16,9 @@ from dataclasses import dataclass
 import psycopg
 
 from ..accounting import Account
-from ..ledger import Ledger
+from ..ledger import DayClosedEvent, Ledger
 from .integrity import APPEND_ONLY_TABLES, BALANCE_TRIGGERS
-from .postgres import DEFAULT_ACCOUNT, cash_rows, from_payload, position_row
+from .postgres import DEFAULT_ACCOUNT, cash_rows, close_row, from_payload, position_row
 
 REPLAY = "이벤트를 처음부터 다시 계산한 값"
 
@@ -135,9 +135,32 @@ def compare_cash(conn: psycopg.Connection, ledger: Ledger, account_id: str = DEF
             Compared("한쪽에만 있는 현금 원장 행 수", _unlike(stored, expected), 0, "하나도 없어야 함")]
 
 
+def compare_closes(conn: psycopg.Connection, ledger: Ledger, account_id: str = DEFAULT_ACCOUNT) -> list[Compared]:
+    """R-77, R-79: the stored closes against the close events of the replay, and the ABOR view against
+    a replay up to the last close."""
+    stored = conn.execute(
+        "select c.date, c.net_assets, c.units, c.nav_per_1000, e.event_type, (e.payload ->> 'date')::date"
+        " from day_closes c join ledger_events e on e.seq = c.event_seq where c.account_id = %s",
+        (account_id,)).fetchall()
+    expected = [close_row(ledger, ev) for ev in ledger.events if isinstance(ev, DayClosedEvent)]
+    astray = sum((t, on) != ("DayClosedEvent", d) for d, *_, t, on in stored)
+    rows = [Compared("마감 행 수", len(stored), len(expected), REPLAY),
+            Compared("한쪽에만 있는 마감 행 수", _unlike([r[:4] for r in stored], expected), 0, "하나도 없어야 함"),
+            Compared("그날의 마감 이벤트를 가리키지 않는 마감 행 수", astray, 0, "하나도 없어야 함")]
+    abor = ledger.abor()
+    view = {s: (int(q), int(c)) for s, q, c in conn.execute(
+        "select symbol, qty, book_cost from abor_positions_v where account_id = %s", (account_id,))}
+    mem = {s: (p.qty, p.book_cost) for s, p in abor.positions().items()} if abor else {}
+    basis = "마지막 마감까지만 재생한 값"
+    for s in sorted(set(view) | set(mem)):
+        (q, c), (mq, mc) = view.get(s, (None, None)), mem.get(s, (None, None))
+        rows += [Compared(f"마감 보유 {s} 수량", q, mq, basis), Compared(f"마감 보유 {s} 장부금액", c, mc, basis)]
+    return rows
+
+
 PLAIN = {"events": compare_events, "guards": compare_guards, "balanced": compare_balanced}
 REPLAYED = {"journal": compare_journal, "accounts": compare_accounts, "positions": compare_positions,
-            "cash": compare_cash}
+            "cash": compare_cash, "closes": compare_closes}
 
 
 def compared(conn: psycopg.Connection, key: str, calendar, fees, instruments,

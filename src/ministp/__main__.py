@@ -5,9 +5,10 @@
     python -m ministp open                        # 처음 한 번: 증권사 잔고를 원장 시작값으로
     python -m ministp run                         # 장중: 실시간 체결 반영 + 주문 콘솔 (IBOR)
     python -m ministp order 069500 buy 1          # 장중: 시장가 주문 1건 (--limit 가격)
-    python -m ministp daily                       # 매 영업일 장 마감 후(15:40~): 결제, NAV, 대사
+    python -m ministp daily                       # 매 영업일 장 마감 후(15:40~): 결제, NAV, 대사, 일 마감
     python -m ministp status                      # 보유, 예수금, NAV, 무오류 연속일
     python -m ministp resolve 12 FEE_DIFF "메모"   # 불일치 판단 기록 (새 행으로 추가)
+    python -m ministp close                       # 불일치를 판단한 날의 장부 마감 (깨끗한 날은 daily가 마감)
     python -m ministp sample-db                   # 데모용 샘플 DB(ministp_sample) 만들기, 운영 DB와 별개
     python -m ministp account list                # 계좌 목록. open/run/order/daily/status는 --account 계좌ID
     python -m ministp code list                   # 공통코드 그룹. code list 그룹ID는 그 그룹의 코드와 코드명
@@ -38,7 +39,7 @@ from .instruments import AssetType, Instrument, Market
 from .ledger import Side
 from .oms import OrderStatus
 from .accounts import STATUSES, add_account, add_customer, list_accounts, set_status
-from .ops import (GATE_DAYS, IntradayRunner, OpsError, acquire_writer, add_instrument, cancel_order, clean_streak, daily_close, load_books, open_books,
+from .ops import (GATE_DAYS, IntradayRunner, OpsError, acquire_writer, add_instrument, cancel_order, clean_streak, close_books, daily_close, load_books, open_books,
                   place_order, require_current_schema, resolve_break)
 from .recon import Cause, Status
 from .session import failure_text
@@ -175,6 +176,9 @@ def run(argv, *, environ=os.environ, client_factory=KisClient, connect=psycopg.c
     p.add_argument("order", help="주문 번호: 3, S20261124-0003, 또는 증권사 주문번호")
     p = sub.add_parser("daily", parents=[by_account])
     p.add_argument("--date", type=dt.date.fromisoformat, help="지난 영업일을 다시 대사할 때")
+    p = sub.add_parser("close", parents=[by_account],
+                       help="장부 마감: 불일치가 있던 날을 원인 판단(resolve) 뒤에 직접 마감 (깨끗한 날은 daily가 마감해요)")
+    p.add_argument("--date", type=dt.date.fromisoformat, help="마감할 영업일 (기본: 오늘)")
     sub.add_parser("status", parents=[by_account])
     p = sub.add_parser("customer", help="고객 등록 (별칭만, 개인정보는 넣지 않아요)")
     what = p.add_subparsers(dest="what", required=True)
@@ -312,7 +316,7 @@ def run(argv, *, environ=os.environ, client_factory=KisClient, connect=psycopg.c
                 print(f"등록: {args.symbol} {args.name} ({market.value} {asset.value})")
                 return 0
 
-            if args.cmd in ("open", "order", "cancel", "daily", "run", "resolve", "customer") or (
+            if args.cmd in ("open", "order", "cancel", "daily", "close", "run", "resolve", "customer") or (
                     args.cmd == "account" and args.what != "list") or (
                     args.cmd == "code" and args.what not in ("list", "check")):
                 acquire_writer(conn)
@@ -347,6 +351,18 @@ def run(argv, *, environ=os.environ, client_factory=KisClient, connect=psycopg.c
                     print(f"최근 NAV {row.date}: 순자산 {row.net_assets:,}, 기준가 {row.nav_per_1000}")
                 last = navs[-1].date if navs else today
                 print(f"무오류 연속 영업일: {clean_streak(conn, calendar, last, args.account)} / {GATE_DAYS}")
+                if led.closed_through:
+                    print(f"장부 마감: {led.closed_through}까지 ({len(led.closed_days())}일), "
+                          f"그 뒤 이벤트 {len(led.unclosed_events())}건")
+                else:
+                    print("장부 마감: 아직 마감한 날이 없어요")
+                return 0
+
+            if args.cmd == "close":
+                day = args.date or today
+                nav = close_books(books, day)
+                print(f"[{day}] 장부 마감: 순자산 {nav.net_assets:,}, 기준가 {nav.nav_per_1000}. "
+                      "이 날짜까지는 더 기록되지 않아요.")
                 return 0
 
             broker = _broker(environ, client_factory, acct, accounts)
@@ -433,6 +449,8 @@ def run(argv, *, environ=os.environ, client_factory=KisClient, connect=psycopg.c
                 streak = clean_streak(conn, calendar, day, args.account)
                 verdict = "무오류" if report.clean else "불일치 있음"
                 print(f"{verdict}. 무오류 연속 영업일 {streak} / {GATE_DAYS}")
+                if report.closed:
+                    print(f"장부 마감: {day}까지. 이 날짜로는 더 기록되지 않아요.")
                 return 0 if report.clean else 3
     except (OpsError, KisError, CalendarNotLoadedError, SchemaError, mg.MigrationError) as e:
         print(f"오류: {e}")

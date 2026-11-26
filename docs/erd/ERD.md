@@ -1,6 +1,6 @@
 # MiniSTP ERD
 
-ERD 버전: v2.1 · 스키마 해시: `3198c23cb1a8`
+ERD 버전: v2.2 · 스키마 해시: `6a45ddeec34a`
 
 이 문서는 `scripts/gen_erd.py`가 `src/ministp/store/schema.sql`로 만든 DB에서 읽어 생성해요. 직접 고치지 말고 스키마의 한글 주석(COMMENT)을 고친 뒤 다시 생성하세요. 모든 원장 테이블은 append-only(수정·삭제 불가)예요.
 
@@ -79,6 +79,15 @@ erDiagram
         bigint amount "금액 (+입금 / −출금)"
         text ref_id "참조 ID"
         text account_id FK "계좌 ID"
+    }
+    day_closes {
+        text account_id PK,FK "계좌 ID"
+        date date PK "마감일 (이 날짜까지 장부 마감)"
+        bigint event_seq FK,UK "마감 이벤트 순번"
+        bigint net_assets "마감 순자산"
+        bigint units "마감 좌수"
+        numeric(18,2) nav_per_1000 "마감 기준가 (1,000좌당)"
+        timestamptz closed_at "마감 기록 시각"
     }
     instruments {
         text symbol PK "종목코드"
@@ -161,6 +170,7 @@ erDiagram
     accounts_chart ||--o{ journal_lines : "account_code"
     ledger_events ||--o{ position_ledger : "event_seq, account_id"
     ledger_events ||--o{ cash_ledger : "event_seq, account_id"
+    ledger_events ||--o{ day_closes : "event_seq, account_id"
     instruments ||--o{ oms_orders : "symbol"
     trading_accounts ||--o{ oms_orders : "account_id"
     oms_orders ||--o{ oms_order_acks : "client_id"
@@ -270,6 +280,18 @@ erDiagram
 | `amount` | 금액 (+입금 / −출금) | bigint | Y |  |
 | `ref_id` | 참조 ID | text | Y |  |
 | `account_id` | 계좌 ID | text | Y | FK → ledger_events.account_id |
+
+### day_closes — 일 마감 (마감 이벤트마다 한 행, 그날의 확정 기준가) (테이블)
+
+| 컬럼 | 한글명 | 타입 | 필수 | 키 |
+|---|---|---|---|---|
+| `account_id` | 계좌 ID | text | Y | PK, FK → ledger_events.account_id |
+| `date` | 마감일 (이 날짜까지 장부 마감) | date | Y | PK |
+| `event_seq` | 마감 이벤트 순번 | bigint | Y | UK, FK → ledger_events.seq |
+| `net_assets` | 마감 순자산 | bigint | Y |  |
+| `units` | 마감 좌수 | bigint | Y |  |
+| `nav_per_1000` | 마감 기준가 (1,000좌당) | numeric(18,2) | Y |  |
+| `closed_at` | 마감 기록 시각 | timestamp with time zone | Y |  |
 
 ### instruments — 종목 마스터 (테이블)
 
@@ -412,6 +434,37 @@ erDiagram
 | `qty` | 보유수량 | numeric |  |  |
 | `book_cost` | 장부금액 (매입금액) | numeric |  |  |
 
+### last_close_v — 계좌별 마지막 마감 (뷰)
+
+| 컬럼 | 한글명 | 타입 | 필수 | 키 |
+|---|---|---|---|---|
+| `account_id` | 계좌 ID | text |  |  |
+| `date` | 마지막 마감일 | date |  |  |
+| `event_seq` | 마감 이벤트 순번 | bigint |  |  |
+| `net_assets` | 마감 순자산 | bigint |  |  |
+| `units` | 마감 좌수 | bigint |  |  |
+| `nav_per_1000` | 마감 기준가 (1,000좌당) | numeric(18,2) |  |  |
+| `closed_at` | 마감 기록 시각 | timestamp with time zone |  |  |
+
+### abor_positions_v — 마지막 마감 시점의 계좌별·종목별 보유 (ABOR) (뷰)
+
+| 컬럼 | 한글명 | 타입 | 필수 | 키 |
+|---|---|---|---|---|
+| `account_id` | 계좌 ID | text |  |  |
+| `closed_date` | 마감일 | date |  |  |
+| `symbol` | 종목코드 | text |  |  |
+| `qty` | 마감 보유수량 | numeric |  |  |
+| `book_cost` | 마감 장부금액 (매입금액) | numeric |  |  |
+
+### unclosed_events_v — 마지막 마감 뒤에 쌓인 이벤트 (IBOR와 ABOR의 차이) (뷰)
+
+| 컬럼 | 한글명 | 타입 | 필수 | 키 |
+|---|---|---|---|---|
+| `account_id` | 계좌 ID | text |  |  |
+| `seq` | 이벤트 순번 | bigint |  |  |
+| `event_type` | 이벤트 유형 | text |  |  |
+| `recorded_at` | 기록 시각 | timestamp with time zone |  |  |
+
 ## 변경 이력
 
 | 버전 | 일자 | 변경 내용 |
@@ -420,3 +473,4 @@ erDiagram
 | v1.1 | 2026-11-21 | `oms_order_acks.order_no` 유일 제약 제거(증권사 주문번호는 영업일마다 다시 시작될 수 있음, 조회용 인덱스로 대체). 체결 ID를 `YYYYMMDD-주문번호-순번`으로 변경. |
 | v2.0 | 2026-11-22 | 다계좌(스펙 D7). 고객 `customers`, 위탁계좌 `trading_accounts`, 계좌 상태 이력 `account_status_history` 신설. 원장·주문·대사 7개 테이블에 `account_id` 추가(파생 행은 이벤트와 같은 계좌만 참조하도록 복합 FK), 체결 ID 유일 범위를 계좌 안으로 변경. 뷰 3개를 계좌별로 바꾸고 `account_status_v`, `customer_positions_v` 추가. 마이그레이션 적용 기록 `schema_migrations` 포함. 기존 DB는 마이그레이션 `0001_multi_account`로 올림(기존 행 변경 없음). |
 | v2.1 | 2026-11-22 | 공통코드. 코드 그룹 `code_groups`와 코드 `common_codes` 신설(마이그레이션 `0002_common_codes`). 스키마 제약과 프로그램에 흩어져 있던 코드 18개 그룹(계좌 상태, 대사 결과·항목·원인, 이벤트·전표 유형 등)에 코드명을 붙였다. 코드는 지우지 않고 이름을 바꾸거나 끄기만 한다(DB 트리거). 계정과목은 원장이 직접 참조하므로 전용 테이블 `accounts_chart`에 그대로 둔다. 기존 테이블과 기존 행은 바뀌지 않는다. |
+| v2.2 | 2026-11-23 | 일 마감(스펙 D6, R-77~79). 마감 기록 `day_closes` 신설(마감 이벤트마다 한 행, 그날의 확정 순자산·좌수·기준가). 마감일과 그 이전 날짜로는 전표(`journal_entries`)·예수금 행(`cash_ledger`)·마감 행이 더 들어가지 않도록 DB 트리거 `ministp_forbid_closed_day` 추가. 뷰 `last_close_v`(계좌별 마지막 마감), `abor_positions_v`(마감 시점 보유), `unclosed_events_v`(마감 뒤 이벤트) 추가. 공통코드에 이벤트 유형 `LateExecutionEvent`·`DayClosedEvent`, 전표 유형 `LATE_EXECUTION` 추가. 기존 DB는 마이그레이션 `0003_day_close`로 올림(기존 행 변경 없음). |

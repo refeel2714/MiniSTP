@@ -1,6 +1,6 @@
 """마감 점검: what one business day's work left behind, step by step.
 
-`daily` does its steps in order (결제 → 체결 반영 → 평가 → 기준가 → 대사 → 원장 검증) and prints the
+`daily` does its steps in order (결제 → 체결 반영 → 평가 → 기준가 → 대사 → 일 마감 → 원장 검증) and prints the
 result once. This module reads the same steps back from what was recorded, for any day, so the question
 "is this day finished, and if not, what is it waiting for" has one answer on one screen. Each step
 names the screen that shows its detail. Nothing is fetched and nothing is written.
@@ -11,12 +11,12 @@ The states: 완료 · 대상 없음 (nothing to do that day) · 대기 (today, n
 import datetime as dt
 from dataclasses import dataclass
 
-from .ledger import ExecutionEvent, Ledger
+from .ledger import ExecutionEvent, Ledger, book_date
 
 DONE, NONE, WAIT, WARN, BAD, MISSING = "완료", "대상 없음", "대기", "주의", "확인 필요", "누락"
 DAY_DONE, DAY_OPEN, DAY_BAD = "점검 완료", "진행 중", "확인 필요"
-STEPS = ("결제", "주문·체결", "시세", "기준가", "증권사 대사", "원장 내부 대사")
-SCREENS = ("STP-3400", "STP-1200", "STP-2300", "STP-2210", "STP-2100", "STP-2110")
+STEPS = ("결제", "주문·체결", "시세", "기준가", "증권사 대사", "일 마감", "원장 내부 대사")
+SCREENS = ("STP-3400", "STP-1200", "STP-2300", "STP-2210", "STP-2100", "STP-2200", "STP-2110")
 _FINISHED = (DONE, NONE, WARN)
 
 
@@ -54,20 +54,20 @@ def needing(steps: list[Step]) -> int:
 def integrity_step(outside: Outside) -> Step:
     """The books as they are now, not as they were that day: a damaged row has no date."""
     if outside.breaks:
-        return Step(6, STEPS[5], BAD, f"지금 원장 기준으로 점검 {outside.checks}개 중 {outside.breaks}개가 맞지 않아요",
-                    SCREENS[5])
-    return Step(6, STEPS[5], DONE, f"지금 원장 기준으로 점검 {outside.checks}개가 모두 일치해요", SCREENS[5])
+        return Step(len(STEPS), STEPS[-1], BAD,
+                    f"지금 원장 기준으로 점검 {outside.checks}개 중 {outside.breaks}개가 맞지 않아요", SCREENS[-1])
+    return Step(len(STEPS), STEPS[-1], DONE, f"지금 원장 기준으로 점검 {outside.checks}개가 모두 일치해요", SCREENS[-1])
 
 
 def first_day(ledger: Ledger) -> dt.date | None:
     """The day the books started: nothing is owed before it."""
     for ev in ledger.events:
-        return ev.trade_date if isinstance(ev, ExecutionEvent) else ev.date
+        return book_date(ev)
     return None
 
 
 def board(ledger: Ledger, calendar, today: dt.date, outside: Outside) -> dict[dt.date, list[Step]]:
-    """Every business day from the day the books started to today, newest first, with its six steps."""
+    """Every business day from the day the books started to today, newest first, with its seven steps."""
     from .pricecheck import BAD as PRICE_BAD, WARN as PRICE_WARN, closes_by_day, price_checks
     from .queries import _order_key, _settlement_facts, nav_changes, order_progress
 
@@ -152,6 +152,20 @@ def board(ledger: Ledger, calendar, today: dt.date, outside: Outside) -> dict[dt
             return DONE, f"대사 {r.items}개 항목, 불일치 {r.breaks}건은 모두 판단을 마쳤어요"
         return DONE, f"대사 {r.items}개 항목이 모두 일치해요"
 
+    closed = ledger.closed_days()
+
+    def close(day):     # R-77: a close locks every day up to its date
+        if day in closed:
+            return DONE, f"순자산 {closed[day].net_assets:,}원으로 장부를 마감했어요"
+        if ledger.is_closed(day):
+            return DONE, f"{min(d for d in closed if d > day)} 마감이 이 날까지 함께 닫았어요"
+        if day >= today:
+            return WAIT, "아직 마감하지 않았어요"
+        r = outside.recon.get(day)
+        if r is not None and r.open_breaks:
+            return BAD, "대사 불일치의 판단이 남아 마감하지 않았어요. 판단한 뒤 close 명령으로 마감해요"
+        return BAD, "날이 지났는데 장부를 마감하지 않았어요. 다음 마감이 이 날까지 함께 닫아요"
+
     out, day = {}, today
     while day >= start:
         try:
@@ -160,7 +174,7 @@ def board(ledger: Ledger, calendar, today: dt.date, outside: Outside) -> dict[dt
             open_day = day.weekday() < 5
         if open_day:
             steps = [Step(i + 1, STEPS[i], *f(day), SCREENS[i])
-                     for i, f in enumerate((settlement, orders, closes, nav, recon))]
+                     for i, f in enumerate((settlement, orders, closes, nav, recon, close))]
             out[day] = steps + [integrity_step(outside)]
         day -= dt.timedelta(days=1)
     return out

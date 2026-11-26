@@ -11,7 +11,8 @@ DAY = dt.date(2026, 11, 20)
 
 def test_every_journal_kind_the_ledger_makes_has_a_template():
     source = files("ministp").joinpath("ledger.py").read_text(encoding="utf-8")
-    made = set(re.findall(r'entry\([^,]+, "([A-Z_]+)"', source))
+    kind_args = re.findall(r'entry\([^,]+, ([^,]+),', source)     # "EXECUTION" or "LATE_EXECUTION" if late else …
+    made = {k for arg in kind_args for k in re.findall(r'"([A-Z_]+)"', arg)}
     assert made and made == {t.kind for t in TEMPLATES}
 
 

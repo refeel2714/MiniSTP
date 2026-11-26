@@ -166,8 +166,8 @@ def generate(conn: psycopg.Connection, history: str, previous: str | None = None
 GROUPS = [
     ("고객과 계좌", "고객 한 명이 위탁계좌 여러 개를 가져요. 아래 모든 기록은 계좌 하나에 속해요. 계좌번호와 인증키는 DB에 없어요.",
      ["customers", "trading_accounts", "account_status_history"]),
-    ("원장", "모든 기록의 원천. 이벤트가 쌓이면 분개·보유·예수금이 함께 남아요.",
-     ["ledger_events", "journal_entries", "journal_lines", "position_ledger", "cash_ledger"]),
+    ("원장", "모든 기록의 원천. 이벤트가 쌓이면 분개·보유·예수금이 함께 남아요. 마감한 날로는 더 들어가지 않아요.",
+     ["ledger_events", "journal_entries", "journal_lines", "position_ledger", "cash_ledger", "day_closes"]),
     ("기준정보", "계정과목과 종목 마스터.", ["accounts_chart", "instruments"]),
     ("주문", "주문 의도를 먼저 저장하고, 증권사 접수 결과를 따로 남겨요.", ["oms_orders", "oms_order_acks"]),
     ("증권사 응답과 대사", "증권사 응답 원본과 그 실행에서 나온 대사 결과.", ["broker_snapshots", "recon_results"]),
@@ -185,7 +185,7 @@ def _esc(s: str) -> str:
 # Bands of the diagram, each a list of four columns of tables (left to right = data flow).
 LAYOUT = [
     ("고객과 계좌", [["customers"], ["trading_accounts"], ["account_status_history"], []]),
-    ("원장 · 기준정보", [["ledger_events"], ["journal_entries", "position_ledger", "cash_ledger"],
+    ("원장 · 기준정보", [["ledger_events"], ["journal_entries", "position_ledger", "cash_ledger", "day_closes"],
                      ["journal_lines"], ["accounts_chart"]]),
     ("주문", [["instruments"], ["oms_orders"], ["oms_order_acks"], []]),
     ("증권사 응답과 대사", [["broker_snapshots"], ["recon_results"], [], []]),

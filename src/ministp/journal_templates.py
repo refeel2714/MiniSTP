@@ -108,6 +108,13 @@ TEMPLATES: tuple[JournalTemplate, ...] = (
 )
 
 
+# 지연 체결(R-78): 마감한 날의 체결은 그날 장부에 넣을 수 없어 다음 영업일을 회계일로 잡아요. 줄은 체결 모형과 같아요.
+TEMPLATES += tuple(
+    JournalTemplate(code, "LateExecutionEvent", "LATE_EXECUTION", f"{t.case}, 마감한 날의 체결", t.lines,
+                    f"줄은 {t.code}와 같고 회계일만 다음 영업일이에요 (R-78)")
+    for code, t in zip(("JT-11", "JT-12", "JT-13"), (t for t in TEMPLATES if t.kind == "EXECUTION")))
+
+
 def template_of(e: JournalEntry) -> JournalTemplate | None:
     """The template a journal entry fits, or None (the ledger made an entry this table does not describe)."""
     return next((t for t in TEMPLATES if t.fits(e)), None)

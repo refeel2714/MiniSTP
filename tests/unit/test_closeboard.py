@@ -28,22 +28,23 @@ def traded(ledger):
 
 def test_a_finished_day_has_every_step_done_and_says_what_each_found(ledger, calendar):
     orders = traded(ledger)
+    ledger.close_day(d("11-02"))
     board = cb.board(ledger, calendar, d("11-02"), outside(orders, {d("11-02"): CLEAN}))
     assert list(board) == [d("11-02")]
     day = board[d("11-02")]
-    assert [(s.no, s.name, s.screen) for s in day] == list(zip(range(1, 7), cb.STEPS, cb.SCREENS))
-    assert [s.state for s in day] == [cb.NONE, cb.DONE, cb.DONE, cb.DONE, cb.DONE, cb.DONE]
-    assert (cb.day_state(day), cb.finished(day), cb.needing(day)) == (cb.DAY_DONE, 6, 0)
+    assert [(s.no, s.name, s.screen) for s in day] == list(zip(range(1, 8), cb.STEPS, cb.SCREENS))
+    assert [s.state for s in day] == [cb.NONE, cb.DONE, cb.DONE, cb.DONE, cb.DONE, cb.DONE, cb.DONE]
+    assert (cb.day_state(day), cb.finished(day), cb.needing(day)) == (cb.DAY_DONE, 7, 0)
     said = {s.name: s.detail for s in day}
     assert said["주문·체결"] == "주문 1건: 결제 대기 1건" and "종가 1개가 모두 정상" in said["시세"]
     assert "모두 분개로 설명" in said["기준가"] and "5개 항목이 모두 일치" in said["증권사 대사"]
-    assert "점검 7개가 모두 일치" in said["원장 내부 대사"]
+    assert "점검 7개가 모두 일치" in said["원장 내부 대사"] and "원으로 장부를 마감했어요" in said["일 마감"]
 
 
 def test_today_waits_for_what_daily_has_not_done_yet(ledger, calendar):
     orders = traded(ledger)
     got = steps(ledger, calendar, "11-03", "11-03", outside(orders, {d("11-02"): CLEAN}))
-    assert [got[n].state for n in cb.STEPS] == [cb.NONE, cb.NONE, cb.WAIT, cb.WAIT, cb.WAIT, cb.DONE]
+    assert [got[n].state for n in cb.STEPS] == [cb.NONE, cb.NONE, cb.WAIT, cb.WAIT, cb.WAIT, cb.WAIT, cb.DONE]
     assert cb.day_state(list(got.values())) == cb.DAY_OPEN and cb.finished(list(got.values())) == 3
     # the fill of 11-02 is due on 11-04: waiting on that day, late the day after
     assert steps(ledger, calendar, "11-04", "11-04", outside(orders))["결제"].state == cb.WAIT
@@ -59,7 +60,8 @@ def test_a_day_that_passed_without_its_steps_is_missing_not_waiting(ledger, cale
     got = steps(ledger, calendar, "11-04", "11-03", outside(orders, {d("11-02"): CLEAN}))
     assert [got[n].state for n in ("시세", "기준가", "증권사 대사")] == [cb.MISSING] * 3
     day = list(got.values())
-    assert (cb.day_state(day), cb.needing(day)) == (cb.DAY_BAD, 3)
+    assert (cb.day_state(day), cb.needing(day)) == (cb.DAY_BAD, 4)       # and so the books were never closed
+    assert got["일 마감"].state == cb.BAD and "날이 지났는데" in got["일 마감"].detail
     assert "이날 낸 기준가가 없어요" in got["기준가"].detail
 
 
@@ -71,7 +73,7 @@ def test_each_step_can_stop_the_day(ledger, calendar):
     orders[d("11-03")] = [(10, "ACCEPTED", "0002"), (5, None, None)]
     recon = {d("11-02"): ReconDay(1, 5, 2, 0), d("11-03"): ReconDay(2, 6, 2, 1)}
     got = steps(ledger, calendar, "11-03", "11-03", outside(orders, recon, breaks=2))
-    assert [got[n].state for n in cb.STEPS] == [cb.NONE, cb.BAD, cb.BAD, cb.BAD, cb.BAD, cb.BAD]
+    assert [got[n].state for n in cb.STEPS] == [cb.NONE, cb.BAD, cb.BAD, cb.BAD, cb.BAD, cb.WAIT, cb.BAD]
     assert "접수 기록 없음 1건" in got["주문·체결"].detail and "증권사 주문내역" in got["주문·체결"].detail
     assert "1개는 확인이 필요해요" in got["시세"].detail          # valuation and NAV took different closes
     assert "분개로 설명되지 않아요" in got["기준가"].detail
@@ -81,15 +83,22 @@ def test_each_step_can_stop_the_day(ledger, calendar):
     first = steps(ledger, calendar, "11-03", "11-02", outside(orders, recon, breaks=2))
     assert first["증권사 대사"].state == cb.DONE and "불일치 2건은 모두 판단을 마쳤어요" in first["증권사 대사"].detail
     assert first["원장 내부 대사"].state == cb.BAD
+    # a past day with an unjudged break stays open until someone judges it and closes by hand
+    held = steps(ledger, calendar, "11-04", "11-03", outside(orders, recon))["일 마감"]
+    assert held.state == cb.BAD and "판단이 남아" in held.detail
 
 
 def test_a_big_move_is_a_caution_that_does_not_hold_the_day(ledger, calendar):
     orders = traded(ledger)
     ledger.revalue(d("11-03"), {"A": 12_000})
     ledger.nav(d("11-03"), {"A": 12_000})
+    ledger.close_day(d("11-03"))
     got = steps(ledger, calendar, "11-03", "11-03", outside(orders, {d("11-03"): CLEAN}))
     assert got["시세"].state == cb.WARN and "크게 움직였어요" in got["시세"].detail
     assert cb.day_state(list(got.values())) == cb.DAY_DONE
+    # the close of 11-03 locked 11-02 with it
+    before = steps(ledger, calendar, "11-03", "11-02", outside(orders, {d("11-03"): CLEAN}))["일 마감"]
+    assert before.state == cb.DONE and "2026-11-03 마감이 이 날까지 함께 닫았어요" in before.detail
 
 
 def test_only_business_days_since_the_books_started_are_listed_newest_first(ledger, calendar):

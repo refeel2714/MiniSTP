@@ -20,14 +20,17 @@ import psycopg
 
 from ..accounting import Account
 from ..ledger import Ledger
-from .postgres import DEFAULT_ACCOUNT, cash_rows, from_payload, position_row
+from ..ledger import DayClosedEvent
+from .postgres import DEFAULT_ACCOUNT, cash_rows, close_row, from_payload, position_row
 
 # Tables no one may UPDATE, DELETE or TRUNCATE (R-04). Same list as the loop in schema.sql;
 # tests/unit/test_integrity_tables.py keeps the two in step.
 APPEND_ONLY_TABLES = ("ledger_events", "journal_entries", "journal_lines", "position_ledger", "cash_ledger",
                       "instruments", "oms_orders", "oms_order_acks", "broker_snapshots", "recon_results",
-                      "customers", "trading_accounts", "account_status_history")
+                      "customers", "trading_accounts", "account_status_history", "day_closes")
 BALANCE_TRIGGERS = ("journal_entries_balanced", "journal_lines_balanced")
+# R-78 in the database: no entry, cash row or close dated inside a closed day (ERD v2.2).
+CLOSED_DAY_TRIGGERS = ("journal_entries_closed_day", "cash_ledger_closed_day", "day_closes_closed_day")
 SHOWN = 3   # how many differing items a detail line names
 
 
@@ -66,12 +69,12 @@ def check_guards(conn: psycopg.Connection) -> Check:
         " join pg_namespace n on n.oid = c.relnamespace"
         " where n.nspname = current_schema() and not t.tgisinternal") if enabled in ("O", "A")}
     want = [f"{t}_{kind}" for t in APPEND_ONLY_TABLES for kind in ("append_only", "no_truncate")]
-    want += BALANCE_TRIGGERS
+    want += BALANCE_TRIGGERS + CLOSED_DAY_TRIGGERS
     off = [w for w in want if w not in live]
     if off:
         return Check("guards", "수정·삭제 방지", False, f"꺼져 있거나 없는 트리거: {_some(off)}")
     return Check("guards", "수정·삭제 방지", True,
-                 f"{len(APPEND_ONLY_TABLES)}개 테이블의 수정·삭제·비우기 금지와 분개 대차 검사가 켜져 있음")
+                 f"{len(APPEND_ONLY_TABLES)}개 테이블의 수정·삭제·비우기 금지, 분개 대차 검사, 마감일 잠금이 켜져 있음")
 
 
 def check_balanced(conn: psycopg.Connection) -> Check:
@@ -160,10 +163,37 @@ def check_cash(conn: psycopg.Connection, ledger: Ledger, account_id: str = DEFAU
     return Check("cash", "현금", True, f"현금 원장 {len(stored):,}행, 예수금 {balance:,}원 일치")
 
 
+def check_closes(conn: psycopg.Connection, ledger: Ledger, account_id: str = DEFAULT_ACCOUNT) -> Check:
+    """R-77: every stored close is a close event of the replay, at the NAV the replay closed at."""
+    stored = conn.execute(
+        "select c.date, c.net_assets, c.units, c.nav_per_1000, e.event_type, (e.payload ->> 'date')::date"
+        " from day_closes c join ledger_events e on e.seq = c.event_seq where c.account_id = %s",
+        (account_id,)).fetchall()
+    diff = [f"{d} 마감 행이 가리키는 이벤트가 그날의 마감 이벤트가 아니에요 ({t} {on})"
+            for d, *_, t, on in stored if (t, on) != ("DayClosedEvent", d)]
+    expected = [close_row(ledger, ev) for ev in ledger.events if isinstance(ev, DayClosedEvent)]
+    diff += _row_diff([r[:4] for r in stored], expected, lambda r: f"{r[0]} 순자산 {int(r[1]):,} 기준가 {r[3]}")
+    # R-79: the ABOR view (rows up to the last close) holds what a replay up to that close holds
+    abor = ledger.abor()
+    view = {s: (int(q), int(c)) for s, q, c in conn.execute(
+        "select symbol, qty, book_cost from abor_positions_v where account_id = %s", (account_id,))}
+    mem = {s: (p.qty, p.book_cost) for s, p in abor.positions().items()} if abor else {}
+    diff += [f"마감 보유 {s} 저장 {view.get(s)} / 재생 {mem.get(s)}" for s in sorted(set(view) | set(mem))
+             if view.get(s) != mem.get(s)]
+    if diff:
+        return Check("closes", "일 마감", False, f"다른 행: {_some(diff)}")
+    if not stored:
+        return Check("closes", "일 마감", True, "마감한 날이 아직 없어요")
+    return Check("closes", "일 마감", True,
+                 f"마감 {len(stored):,}일({ledger.closed_through}까지)의 확정 기준가 일치, 그 뒤 이벤트 "
+                 f"{len(ledger.unclosed_events()):,}건")
+
+
 def projection_checks(conn: psycopg.Connection, ledger: Ledger, account_id: str = DEFAULT_ACCOUNT) -> list[Check]:
     """Everything derived from one account's events, against `ledger` (a replay of those events)."""
     checks = [check_journal(conn, ledger, account_id), check_accounts(conn, ledger, account_id),
-              check_positions(conn, ledger, account_id), check_cash(conn, ledger, account_id)]
+              check_positions(conn, ledger, account_id), check_cash(conn, ledger, account_id),
+              check_closes(conn, ledger, account_id)]
     return [replace(c, account=account_id) for c in checks]
 
 

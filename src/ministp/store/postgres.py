@@ -16,13 +16,13 @@ from importlib.resources import files
 import psycopg
 
 from ..accounting import Account
-from ..ledger import (DepositEvent, ExecutionEvent, Ledger, NavEvent, OpeningPositionEvent,
-                      RevaluationEvent, SettlementEvent, Side)
+from ..ledger import (DayClosedEvent, DepositEvent, ExecutionEvent, LateExecutionEvent, Ledger, NavEvent,
+                      OpeningPositionEvent, RevaluationEvent, SettlementEvent, Side)
 
 EVENT_TYPES = {cls.__name__: cls for cls in
                (DepositEvent, OpeningPositionEvent, ExecutionEvent, SettlementEvent, RevaluationEvent,
-                NavEvent)}
-DATE_FIELDS = {"date", "trade_date"}
+                NavEvent, LateExecutionEvent, DayClosedEvent)}
+DATE_FIELDS = {"date", "trade_date", "booked_on"}
 DEFAULT_ACCOUNT = "A0001"    # the account every pre-v2.0 row belongs to
 DEFAULT_CUSTOMER = "C0001"
 
@@ -69,6 +69,12 @@ def position_row(ledger: Ledger, ev) -> tuple | None:
         return (ev.trade_date, ev.symbol, ev.exec_id, ev.qty if buy else -ev.qty,
                 r.gross if buy else -r.cost_of_sale, r.realized_pnl)
     return None
+
+
+def close_row(ledger: Ledger, ev) -> tuple:
+    """What a day close adds to day_closes: (date, net_assets, units, nav_per_1000), the NAV it closed at."""
+    nav = ledger.closed_days()[ev.date]
+    return (ev.date, nav.net_assets, nav.units, nav.nav_per_1000)
 
 
 def cash_rows(entry) -> list[tuple]:
@@ -184,6 +190,10 @@ class PostgresLedgerStore:
                     "insert into position_ledger (event_seq, trade_date, symbol, exec_id,"
                     " qty_delta, cost_delta, realized_pnl, account_id) values (%s, %s, %s, %s, %s, %s, %s, %s)",
                     (seq, *row, acct))
+            if isinstance(ev, DayClosedEvent):   # ERD v2.2: from here the database itself refuses entries on that day
+                self.conn.execute(
+                    "insert into day_closes (account_id, date, event_seq, net_assets, units, nav_per_1000)"
+                    " values (%s, %s, %s, %s, %s, %s)", (acct, ev.date, seq, *close_row(ledger, ev)[1:]))
 
     # ----- read path -----
 

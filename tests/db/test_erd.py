@@ -26,7 +26,7 @@ def test_committed_erd_is_current(conn):
 
 def test_every_table_and_column_has_a_korean_name(conn):
     catalog = erd.build_catalog(conn, erd.schema_sql())
-    assert len([t for t in catalog.values() if t["kind"] == "table"]) == 17   # v2.0: +고객, 계좌, 상태 이력, 마이그레이션 기록 · v2.1: +공통코드 그룹, 공통코드
+    assert len([t for t in catalog.values() if t["kind"] == "table"]) == 18   # v2.0: +고객, 계좌, 상태 이력, 마이그레이션 기록 · v2.1: +공통코드 그룹, 공통코드 · v2.2: +일 마감
     assert erd.missing_names(catalog) == []
 
 
