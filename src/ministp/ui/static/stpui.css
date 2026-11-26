@@ -157,6 +157,13 @@ button.primary:hover { filter: brightness(1.08); }
 .grid tbody tr:hover td { background: var(--hover); }
 .drillable .grid tbody tr { cursor: pointer; }
 .grid tfoot td { position: sticky; bottom: 0; background: var(--head); font-weight: 650; border-top: 1px solid var(--line-strong); }
+/* 묶음 머리(시산표 차변 | 계정과목 | 대변): both header rows stay; each band is centred over its columns */
+.grid.banded tr.band th { text-align: center; color: var(--ink); border-bottom: 1px solid var(--grid-line); }
+.grid.banded tr.band th + th + th, .grid.banded .edge { border-left: 1px solid var(--line-strong); }
+.grid.banded thead tr:last-child th { top: 26px; }
+/* 강조 기준(emphasis): 분류 합계는 굵게 한 번 더 깔고, 총합계는 위에 두 줄 */
+.grid tbody tr.lv-class td { background: var(--head); font-weight: 650; }
+.grid tbody tr.lv-total td { font-weight: 700; border-top: 3px double var(--line-strong); background: var(--head); }
 .grid td.js { max-width: 360px; overflow: hidden; text-overflow: ellipsis; font: 11.5px ui-monospace, Consolas, monospace; color: var(--muted); }
 .up { color: var(--up); } .down { color: var(--down); }
 .st-ok { color: var(--ok); font-weight: 600; } .st-bad { color: var(--bad); font-weight: 600; } .st-warn { color: var(--warn); font-weight: 600; }

@@ -128,12 +128,49 @@ def event_trace(conn: psycopg.Connection, seq: int) -> EventTrace:
     return EventTrace(event, journal, positions, cash)
 
 
-def trial_balance(conn: psycopg.Connection) -> tuple[Dataset, bool]:
-    """시산표 and whether total debits equal total credits over the whole journal."""
-    ds = _q(conn, "select code, name, normal_side, balance from account_balances_v"
-                  " where balance <> 0 order by code")
-    dr, cr = conn.execute("select coalesce(sum(debit), 0), coalesce(sum(credit), 0) from journal_lines").fetchone()
-    return ds, dr == cr
+ACCOUNT_CLASSES = {"1": "자산", "2": "부채", "3": "자본", "4": "수익", "5": "비용"}
+
+
+def trial_balance(conn: psycopg.Connection, day: dt.date) -> tuple[Dataset, dict]:
+    """합계잔액시산표 모양: 차변(당일잔액·당일증감·전일잔액) | 계정 | 대변(전일잔액·당일증감·당일잔액).
+
+    잔액은 계정의 정상 쪽(자산·비용은 차변, 부채·자본·수익은 대변)에 적고, 반대로 쌓인 잔액(평가조정 같은 차감 계정)은
+    그 쪽에 음수로 적어요. 당일증감은 그날의 차변 합계와 대변 합계를 양쪽에 그대로 적어요. 계정 분류(코드 첫 자리)마다
+    합계 줄이 먼저 오고, 맨 아래 총합계 줄의 차변과 대변이 같아야 해요."""
+    rows = conn.execute("""
+        select a.code, a.name, a.normal_side,
+               coalesce(sum(l.debit - l.credit) filter (where e.date < %(d)s), 0) as prev,
+               coalesce(sum(l.debit) filter (where e.date = %(d)s), 0) as dr,
+               coalesce(sum(l.credit) filter (where e.date = %(d)s), 0) as cr
+          from accounts_chart a
+          left join journal_lines l on l.account_code = a.code
+          left join journal_entries e on e.entry_id = l.entry_id and e.date <= %(d)s
+         group by a.code, a.name, a.normal_side order by a.code""", {"d": day}).fetchall()
+
+    def line(code, name, side, prev, dr, cr, level):
+        now = prev + dr - cr
+        d_now, d_prev = (now, prev) if side == "D" else (None, None)
+        c_prev, c_now = (-prev, -now) if side == "C" else (None, None)
+        return (d_now, dr or None, d_prev, code, name, c_prev, cr or None, c_now, level)
+
+    out, totals = [], {"D": [0, 0, 0, 0], "C": [0, 0, 0, 0]}
+    for cls, cls_name in ACCOUNT_CLASSES.items():
+        mine = [r for r in rows if r[0].startswith(cls) and (r[3] or r[4] or r[5])]
+        if not mine:
+            continue
+        side = mine[0][2]
+        prev, dr, cr = (sum(r[i] for r in mine) for i in (3, 4, 5))
+        out.append(line(cls + "000", f"{cls_name} 합계", side, prev, dr, cr, "class"))
+        out.extend(line(c, n, sd, pv, d, cr_, "account") for c, n, sd, pv, d, cr_ in mine)
+        t = totals[side]
+        for i, v in enumerate((prev + dr - cr, dr, prev, cr)):
+            t[i] += v
+    d, c = totals["D"], totals["C"]
+    out.append((d[0], (d[1] + c[1]) or None, d[2], "", "총합계", -c[2], (d[3] + c[3]) or None, -c[0], "total"))
+    debit_total, credit_total = d[0], -c[0]
+    return (Dataset(("d_now", "d_change", "d_prev", "code", "name", "c_prev", "c_change", "c_now", "level"),
+                    tuple(out)),
+            {"day": day.isoformat(), "balanced": "예" if debit_total == credit_total else "아니요"})
 
 
 # ---------- STP-2110 원장 내부 대사 ----------

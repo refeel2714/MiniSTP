@@ -516,3 +516,29 @@ def test_basket_text_from_the_screen():
     assert parse_basket("069500:") == [Target("069500", Decimal(0))]
     with pytest.raises(TxError, match="숫자가 아니에요"):
         parse_basket("069500:abc")
+
+
+BAND_COLUMNS = [Column("dr", label="차변", format="money"), Column("symbol", "instruments.symbol", format="code"),
+                Column("cr", label="대변", format="money"), Column("level", label="줄 종류", hidden=True)]
+
+
+def test_a_table_can_group_its_headers_under_bands():
+    """묶음 머리: 시산표처럼 열 머리 위에 차변 | 계정과목 | 대변을 한 줄 더 얹고, 분류·총합계 줄은 굵게."""
+    bands = [{"label": "차변", "span": 1}, {"label": "계정", "span": 1}, {"label": "대변", "span": 1}]
+    s = screen(BAND_COLUMNS, bands=bands, emphasis="level")
+    assert validate(s, CATALOG) == []
+    g = resolve(s["STP-1100"], CATALOG)["grids"][0]
+    assert g["bands"] == bands and g["emphasis"] == "level"
+    shipped = load_screens()["STP-3300"].grids[0]
+    assert [b["label"] for b in shipped.bands] == ["차변", "계정과목", "대변"] and shipped.emphasis == "level"
+
+
+@pytest.mark.parametrize("grid, problem", [
+    ({"bands": [{"label": "차변", "span": 2}]}, "보이는 열 수(3)와 달라요"),
+    ({"bands": [{"label": "차변"}]}, "span은 1 이상 정수"),
+    ({"bands": [{"label": "차변", "span": 3}], "view": "cards"}, "표 보기에만"),
+    ({"emphasis": "nope"}, "강조 기준 열 nope가"),
+])
+def test_band_problems(grid, problem):
+    errs = validate(screen(BAND_COLUMNS, **grid), CATALOG)
+    assert any(problem in e for e in errs), errs
