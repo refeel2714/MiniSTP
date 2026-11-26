@@ -84,9 +84,9 @@ def test_the_board_opens_on_books_that_fail_verification_and_says_so_on_every_da
 
 
 def test_events_that_cannot_be_replayed_leave_one_row_that_points_at_the_integrity_screen(conn, sample):
-    with damaged(conn, "insert into ledger_events (seq, event_type, payload) select max(seq) + 1, 'ExecutionEvent',"
+    with damaged(conn, "insert into ledger_events (seq, event_type, payload, account_id) select max(seq) + 1, 'ExecutionEvent',"
                        " '{\"exec_id\": \"X-1\", \"trade_date\": \"2026-11-02\", \"symbol\": \"NOPE\","
-                       " \"side\": \"BUY\", \"qty\": 1, \"price\": 100}' from ledger_events"):
+                       " \"side\": \"BUY\", \"qty\": 1, \"price\": 100}', 'A0001' from ledger_events"):
         days = tx(conn, sample.last_day, "STP2400R01").datasets["main"].records()
         assert [(r["date"], r["steps"], r["state"]) for r in days] == [(sample.last_day, 1, "확인 필요")]
         [step] = tx(conn, sample.last_day, "STP2400R02", date=sample.last_day).datasets["main"].records()

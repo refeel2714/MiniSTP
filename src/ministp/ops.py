@@ -29,7 +29,7 @@ from .oms import InvalidTransition, OrderStatus
 from .quotes import KIND as QUOTE_KIND, Quote, latest_quotes, marks, valid_price
 from .recon import Cause, ReconResult, Status
 from .session import Anomaly, TradingSession, failure_text
-from .store import PostgresLedgerStore
+from .store import DEFAULT_ACCOUNT, PostgresLedgerStore, migrate
 
 
 class OpsError(RuntimeError):
@@ -68,22 +68,29 @@ class Books:
     store: PostgresLedgerStore
     ledger: Ledger
     instruments: dict[str, Instrument]
+    account_id: str = DEFAULT_ACCOUNT   # the one account these books are (ERD v2.0)
 
 
-def load_books(conn: psycopg.Connection, calendar: BusinessCalendar, fees: FeeSchedule) -> Books:
-    store = PostgresLedgerStore(conn)
+def load_books(conn: psycopg.Connection, calendar: BusinessCalendar, fees: FeeSchedule,
+               account_id: str = DEFAULT_ACCOUNT) -> Books:
+    """The books of one account, replayed from its events and checked against the stored rows."""
+    todo = migrate.pending(conn, migrate.discover())
+    if todo:   # the code is ahead of the database: never read or write a ledger of another shape
+        raise OpsError(f"DB 스키마가 이 버전의 코드보다 오래됐어요. 남은 마이그레이션 {len(todo)}개를 "
+                       "db-migrate로 적용해 주세요 (먼저 --dry-run으로 리허설).")
+    store = PostgresLedgerStore(conn, account_id)
     instruments = load_instruments(conn)
     ledger = store.load(calendar, fees, instruments)
     problems = store.verify(ledger)
     if problems:
         raise OpsError(f"DB 원장 검증 실패: {problems}")
-    return Books(conn, store, ledger, instruments)
+    return Books(conn, store, ledger, instruments, account_id)
 
 
-def _snapshot(conn, day: dt.date, kind: str, payload) -> int:
+def _snapshot(conn, day: dt.date, kind: str, payload, account_id: str = DEFAULT_ACCOUNT) -> int:
     payload = json.loads(json.dumps(payload, default=str))
-    return conn.execute("insert into broker_snapshots (date, kind, payload) values (%s, %s, %s)"
-                        " returning snapshot_id", (day, kind, Jsonb(payload))).fetchone()[0]
+    return conn.execute("insert into broker_snapshots (date, kind, payload, account_id) values (%s, %s, %s, %s)"
+                        " returning snapshot_id", (day, kind, Jsonb(payload), account_id)).fetchone()[0]
 
 
 # ---------- open ----------
@@ -99,7 +106,7 @@ def open_books(books: Books, broker: BrokerGateway, day: dt.date) -> None:
     missing = sorted(set(bal.positions) - set(books.instruments))
     if missing:
         raise OpsError(f"종목 등록이 필요해요: {', '.join(missing)}")
-    _snapshot(books.conn, day, "OPENING_BALANCE", list(bal.raw))
+    _snapshot(books.conn, day, "OPENING_BALANCE", list(bal.raw), books.account_id)
     books.ledger.deposit(day, bal.cash_d0)
     for sym in sorted(bal.positions):
         p = bal.positions[sym]
@@ -108,11 +115,11 @@ def open_books(books: Books, broker: BrokerGateway, day: dt.date) -> None:
 
 # ---------- orders ----------
 
-def _stored_orders(conn, day: dt.date):
+def _stored_orders(conn, day: dt.date, account_id: str = DEFAULT_ACCOUNT):
     return conn.execute(
         "select o.client_id, o.symbol, o.side, o.qty, o.limit_price, a.outcome, a.order_no, a.org_no"
         " from oms_orders o left join oms_order_acks a using (client_id)"
-        " where o.trade_date = %s order by o.client_id", (day,)).fetchall()
+        " where o.trade_date = %s and o.account_id = %s order by o.client_id", (day, account_id)).fetchall()
 
 
 CANCEL_KIND = "CANCEL_REQUEST"   # R-45: a cancel the broker took, so a restarted process knows it
@@ -121,10 +128,10 @@ CANCEL_KIND = "CANCEL_REQUEST"   # R-45: a cancel the broker took, so a restarte
 def session_for(books: Books, broker: BrokerGateway, day: dt.date) -> TradingSession:
     """A session that knows every order MiniSTP placed today and persists new ones."""
     session = TradingSession(books.ledger, broker)
-    rows = _stored_orders(books.conn, day)
+    rows = _stored_orders(books.conn, day, books.account_id)
     cancel_requested = {r[0] for r in books.conn.execute(
-        "select payload ->> 'client_id' from broker_snapshots where kind = %s and date = %s",
-        (CANCEL_KIND, day))}
+        "select payload ->> 'client_id' from broker_snapshots where kind = %s and date = %s and account_id = %s",
+        (CANCEL_KIND, day, books.account_id))}
     for cid, sym, side, qty, limit, outcome, order_no, org_no in rows:
         if outcome == "ACCEPTED":
             session.restore(day, cid, sym, Side(side), qty, limit, OrderAck(order_no, org_no),
@@ -138,8 +145,9 @@ def session_for(books: Books, broker: BrokerGateway, day: dt.date) -> TradingSes
     session._seq = max((int(r[0].rsplit("-", 1)[1]) for r in rows), default=0)
 
     def on_submit(cid, d, symbol, side, qty, limit_price):
-        books.conn.execute("insert into oms_orders (client_id, trade_date, symbol, side, qty, limit_price)"
-                           " values (%s, %s, %s, %s, %s, %s)", (cid, d, symbol, side.value, qty, limit_price))
+        books.conn.execute(
+            "insert into oms_orders (client_id, trade_date, symbol, side, qty, limit_price, account_id)"
+            " values (%s, %s, %s, %s, %s, %s, %s)", (cid, d, symbol, side.value, qty, limit_price, books.account_id))
 
     def on_ack(cid, ack, detail):
         if ack is None:
@@ -151,7 +159,8 @@ def session_for(books: Books, broker: BrokerGateway, day: dt.date) -> TradingSes
 
     def on_cancel(cid, ack):
         _snapshot(books.conn, day, CANCEL_KIND, {"client_id": cid, "order_no": ack.order_no,
-                                                 "requested_at": dt.datetime.now().isoformat(timespec="seconds")})
+                                                 "requested_at": dt.datetime.now().isoformat(timespec="seconds")},
+                  books.account_id)
 
     session.on_submit, session.on_ack, session.on_cancel = on_submit, on_ack, on_cancel
     return session
@@ -260,13 +269,8 @@ def daily_close(books: Books, broker: BrokerGateway, day: dt.date) -> DailyRepor
         "balance": list(session.last_balance.raw),
         "orders": [o.__dict__ for o in orders],
         "anomalies": [a.__dict__ | {"day": a.day.isoformat()} for a in session.anomalies],
-    })
-    with books.conn.cursor() as cur:
-        cur.executemany(
-            "insert into recon_results (run_id, date, item, key, internal_value, broker_value, diff,"
-            " status, cause_code) values (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
-            [(run_id, r.date, r.item, r.key, r.internal, r.broker, r.diff, r.status.value,
-              r.cause.value if r.cause else None) for r in results])
+    }, books.account_id)
+    _insert_results(books.conn, run_id, results, books.account_id)
     problems = books.store.verify(ledger)
     if problems:
         raise OpsError(f"DB 원장 검증 실패: {problems}")
@@ -327,24 +331,29 @@ def _prev(calendar: BusinessCalendar, d: dt.date) -> dt.date:
 
 def resolve_break(conn: psycopg.Connection, result_id: int, cause: Cause, note: str) -> int:
     """R-73: the owner's judgement on a break, added as a new row (never an update)."""
-    row = conn.execute("select run_id, date, item, key, internal_value, broker_value, diff, status"
+    row = conn.execute("select run_id, date, item, key, internal_value, broker_value, diff, account_id, status"
                        " from recon_results where id = %s", (result_id,)).fetchone()
-    if row is None or row[7] != "BREAK":
+    if row is None or row[8] != "BREAK":
         raise OpsError(f"불일치 행이 아니에요: {result_id}")
-    return conn.execute(
-        "insert into recon_results (run_id, date, item, key, internal_value, broker_value, diff,"
-        " status, cause_code, note, supersedes_id) values (%s, %s, %s, %s, %s, %s, %s, 'RESOLVED',"
-        " %s, %s, %s) returning id", (*row[:7], cause.value, note, result_id)).fetchone()[0]
+    return conn.execute(   # the judgement belongs to the account of the row it judges
+        "insert into recon_results (run_id, date, item, key, internal_value, broker_value, diff, account_id,"
+        " status, cause_code, note, supersedes_id) values (%s, %s, %s, %s, %s, %s, %s, %s, 'RESOLVED',"
+        " %s, %s, %s) returning id", (*row[:8], cause.value, note, result_id)).fetchone()[0]
 
 
-def store_recon(conn: psycopg.Connection, day: dt.date, kind: str, payload, results) -> int:
-    run_id = _snapshot(conn, day, kind, payload)
+def _insert_results(conn: psycopg.Connection, run_id: int, results, account_id: str) -> None:
     with conn.cursor() as cur:
         cur.executemany(
             "insert into recon_results (run_id, date, item, key, internal_value, broker_value, diff,"
-            " status, cause_code) values (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
+            " status, cause_code, account_id) values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
             [(run_id, r.date, r.item, r.key, r.internal, r.broker, r.diff, r.status.value,
-              r.cause.value if r.cause else None) for r in results])
+              r.cause.value if r.cause else None, account_id) for r in results])
+
+
+def store_recon(conn: psycopg.Connection, day: dt.date, kind: str, payload, results,
+                account_id: str = DEFAULT_ACCOUNT) -> int:
+    run_id = _snapshot(conn, day, kind, payload, account_id)
+    _insert_results(conn, run_id, results, account_id)
     return run_id
 
 
@@ -402,7 +411,7 @@ class IntradayRunner:
             self.stats.latencies_ms.append(ms)
         _snapshot(self.books.conn, self.day, "FILL_NOTICE", {
             "notice": n.__dict__, "received_at": received_at.isoformat(),
-            "booked": booked, "booking_ms": ms})
+            "booked": booked, "booking_ms": ms}, self.books.account_id)
         what = "거부" if n.rejected else f"체결 {n.qty}주 @ {n.price:,}"
         self.out(f"[{received_at:%H:%M:%S}] {what} {n.side} {n.symbol} → 원장 반영 {len(booked)}건 ({ms}ms)")
         self._report_anomalies()
@@ -449,7 +458,7 @@ class IntradayRunner:
             results = self.session.reconcile(self.day)
         self._last_recon = self.monotonic()
         store_recon(self.books.conn, self.day, "INTRADAY_RECON",
-                    {"balance": list(self.session.last_balance.raw)}, results)
+                    {"balance": list(self.session.last_balance.raw)}, results, self.books.account_id)
         self.stats.recons += 1
         breaks = [r for r in results if r.status is Status.BREAK]
         self.stats.recon_breaks += len(breaks)

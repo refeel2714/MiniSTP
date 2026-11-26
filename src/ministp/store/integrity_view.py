@@ -18,7 +18,7 @@ import psycopg
 from ..accounting import Account
 from ..ledger import Ledger
 from .integrity import APPEND_ONLY_TABLES, BALANCE_TRIGGERS
-from .postgres import cash_rows, from_payload, position_row
+from .postgres import DEFAULT_ACCOUNT, cash_rows, from_payload, position_row
 
 REPLAY = "이벤트를 처음부터 다시 계산한 값"
 
@@ -39,10 +39,11 @@ class Compared:
         return None if self.stored is None or self.expected is None else self.stored - self.expected
 
 
-def replay(conn: psycopg.Connection, calendar, fees, instruments) -> Ledger:
-    """The books as the events alone give them. Raises what `Ledger.replay` raises on an event the rules reject."""
+def replay(conn: psycopg.Connection, calendar, fees, instruments, account_id: str = DEFAULT_ACCOUNT) -> Ledger:
+    """One account's books as its events alone give them. Raises what `Ledger.replay` raises on an event
+    the rules reject."""
     events = [from_payload(t, p) for t, p in conn.execute(
-        "select event_type, payload from ledger_events order by seq")]
+        "select event_type, payload from ledger_events where account_id = %s order by seq", (account_id,))]
     return Ledger.replay(events, calendar, fees, instruments)
 
 
@@ -84,11 +85,12 @@ def compare_balanced(conn: psycopg.Connection) -> list[Compared]:
 
 # ---------- stored rows against a replay of the events ----------
 
-def compare_journal(conn: psycopg.Connection, ledger: Ledger) -> list[Compared]:
+def compare_journal(conn: psycopg.Connection, ledger: Ledger, account_id: str = DEFAULT_ACCOUNT) -> list[Compared]:
     stored: dict[int, tuple] = {}
     for eid, date, kind, src, acct, dr, cr in conn.execute(
             "select e.entry_id, e.date, e.kind, e.source_id, l.account_code, l.debit, l.credit"
-            " from journal_entries e join journal_lines l using (entry_id) order by e.entry_id, l.line_id"):
+            " from journal_entries e join journal_lines l using (entry_id) where e.account_id = %s"
+            " order by e.entry_id, l.line_id", (account_id,)):
         stored.setdefault(eid, ((date, kind, src), []))[1].append((acct, dr, cr))
     db = [(head, sorted(lines)) for head, lines in stored.values()]
     mem = [((e.date, e.kind, e.source_id), sorted((ln.account.code, ln.debit, ln.credit) for ln in e.lines))
@@ -101,17 +103,18 @@ def compare_journal(conn: psycopg.Connection, ledger: Ledger) -> list[Compared]:
             Compared("순서대로 견주어 내용이 다른 분개 수", unlike, 0, "하나도 없어야 함")]
 
 
-def compare_accounts(conn: psycopg.Connection, ledger: Ledger) -> list[Compared]:
-    stored = dict(conn.execute("select code, balance from account_balances_v"))
+def compare_accounts(conn: psycopg.Connection, ledger: Ledger, account_id: str = DEFAULT_ACCOUNT) -> list[Compared]:
+    stored = dict(conn.execute("select code, balance from account_balances_v where account_id = %s", (account_id,)))
     return [Compared(f"{a.code} {a.value[1]}", int(stored.get(a.code, 0)), ledger.account_balance(a), REPLAY)
             for a in Account]
 
 
-def compare_positions(conn: psycopg.Connection, ledger: Ledger) -> list[Compared]:
+def compare_positions(conn: psycopg.Connection, ledger: Ledger, account_id: str = DEFAULT_ACCOUNT) -> list[Compared]:
     stored = conn.execute("select trade_date, symbol, exec_id, qty_delta, cost_delta, realized_pnl"
-                          " from position_ledger").fetchall()
+                          " from position_ledger where account_id = %s", (account_id,)).fetchall()
     expected = [r for r in (position_row(ledger, ev) for ev in ledger.events) if r is not None]
-    totals = {s: (int(q), int(c)) for s, q, c in conn.execute("select symbol, qty, book_cost from positions_v")}
+    totals = {s: (int(q), int(c)) for s, q, c in conn.execute(
+        "select symbol, qty, book_cost from positions_v where account_id = %s", (account_id,))}
     mem = {s: (p.qty, p.book_cost) for s, p in ledger.positions().items()}
     rows = [Compared("보유 원장 행 수", len(stored), len(expected), REPLAY),
             Compared("한쪽에만 있는 보유 원장 행 수", _unlike(stored, expected), 0, "하나도 없어야 함")]
@@ -121,10 +124,12 @@ def compare_positions(conn: psycopg.Connection, ledger: Ledger) -> list[Compared
     return rows
 
 
-def compare_cash(conn: psycopg.Connection, ledger: Ledger) -> list[Compared]:
-    stored = conn.execute("select date, reason, amount, ref_id from cash_ledger").fetchall()
+def compare_cash(conn: psycopg.Connection, ledger: Ledger, account_id: str = DEFAULT_ACCOUNT) -> list[Compared]:
+    stored = conn.execute("select date, reason, amount, ref_id from cash_ledger where account_id = %s",
+                          (account_id,)).fetchall()
     expected = [r for e in ledger.journal for r in cash_rows(e)]
-    balance = int(conn.execute("select balance from cash_balance_v").fetchone()[0])
+    balance = int(conn.execute("select coalesce(sum(amount), 0) from cash_ledger where account_id = %s",
+                               (account_id,)).fetchone()[0])
     return [Compared("예수금", balance, ledger.cash_balance(), REPLAY),
             Compared("현금 원장 행 수", len(stored), len(expected), REPLAY),
             Compared("한쪽에만 있는 현금 원장 행 수", _unlike(stored, expected), 0, "하나도 없어야 함")]
@@ -135,9 +140,11 @@ REPLAYED = {"journal": compare_journal, "accounts": compare_accounts, "positions
             "cash": compare_cash}
 
 
-def compared(conn: psycopg.Connection, key: str, calendar, fees, instruments) -> list[Compared]:
-    """The numbers behind check `key`. Empty for a check that has none here (its sentence says it all)
-    and for a replay check when the events cannot be replayed (the 이벤트 재생 check says why)."""
+def compared(conn: psycopg.Connection, key: str, calendar, fees, instruments,
+             account_id: str = DEFAULT_ACCOUNT) -> list[Compared]:
+    """The numbers behind check `key`: the whole database for the checks that need no replay, one account's
+    books for the rest. Empty for a check that has none here (its sentence says it all) and for a replay
+    check when the account's events cannot be replayed (the 이벤트 재생 check says why)."""
     top = conn.info.transaction_status == psycopg.pq.TransactionStatus.IDLE
     with conn.transaction():
         if top:   # one snapshot, as in integrity_report
@@ -147,7 +154,7 @@ def compared(conn: psycopg.Connection, key: str, calendar, fees, instruments) ->
         if key not in REPLAYED:
             return []
         try:
-            ledger = replay(conn, calendar, fees, instruments)
+            ledger = replay(conn, calendar, fees, instruments, account_id)
         except Exception:
             return []
-        return REPLAYED[key](conn, ledger)
+        return REPLAYED[key](conn, ledger, account_id)

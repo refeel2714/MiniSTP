@@ -63,7 +63,7 @@ def test_committed_screen_docs_are_current(conn):
 def test_ui_connection_cannot_write(sample):
     with ui_app.connect_read_only(URL) as c:
         with pytest.raises(psycopg.errors.ReadOnlySqlTransaction):
-            c.execute("insert into ledger_events (event_type, payload) values ('X', '{}')")
+            c.execute("insert into ledger_events (event_type, payload, account_id) values ('X', '{}', 'A0001')")
 
 
 def test_server_refuses_to_start_when_a_screen_drifts_from_the_schema(sample, monkeypatch):
@@ -271,8 +271,8 @@ def test_db_head_moves_when_the_writer_records(sample, conn):
         before = ui_app.read_head(ro)
         conn.execute("insert into instruments (symbol, name, market, asset_type) values ('LIVE01', '테스트', 'KOSPI', 'ETF')")
         assert ui_app.read_head(ro) == before            # instruments are not on the head
-        conn.execute("insert into oms_orders (client_id, trade_date, symbol, side, qty)"
-                     " values ('LIVE-1', %s, 'LIVE01', 'BUY', 1)", (sample.last_day,))
+        conn.execute("insert into oms_orders (client_id, trade_date, symbol, side, qty, account_id)"
+                     " values ('LIVE-1', %s, 'LIVE01', 'BUY', 1, 'A0001')", (sample.last_day,))
         assert ui_app.read_head(ro)["orders"] == before["orders"] + 1
 
 

@@ -308,10 +308,9 @@ def test_broker_reuses_order_numbers_on_the_next_day(conn, broker):
     assert conn.execute("select count(*) from oms_order_acks where order_no = '0000000001'").fetchone()[0] == 2
 
 
-def test_db_init_upgrades_a_v1_0_database(conn):
-    from ministp.store import PostgresLedgerStore
-    conn.execute("alter table oms_order_acks add constraint oms_order_acks_order_no_key unique (order_no)")
+def test_db_init_on_a_current_database_changes_nothing(conn):
+    """`db-init` builds new databases only; one that already holds the ledger moves through migrations."""
+    from ministp.store import PostgresLedgerStore, migrate as mg
+    before = mg.fingerprint(conn)
     PostgresLedgerStore(conn).init_schema()          # what `db-init` runs
-    names = {r[0] for r in conn.execute("select conname from pg_constraint"
-                                        " where conrelid = 'oms_order_acks'::regclass")}
-    assert "oms_order_acks_order_no_key" not in names
+    assert mg.fingerprint(conn) == before

@@ -15,6 +15,7 @@ import psycopg
 from .journal_templates import KIND_NAMES as JOURNAL_KIND_NAMES  # 전표 유형 이름: 분개 모형과 같은 표
 from .ledger import Ledger
 from .risk import REASON_TEXT
+from .store import DEFAULT_ACCOUNT
 
 
 @dataclass(frozen=True)
@@ -134,12 +135,13 @@ def event_trace(conn: psycopg.Connection, seq: int) -> EventTrace:
 ACCOUNT_CLASSES = {"1": "자산", "2": "부채", "3": "자본", "4": "수익", "5": "비용"}
 
 
-def trial_balance(conn: psycopg.Connection, day: dt.date) -> tuple[Dataset, dict]:
+def trial_balance(conn: psycopg.Connection, day: dt.date,
+                  account_id: str = DEFAULT_ACCOUNT) -> tuple[Dataset, dict]:
     """합계잔액시산표 모양: 차변(당일잔액·당일증감·전일잔액) | 계정 | 대변(전일잔액·당일증감·당일잔액).
 
     잔액은 계정의 정상 쪽(자산·비용은 차변, 부채·자본·수익은 대변)에 적고, 반대로 쌓인 잔액(평가조정 같은 차감 계정)은
     그 쪽에 음수로 적어요. 당일증감은 그날의 차변 합계와 대변 합계를 양쪽에 그대로 적어요. 계정 분류(코드 첫 자리)마다
-    합계 줄이 먼저 오고, 맨 아래 총합계 줄의 차변과 대변이 같아야 해요."""
+    합계 줄이 먼저 오고, 맨 아래 총합계 줄의 차변과 대변이 같아야 해요. 계좌 하나(기본 계좌)의 장부만 더해요."""
     rows = conn.execute("""
         select a.code, a.name, a.normal_side,
                coalesce(sum(l.debit - l.credit) filter (where e.date < %(d)s), 0) as prev,
@@ -147,8 +149,8 @@ def trial_balance(conn: psycopg.Connection, day: dt.date) -> tuple[Dataset, dict
                coalesce(sum(l.credit) filter (where e.date = %(d)s), 0) as cr
           from accounts_chart a
           left join journal_lines l on l.account_code = a.code
-          left join journal_entries e on e.entry_id = l.entry_id and e.date <= %(d)s
-         group by a.code, a.name, a.normal_side order by a.code""", {"d": day}).fetchall()
+          left join journal_entries e on e.entry_id = l.entry_id and e.date <= %(d)s and e.account_id = %(a)s
+         group by a.code, a.name, a.normal_side order by a.code""", {"d": day, "a": account_id}).fetchall()
 
     def line(code, name, side, prev, dr, cr, level):
         now = prev + dr - cr
@@ -181,18 +183,21 @@ def trial_balance(conn: psycopg.Connection, day: dt.date) -> tuple[Dataset, dict
 RESULT_TEXT = {True: "일치", False: "불일치"}
 
 
-def integrity_checks(conn: psycopg.Connection, calendar, fees, instruments) -> Dataset:
-    """The `verify` report as rows: one check a row, in the order a person reads them.
+def integrity_checks(conn: psycopg.Connection, calendar, fees, instruments,
+                     account_id: str = DEFAULT_ACCOUNT) -> Dataset:
+    """The `verify` report as rows: one check a row, in the order a person reads them. The checks of the
+    whole database (event stream, guards, balance) and those of one account's books (replay against what
+    is stored); the other accounts' checks are not listed, `verify` prints them all.
     It replays the events itself and does not go through `load_books`, which refuses books that
     fail these very checks: this is the list to look at when every other screen will not open."""
     from .store.integrity import integrity_report
-    checks = integrity_report(conn, calendar, fees, instruments)
+    checks = [c for c in integrity_report(conn, calendar, fees, instruments) if c.account in ("", account_id)]
     return Dataset(("key", "title", "result", "detail"),
                    tuple((c.key, c.title, RESULT_TEXT[c.ok], c.detail) for c in checks))
 
 
 def integrity_compared(conn: psycopg.Connection, title: str, calendar, fees,
-                       instruments) -> tuple[Dataset, Dataset]:
+                       instruments, account_id: str = DEFAULT_ACCOUNT) -> tuple[Dataset, Dataset]:
     """The check named `title` as (its verdict in a sentence, the numbers behind it side by side): what
     is stored, what it has to equal and the difference, as the broker reconciliation shows 내부 값 and
     증권사 값. Both are read in one snapshot. KeyError when there is no such check."""
@@ -201,11 +206,11 @@ def integrity_compared(conn: psycopg.Connection, title: str, calendar, fees,
     with conn.transaction():
         if top:
             conn.execute("set transaction isolation level repeatable read read only")
-        checks = integrity_checks(conn, calendar, fees, instruments)
+        checks = integrity_checks(conn, calendar, fees, instruments, account_id)
         check = next((r for r in checks.rows if r[1] == title), None)
         if check is None:
             raise KeyError(f"없는 점검 항목: {title}")
-        rows = compared(conn, check[0], calendar, fees, instruments)
+        rows = compared(conn, check[0], calendar, fees, instruments, account_id)
     return (Dataset(checks.columns, (check,)),
             Dataset(("item", "stored", "expected", "basis", "diff", "result"),
                     tuple((r.item, r.stored, r.expected, r.basis, r.diff, RESULT_TEXT[r.ok]) for r in rows)))
@@ -572,42 +577,46 @@ def price_trend_rows(ledger: Ledger, symbol: str, date_from: dt.date | None = No
 
 # ---------- STP-2400 마감 점검 ----------
 
-def _close_board(conn: psycopg.Connection, calendar, fees, today: dt.date) -> dict:
-    """Every business day's steps (closeboard.board). The books are replayed here and not taken from
-    `load_books`, which refuses books that fail verification: the board is where that failure has to show."""
+def _close_board(conn: psycopg.Connection, calendar, fees, today: dt.date,
+                 account_id: str = DEFAULT_ACCOUNT) -> dict:
+    """Every business day's steps for one account (closeboard.board). The books are replayed here and not
+    taken from `load_books`, which refuses books that fail verification: the board is where that failure
+    has to show. 원장 내부 대사 counts the checks of the whole database and of this account."""
     from . import closeboard as cb
     from .ops import load_instruments, recon_days
     from .store.integrity import integrity_report
     from .store.integrity_view import replay
     instruments = load_instruments(conn)
-    checks = integrity_report(conn, calendar, fees, instruments)
+    checks = [c for c in integrity_report(conn, calendar, fees, instruments) if c.account in ("", account_id)]
     orders: dict[dt.date, list] = {}
     for day, qty, outcome, order_no in conn.execute(
             "select o.trade_date, o.qty, a.outcome, a.order_no from oms_orders o"
-            " left join oms_order_acks a using (client_id) order by o.created_at"):
+            " left join oms_order_acks a using (client_id) where o.account_id = %s order by o.created_at",
+            (account_id,)):
         orders.setdefault(day, []).append((qty, outcome, order_no))
     outside = cb.Outside(orders, recon_days(conn), len(checks), sum(not c.ok for c in checks))
     try:
-        ledger = replay(conn, calendar, fees, instruments)
+        ledger = replay(conn, calendar, fees, instruments, account_id)
     except Exception:       # events the rules reject: no day can be read, the one thing to show is that
         return {today: [cb.integrity_step(outside)]}
     return cb.board(ledger, calendar, today, outside)
 
 
 def close_days(conn: psycopg.Connection, calendar, fees, today: dt.date, date_from: dt.date | None = None,
-               date_to: dt.date | None = None) -> Dataset:
+               date_to: dt.date | None = None, account_id: str = DEFAULT_ACCOUNT) -> Dataset:
     """영업일 목록, newest first: how many of the day's steps are finished and whether anything needs a decision."""
     from . import closeboard as cb
     rows = [(day, cb.finished(steps), len(steps), cb.needing(steps), cb.day_state(steps))
-            for day, steps in _close_board(conn, calendar, fees, today).items()
+            for day, steps in _close_board(conn, calendar, fees, today, account_id).items()
             if (date_from is None or day >= date_from) and (date_to is None or day <= date_to)]
     return Dataset(("date", "done", "steps", "attention", "state"), tuple(rows))
 
 
-def close_steps(conn: psycopg.Connection, calendar, fees, today: dt.date, date: dt.date) -> Dataset:
+def close_steps(conn: psycopg.Connection, calendar, fees, today: dt.date, date: dt.date,
+                account_id: str = DEFAULT_ACCOUNT) -> Dataset:
     """One day's steps in the order `daily` does them, each with its state, what it found and the screen
     that shows the detail."""
-    days = _close_board(conn, calendar, fees, today)
+    days = _close_board(conn, calendar, fees, today, account_id)
     if date not in days:
         raise KeyError(f"{date}은 영업일이 아니거나 원장을 시작하기 전이에요")
     return Dataset(("no", "step", "state", "detail", "screen", "date"),
@@ -712,8 +721,8 @@ def return_month_days(ledger: Ledger, month: str, date_from: dt.date | None = No
 
 # ---------- STP-1100 잔고 (IBOR) ----------
 
-def holdings(conn: psycopg.Connection, day: dt.date | None = None) -> Dataset:
-    """종목별 보유: 수량, 장부금액, 오늘 체결 수량, 마지막 변동 시각."""
+def holdings(conn: psycopg.Connection, day: dt.date | None = None, account_id: str = DEFAULT_ACCOUNT) -> Dataset:
+    """One account's 종목별 보유: 수량, 장부금액, 오늘 체결 수량, 마지막 변동 시각."""
     return _q(conn, """
         select p.symbol, i.name as instrument_name, i.asset_type, p.qty, p.book_cost,
                coalesce(t.today_qty, 0) as today_qty, t.last_change
@@ -722,9 +731,9 @@ def holdings(conn: psycopg.Connection, day: dt.date | None = None) -> Dataset:
           left join lateral (select sum(x.qty_delta) filter (where x.trade_date = %(d)s) as today_qty,
                                     max(e.recorded_at) as last_change
                                from position_ledger x join ledger_events e on e.seq = x.event_seq
-                              where x.symbol = p.symbol) t on true
-         where p.qty <> 0
-         order by p.book_cost desc""", {"d": day or dt.date.today()})
+                              where x.symbol = p.symbol and x.account_id = p.account_id) t on true
+         where p.account_id = %(a)s and p.qty <> 0
+         order by p.book_cost desc""", {"d": day or dt.date.today(), "a": account_id})
 
 
 def close_trends(ledger: Ledger, days: int = 20) -> dict[str, list[int]]:

@@ -32,6 +32,11 @@ def test_numbers_must_run_without_gaps(tmp_path):
     assert [m.version for m in mg.discover(tmp_path)] == [1, 2, 3]
 
 
-def test_no_migration_ships_before_the_gate():
-    """ERD v1.1 is the baseline; the first migration (다계좌, v2.0) comes after the 20-day gate."""
-    assert mg.discover() == []
+def test_shipped_migrations_end_at_the_schema_version():
+    """`schema.sql` is what a new database gets; the last migration must bring an old one to the same ERD version."""
+    from ministp.store import erd
+    shipped = mg.discover()
+    assert [m.version for m in shipped] == list(range(1, len(shipped) + 1)) and shipped
+    assert all(m.title and m.erd_version for m in shipped)
+    assert shipped[-1].erd_version == erd.schema_version(erd.schema_sql())
+    assert shipped[0].name == "multi_account" and not shipped[0].changes_data

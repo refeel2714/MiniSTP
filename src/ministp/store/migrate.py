@@ -252,16 +252,20 @@ def apply_one(conn: psycopg.Connection, mig: Migration) -> Report:
 
 
 def migrate(conn: psycopg.Connection, migrations: list[Migration] | None = None, *,
-            dry_run: bool = False) -> list[Report]:
+            dry_run: bool = False, after=None) -> list[Report]:
     """Apply every pending migration in order.
 
     `dry_run` rehearses: everything is applied and checked inside one outer
-    transaction that is then rolled back, so the database is left exactly as it was."""
+    transaction that is then rolled back, so the database is left exactly as it was.
+    `after(conn)` runs on the migrated state before the rollback (the command uses it
+    to run the ledger integrity checks); if it raises, the rehearsal fails."""
     todo = pending(conn, discover() if migrations is None else migrations)
     if not dry_run:
         return [apply_one(conn, m) for m in todo]
     reports = []
     with conn.transaction():
         reports = [Report(r.migration, False, r.tables) for r in (apply_one(conn, m) for m in todo)]
+        if after is not None and todo:
+            after(conn)
         raise psycopg.Rollback()
     return reports

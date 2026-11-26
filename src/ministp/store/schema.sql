@@ -1,5 +1,5 @@
 -- MiniSTP ledger schema (spec 03).
--- ERD version: 1.1  (bump on every schema change, then run scripts/gen_erd.py) Append-only tables are enforced in the DB,
+-- ERD version: 2.0  (bump on every schema change, then run scripts/gen_erd.py) Append-only tables are enforced in the DB,
 -- not just in application code.
 
 create table if not exists accounts_chart (
@@ -8,20 +8,56 @@ create table if not exists accounts_chart (
     normal_side char(1) not null check (normal_side in ('D', 'C'))
 );
 
+-- v2.0 다계좌 (스펙 D7): 고객 -> 위탁계좌. 계좌번호와 인증키는 DB에 넣지 않는다.
+create table if not exists customers (
+    customer_id text primary key check (customer_id ~ '^C[0-9]{4}$'),
+    alias       text not null,
+    created_at  timestamptz not null default now()
+);
+
+create table if not exists trading_accounts (
+    account_id     text primary key check (account_id ~ '^A[0-9]{4}$'),
+    customer_id    text not null references customers (customer_id),
+    alias          text not null,
+    broker         text not null check (broker in ('KIS')),
+    env            text not null check (env in ('PAPER', 'LIVE')),
+    account_type   text not null check (account_type in ('GENERAL')),
+    credential_ref text not null,
+    opened_on      date not null,
+    created_at     timestamptz not null default now(),
+    constraint trading_accounts_credential_key unique (broker, env, credential_ref)
+);
+
+create table if not exists account_status_history (
+    id             bigserial primary key,
+    account_id     text not null references trading_accounts (account_id),
+    status         text not null check (status in ('OPEN', 'SUSPENDED', 'CLOSED')),
+    effective_from date not null,
+    reason         text,
+    created_at     timestamptz not null default now()
+);
+
+-- 원장은 하나, 순번도 하나. 모든 이벤트와 그 파생 행은 계좌 하나에 속한다 (account_id).
 create table if not exists ledger_events (
     seq         bigint primary key check (seq > 0),
     event_type  text not null,
     payload     jsonb not null,
-    recorded_at timestamptz not null default now()
+    recorded_at timestamptz not null default now(),
+    account_id  text not null references trading_accounts (account_id),
+    constraint ledger_events_seq_account_key unique (seq, account_id)
 );
+create index if not exists ledger_events_account_idx on ledger_events (account_id, seq);
 
 create table if not exists journal_entries (
     entry_id          bigserial primary key,
-    event_seq         bigint not null references ledger_events (seq),
+    event_seq         bigint not null,
     date              date not null,
     kind              text not null,
     source_id         text not null,
-    reverses_entry_id bigint references journal_entries (entry_id)
+    reverses_entry_id bigint references journal_entries (entry_id),
+    account_id        text not null,
+    constraint journal_entries_event_account_fkey
+        foreign key (event_seq, account_id) references ledger_events (seq, account_id)
 );
 
 create table if not exists journal_lines (
@@ -35,22 +71,29 @@ create table if not exists journal_lines (
 
 create table if not exists position_ledger (
     id           bigserial primary key,
-    event_seq    bigint not null references ledger_events (seq),
+    event_seq    bigint not null,
     trade_date   date not null,
     symbol       text not null,
-    exec_id      text not null unique,
+    exec_id      text not null,
     qty_delta    bigint not null,
     cost_delta   bigint not null,
-    realized_pnl bigint
+    realized_pnl bigint,
+    account_id   text not null,
+    constraint position_ledger_event_account_fkey
+        foreign key (event_seq, account_id) references ledger_events (seq, account_id),
+    constraint position_ledger_account_exec_key unique (account_id, exec_id)
 );
 
 create table if not exists cash_ledger (
     id        bigserial primary key,
-    event_seq bigint not null references ledger_events (seq),
-    date      date not null,
-    reason    text not null,
-    amount    bigint not null,
-    ref_id    text not null
+    event_seq  bigint not null,
+    date       date not null,
+    reason     text not null,
+    amount     bigint not null,
+    ref_id     text not null,
+    account_id text not null,
+    constraint cash_ledger_event_account_fkey
+        foreign key (event_seq, account_id) references ledger_events (seq, account_id)
 );
 
 -- Operations (Phase 2): instruments, orders, broker snapshots, reconciliation.
@@ -69,7 +112,8 @@ create table if not exists oms_orders (
     side        text not null check (side in ('BUY', 'SELL')),
     qty         bigint not null check (qty > 0),
     limit_price bigint,
-    created_at  timestamptz not null default now()
+    created_at  timestamptz not null default now(),
+    account_id  text not null references trading_accounts (account_id)
 );
 
 create table if not exists oms_order_acks (
@@ -92,13 +136,15 @@ create table if not exists broker_snapshots (
     date        date not null,
     kind        text not null,
     payload     jsonb not null,
-    taken_at    timestamptz not null default now()
+    taken_at    timestamptz not null default now(),
+    account_id  text not null references trading_accounts (account_id),
+    constraint broker_snapshots_id_account_key unique (snapshot_id, account_id)
 );
 
 -- R-72~73: one row per item per run; a later judgement is a new row (supersedes_id).
 create table if not exists recon_results (
     id             bigserial primary key,
-    run_id         bigint not null references broker_snapshots (snapshot_id),
+    run_id         bigint not null,
     date           date not null,
     item           text not null,
     key            text not null,
@@ -109,7 +155,10 @@ create table if not exists recon_results (
     cause_code     text,
     note           text,
     supersedes_id  bigint references recon_results (id),
-    created_at     timestamptz not null default now()
+    created_at     timestamptz not null default now(),
+    account_id     text not null,
+    constraint recon_results_run_account_fkey
+        foreign key (run_id, account_id) references broker_snapshots (snapshot_id, account_id)
 );
 
 -- R-04: no UPDATE / DELETE / TRUNCATE on ledger tables.
@@ -139,7 +188,8 @@ declare t text;
 begin
     foreach t in array array['ledger_events', 'journal_entries', 'journal_lines',
                              'position_ledger', 'cash_ledger', 'instruments', 'oms_orders',
-                             'oms_order_acks', 'broker_snapshots', 'recon_results'] loop
+                             'oms_order_acks', 'broker_snapshots', 'recon_results',
+                             'customers', 'trading_accounts', 'account_status_history'] loop
         if not exists (select 1 from pg_trigger where tgname = t || '_append_only') then
             execute format('create trigger %I before update or delete on %I
                             for each row execute function ministp_forbid_change()',
@@ -158,20 +208,35 @@ begin
 end $$;
 
 create or replace view account_balances_v as
-select a.code, a.name, a.normal_side,
+select t.account_id, a.code, a.name, a.normal_side,
        case when a.normal_side = 'D'
             then coalesce(sum(l.debit - l.credit), 0)
             else coalesce(sum(l.credit - l.debit), 0) end as balance
-  from accounts_chart a
-  left join journal_lines l on l.account_code = a.code
- group by a.code, a.name, a.normal_side;
+  from trading_accounts t
+ cross join accounts_chart a
+  left join journal_entries e on e.account_id = t.account_id
+  left join journal_lines l on l.entry_id = e.entry_id and l.account_code = a.code
+ group by t.account_id, a.code, a.name, a.normal_side;
 
 create or replace view positions_v as
-select symbol, sum(qty_delta) as qty, sum(cost_delta) as book_cost
-  from position_ledger group by symbol having sum(qty_delta) <> 0;
+select account_id, symbol, sum(qty_delta) as qty, sum(cost_delta) as book_cost
+  from position_ledger group by account_id, symbol having sum(qty_delta) <> 0;
 
 create or replace view cash_balance_v as
-select coalesce(sum(amount), 0) as balance from cash_ledger;
+select t.account_id, coalesce(sum(c.amount), 0) as balance
+  from trading_accounts t left join cash_ledger c on c.account_id = t.account_id
+ group by t.account_id;
+
+create or replace view account_status_v as
+select t.account_id, t.customer_id, t.alias, s.status, s.effective_from
+  from trading_accounts t
+  join lateral (select h.status, h.effective_from from account_status_history h
+                 where h.account_id = t.account_id order by h.effective_from desc, h.id desc limit 1) s on true;
+
+create or replace view customer_positions_v as
+select t.customer_id, p.symbol, sum(p.qty_delta) as qty, sum(p.cost_delta) as book_cost
+  from position_ledger p join trading_accounts t on t.account_id = p.account_id
+ group by t.customer_id, p.symbol having sum(p.qty_delta) <> 0;
 
 -- Korean names (한글 명칭). Shown in pgAdmin and in docs/erd. Every table, view and
 -- column must have one; tests/db/test_erd.py fails otherwise.
@@ -206,7 +271,6 @@ comment on column position_ledger.id is '행 번호';
 comment on column position_ledger.event_seq is '원장 이벤트 순번';
 comment on column position_ledger.trade_date is '매매일';
 comment on column position_ledger.symbol is '종목코드';
-comment on column position_ledger.exec_id is '체결 ID (기초 보유는 OPEN-종목코드)';
 comment on column position_ledger.qty_delta is '수량 증감';
 comment on column position_ledger.cost_delta is '장부금액 증감';
 comment on column position_ledger.realized_pnl is '실현손익';
@@ -264,16 +328,80 @@ comment on column recon_results.note is '판단 메모';
 comment on column recon_results.supersedes_id is '해결 대상 행 번호';
 comment on column recon_results.created_at is '기록 시각';
 
-comment on view account_balances_v is '계정별 잔액 (시산표)';
+comment on table customers is '고객 (별칭만 관리, 개인정보 없음)';
+comment on column customers.customer_id is '고객 ID';
+comment on column customers.alias is '고객 별칭';
+comment on column customers.created_at is '등록 시각';
+
+comment on table trading_accounts is '위탁계좌 (계좌번호·인증키는 DB에 없음)';
+comment on column trading_accounts.account_id is '계좌 ID';
+comment on column trading_accounts.customer_id is '고객 ID';
+comment on column trading_accounts.alias is '계좌 별칭';
+comment on column trading_accounts.broker is '증권사 (KIS)';
+comment on column trading_accounts.env is '환경 (PAPER 모의 / LIVE 실전)';
+comment on column trading_accounts.account_type is '계좌 유형 (GENERAL 위탁종합)';
+comment on column trading_accounts.credential_ref is '인증정보 참조 (PC 환경변수 이름 머리말)';
+comment on column trading_accounts.opened_on is '개설일';
+comment on column trading_accounts.created_at is '등록 시각';
+
+comment on table account_status_history is '계좌 상태 이력 (변경은 새 행으로 추가)';
+comment on column account_status_history.id is '행 번호';
+comment on column account_status_history.account_id is '계좌 ID';
+comment on column account_status_history.status is '상태 (OPEN 정상 / SUSPENDED 정지 / CLOSED 해지)';
+comment on column account_status_history.effective_from is '적용 시작일';
+comment on column account_status_history.reason is '사유';
+comment on column account_status_history.created_at is '기록 시각';
+
+comment on column ledger_events.account_id is '계좌 ID';
+comment on column journal_entries.account_id is '계좌 ID';
+comment on column position_ledger.account_id is '계좌 ID';
+comment on column position_ledger.exec_id is '체결 ID (계좌 안에서 유일, 기초 보유는 OPEN-종목코드)';
+comment on column cash_ledger.account_id is '계좌 ID';
+comment on column oms_orders.account_id is '계좌 ID';
+comment on column broker_snapshots.account_id is '계좌 ID';
+comment on column recon_results.account_id is '계좌 ID';
+
+comment on view account_balances_v is '계좌별·계정별 잔액 (시산표)';
+comment on column account_balances_v.account_id is '계좌 ID';
 comment on column account_balances_v.code is '계정코드';
 comment on column account_balances_v.name is '계정명';
 comment on column account_balances_v.normal_side is '정상잔액 방향';
 comment on column account_balances_v.balance is '잔액';
 
-comment on view positions_v is '종목별 보유 현황';
+comment on view positions_v is '계좌별·종목별 보유 현황';
+comment on column positions_v.account_id is '계좌 ID';
 comment on column positions_v.symbol is '종목코드';
 comment on column positions_v.qty is '보유수량';
 comment on column positions_v.book_cost is '장부금액 (매입금액)';
 
-comment on view cash_balance_v is '예수금 잔액';
+comment on view cash_balance_v is '계좌별 예수금 잔액';
+comment on column cash_balance_v.account_id is '계좌 ID';
 comment on column cash_balance_v.balance is '잔액';
+
+comment on view account_status_v is '계좌별 현재 상태';
+comment on column account_status_v.account_id is '계좌 ID';
+comment on column account_status_v.customer_id is '고객 ID';
+comment on column account_status_v.alias is '계좌 별칭';
+comment on column account_status_v.status is '현재 상태';
+comment on column account_status_v.effective_from is '상태 적용 시작일';
+
+comment on view customer_positions_v is '고객별·종목별 보유 합계 (여러 계좌 합산)';
+comment on column customer_positions_v.customer_id is '고객 ID';
+comment on column customer_positions_v.symbol is '종목코드';
+comment on column customer_positions_v.qty is '보유수량';
+comment on column customer_positions_v.book_cost is '장부금액 (매입금액)';
+
+-- 마이그레이션 적용 기록. 새 DB는 이 스키마로 만들어지면서 그때까지의 마이그레이션이 적용된 것으로 기록된다.
+create table if not exists schema_migrations (
+    version     integer primary key check (version > 0),
+    name        text not null,
+    erd_version text,
+    checksum    text not null,
+    applied_at  timestamptz not null default now()
+);
+comment on table schema_migrations is '스키마 마이그레이션 적용 기록';
+comment on column schema_migrations.version is '마이그레이션 번호';
+comment on column schema_migrations.name is '마이그레이션 이름';
+comment on column schema_migrations.erd_version is '적용 후 ERD 버전';
+comment on column schema_migrations.checksum is '적용한 파일의 해시';
+comment on column schema_migrations.applied_at is '적용 시각';

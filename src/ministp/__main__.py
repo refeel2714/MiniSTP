@@ -39,7 +39,8 @@ from .ops import (GATE_DAYS, IntradayRunner, OpsError, acquire_writer, add_instr
                   place_order, resolve_break)
 from .recon import Cause, Status
 from .session import failure_text
-from .store import PostgresLedgerStore
+from .store import PostgresLedgerStore, SchemaError
+from .store import migrate as mg
 
 DB_NAME = "ministp"
 MARKET_OPEN, MARKET_CLOSE, DAILY_FROM = dt.time(9, 0), dt.time(15, 20), dt.time(15, 40)
@@ -227,7 +228,7 @@ def run(argv, *, environ=os.environ, client_factory=KisClient, connect=psycopg.c
             if args.sample:
                 target = (environ.get("MINISTP_SAMPLE_DATABASE_URL")
                           or psycopg.conninfo.make_conninfo(url, dbname=SAMPLE_DB))
-            return _db_migrate(target, connect, dry_run=args.dry_run, apply=args.apply)
+            return _db_migrate(target, connect, calendar, fees, dry_run=args.dry_run, apply=args.apply)
 
         if args.cmd == "erp":
             target = url
@@ -366,7 +367,7 @@ def run(argv, *, environ=os.environ, client_factory=KisClient, connect=psycopg.c
                 verdict = "무오류" if report.clean else "불일치 있음"
                 print(f"{verdict}. 무오류 연속 영업일 {streak} / {GATE_DAYS}")
                 return 0 if report.clean else 3
-    except (OpsError, KisError, CalendarNotLoadedError) as e:
+    except (OpsError, KisError, CalendarNotLoadedError, SchemaError, mg.MigrationError) as e:
         print(f"오류: {e}")
         return 1
     except psycopg.OperationalError as e:
@@ -442,19 +443,29 @@ def _sample_db(url: str, environ, connect, calendar, days: int) -> int:
     return 0
 
 
+def _print_checks(checks) -> None:
+    many = len({c.account for c in checks if c.account}) > 1
+    for c in checks:
+        who = f"[{c.account}] " if many and c.account else ""
+        print(f"  {'OK  ' if c.ok else '문제'}  {who}{c.title}: {c.detail}")
+
+
 def _verify(url: str, connect, calendar, fees) -> int:
     """Print the integrity report. Takes no writer lock and writes nothing, so it can run beside `run`."""
     from .ops import load_instruments
     from .store.integrity import integrity_report
     with connect(url, autocommit=True) as conn:
-        try:
-            checks = integrity_report(conn, calendar, fees, load_instruments(conn))
-        except psycopg.errors.UndefinedTable:
+        if not mg._has_table(conn, "ledger_events"):
             print("오류: 원장 테이블이 없어요. 먼저 db-init을 실행해 주세요.")
             return 1
+        todo = mg.pending(conn, mg.discover())
+        if todo:
+            print(f"오류: DB 스키마가 이 버전의 코드보다 오래돼서 점검할 수 없어요 (남은 마이그레이션 {len(todo)}개). "
+                  "db-migrate --dry-run이 적용한 상태에서 같은 점검을 하고 되돌려요.")
+            return 1
+        checks = integrity_report(conn, calendar, fees, load_instruments(conn))
         print(f"DB '{conn.info.dbname}' 원장 무결성 점검 (읽기만 해요)")
-        for c in checks:
-            print(f"  {'OK  ' if c.ok else '문제'}  {c.title}: {c.detail}")
+        _print_checks(checks)
         bad = [c for c in checks if not c.ok]
         if bad:
             print(f"문제 {len(bad)}건. 원장을 쓰는 명령(run, order, daily)을 멈추고 원인을 먼저 확인해 주세요.")
@@ -525,9 +536,24 @@ def _master(args, environ, url, connect, calendar, fees, started, download=None)
     return 1 if rep.level == master.BAD else 0
 
 
-def _db_migrate(url: str, connect, *, dry_run: bool, apply: bool) -> int:
-    """Status and plan by default; `--dry-run` rehearses and rolls back; `--apply` changes the database."""
-    from .store import erd, migrate as mg
+def _db_migrate(url: str, connect, calendar, fees, *, dry_run: bool, apply: bool) -> int:
+    """Status and plan by default; `--dry-run` rehearses and rolls back; `--apply` rehearses, then applies.
+
+    A rehearsal also runs the ledger integrity checks on the migrated state, so `--apply`
+    never changes a database whose ledger would not verify afterwards."""
+    from .ops import load_instruments
+    from .store import erd
+    from .store.integrity import integrity_report
+
+    def ledger_still_verifies(conn) -> str:
+        checks = integrity_report(conn, calendar, fees, load_instruments(conn))
+        bad = [c for c in checks if not c.ok]
+        if bad:
+            _print_checks(bad)
+            raise mg.MigrationError(f"적용한 상태에서 원장 무결성 점검 {len(bad)}건이 어긋나서 되돌렸어요.")
+        accounts = len({c.account for c in checks if c.account})
+        return f"원장 무결성 점검 {len(checks)}개 통과 (계좌 {accounts}개)"
+
     try:
         migrations = mg.discover()
         with connect(url, autocommit=True) as conn:
@@ -544,8 +570,9 @@ def _db_migrate(url: str, connect, *, dry_run: bool, apply: bool) -> int:
                 print("리허설은 --dry-run (적용해 보고 되돌려요), 실제 적용은 --apply 예요. 적용 전에 pg_dump로 백업해 주세요.")
                 return 0
             acquire_writer(conn)
-            for r in mg.migrate(conn, migrations, dry_run=dry_run):
-                print(f"{'적용' if r.applied else '리허설(되돌림)'}: {r.migration.label}")
+            verified = []
+            for r in mg.migrate(conn, migrations, dry_run=True, after=lambda c: verified.append(ledger_still_verifies(c))):
+                print(f"리허설(되돌림): {r.migration.label}")
                 for t in r.tables:
                     if t.rows_before is None:
                         print(f"  새 테이블 {t.table}")
@@ -554,7 +581,14 @@ def _db_migrate(url: str, connect, *, dry_run: bool, apply: bool) -> int:
                     else:
                         print(f"  {t.table}: {t.rows_before:,}행 → {t.rows_after if t.rows_after is not None else '없음'} "
                               "(파일에 적힌 의도한 변경)")
-            print("리허설 통과: DB는 바뀌지 않았어요." if dry_run else "마이그레이션 완료.")
+            print(f"  적용한 상태에서 {verified[0]}")
+            print("리허설 통과: DB는 바뀌지 않았어요.")
+            if dry_run:
+                return 0
+            for r in mg.migrate(conn, migrations):
+                print(f"적용: {r.migration.label}")
+            print(f"  적용된 DB에서 {ledger_still_verifies(conn)}")
+            print("마이그레이션 완료.")
             return 0
     except mg.MigrationError as e:
         print(f"오류: {e}")

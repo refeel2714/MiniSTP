@@ -71,9 +71,9 @@ def test_a_changed_cash_row_shows_as_a_difference_of_exactly_that_much(conn):
 
 def test_a_check_without_numbers_and_books_that_cannot_be_replayed_give_no_rows(conn):
     assert compared(conn, "no-such-check", CAL, FEES, load_instruments(conn)) == []
-    with damaged(conn, "insert into ledger_events (seq, event_type, payload) select max(seq) + 1, 'ExecutionEvent',"
+    with damaged(conn, "insert into ledger_events (seq, event_type, payload, account_id) select max(seq) + 1, 'ExecutionEvent',"
                        " '{\"exec_id\": \"X-1\", \"trade_date\": \"2026-11-02\", \"symbol\": \"NOPE\","
-                       " \"side\": \"BUY\", \"qty\": 1, \"price\": 100}' from ledger_events"):
+                       " \"side\": \"BUY\", \"qty\": 1, \"price\": 100}', 'A0001' from ledger_events"):
         assert compared(conn, "accounts", CAL, FEES, load_instruments(conn)) == []
         assert rows(conn, "events")           # what needs no replay is still shown
 
