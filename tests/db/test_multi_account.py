@@ -115,7 +115,7 @@ def test_rehearsal_on_v1_1_passes_and_leaves_no_trace(old):
     assert not report.applied and report.migration.erd_version == "2.0"
     assert sorted(t.table for t in report.kept) == V1_TABLES and all(t.unchanged for t in report.kept)
     assert sorted(t.table for t in report.tables if t.rows_before is None) == sorted(NEW_TABLES)
-    assert [r.migration.erd_version for r in later] == ["2.1", "2.2", "2.3", "2.4", "2.5", "2.6", "2.7", "2.9", "2.10", "2.11", "2.12"] and not any(r.applied for r in later)
+    assert [r.migration.erd_version for r in later] == ["2.1", "2.2", "2.3", "2.4", "2.5", "2.6", "2.7", "2.9", "2.10", "2.11", "2.12", "2.13"] and not any(r.applied for r in later)
     assert mg.fingerprint(old) == before and _shape(old) == shape
     assert not mg._has_table(old, mg.TABLE)
 
@@ -125,22 +125,25 @@ def test_applying_keeps_every_row_and_puts_the_ledger_in_the_default_account(old
     chart = old.execute("select code, name, normal_side from accounts_chart order by code").fetchall()
     report, *later = mg.migrate(old)
     assert report.applied and all(t.unchanged for t in report.kept)
-    assert all(r.applied and all(t.unchanged for t in r.kept) for r in later)   # 0002 공통코드: new tables only
+    assert all(r.applied and all(t.unchanged or t.declared for t in r.kept) for r in later)   # 0013: names only
     after = mg.fingerprint(old, like=before)                     # same rows over the v1.1 columns...
     assert {t: p for t, p in after.items() if t != "accounts_chart"} == {
         t: p for t, p in before.items() if t != "accounts_chart"}
-    # ...and the one v1.1 table that grew (0007: three accounts for adjustments) still holds its fifteen as they were
+    # ...and the one v1.1 table that grew (0007: three accounts, 0013: two more) holds its fifteen, five renamed (v2)
+    v2 = {"1010": "증권예치금", "1100": "FVPL 금융자산", "1110": "FVPL 금융자산 평가조정", "3010": "본사 자금 대체",
+          "4030": "배당금수익"}
     assert old.execute("select code, name, normal_side from accounts_chart where code = any(%s) order by code",
-                       ([c for c, _, _ in chart],)).fetchall() == chart
+                       ([c for c, _, _ in chart],)).fetchall() == [(c, v2.get(c, n), s) for c, n, s in chart]
     assert old.execute("select code from accounts_chart where code <> all(%s) order by code",
-                       ([c for c, _, _ in chart],)).fetchall() == [("4040",), ("4090",), ("5090",)]
+                       ([c for c, _, _ in chart],)).fetchall() == [("1040",), ("4040",), ("4050",), ("4090",), ("5090",)]
+    assert old.execute("select code from accounts_chart where not in_use").fetchall() == [("5050",)]
     for t in WITH_ACCOUNT:
         assert old.execute(f"select distinct account_id from {t}").fetchall() == [(DEFAULT_ACCOUNT,)], t
     assert old.execute("select customer_id, broker, env, account_type, credential_ref, opened_on"
                        " from trading_accounts").fetchall() == [("C0001", "KIS", "PAPER", "GENERAL", "KIS", FIRST_DAY)]
     assert old.execute("select account_id, customer_id, status, effective_from from account_status_v").fetchall() == [
         (DEFAULT_ACCOUNT, "C0001", "OPEN", FIRST_DAY)]
-    assert list(mg.applied(old)) == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12] and mg.migrate(old) == []
+    assert list(mg.applied(old)) == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13] and mg.migrate(old) == []
     checks = _report(old)
     assert all(c.ok for c in checks), [c for c in checks if not c.ok]
 

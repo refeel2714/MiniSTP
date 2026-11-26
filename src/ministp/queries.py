@@ -526,6 +526,14 @@ def nav_series(ledger: Ledger, date_from: dt.date | None = None, date_to: dt.dat
 # What an account's movement does to net assets: equity put in or taken out, income, expense.
 # Assets and liabilities are what net assets is made of, so they explain nothing here.
 MOVE_KIND = {"3": "입출금", "4": "수익", "5": "비용"}
+# 계정과목표 v2: tax withheld is 선납세금 (1040), an asset of the company but not of the brokerage account, so
+# it leaves net assets (R-60) the way an expense did in v1, and explains that part of the change.
+PREPAID_MOVE = "선납세금"
+
+
+def _move_kind(account) -> str | None:
+    from .accounting import Account
+    return PREPAID_MOVE if account is Account.PREPAID_TAX else MOVE_KIND.get(account.code[0])
 
 
 @dataclass(frozen=True)
@@ -560,7 +568,7 @@ def nav_changes(ledger: Ledger) -> list[NavChange]:
     """Each NAV day's change in net assets against what the journal booked since the day before.
 
     Net assets is counted from what is held (예수금 + 미수 - 미지급 + 보유수량 × 종가, R-60); the journal
-    says why it moved (투자원금, 수익, 비용 accounts). The two are worked out separately, so their
+    says why it moved (본사 자금 대체, 수익, 비용 accounts, and 선납세금 that left the account). The two are worked out separately, so their
     difference is a check: it is 0 when every won of the change has an entry behind it.
     A day struck more than once counts once, at its last NAV."""
     days: dict[dt.date, tuple] = {}
@@ -573,9 +581,9 @@ def nav_changes(ledger: Ledger) -> list[NavChange]:
         effect: dict = {}
         for e in entries:
             for ln in e.lines:
-                if ln.account.code[0] in MOVE_KIND:
+                if _move_kind(ln.account):
                     effect[ln.account] = effect.get(ln.account, 0) + ln.credit - ln.debit
-        moves = tuple((MOVE_KIND[a.code[0]], a.code, a.value[1], v)
+        moves = tuple((_move_kind(a), a.code, a.value[1], v)
                       for a, v in sorted(effect.items(), key=lambda kv: kv[0].code) if v)
         out.append(NavChange(date, prev, net, moves, row.units, row.nav_per_1000, prev_nav, struck))
         prev, prev_nav = net, row.nav_per_1000
@@ -1095,7 +1103,8 @@ def code_list(conn: psycopg.Connection, group_id: str) -> Dataset:
     """One group's codes and names. 계정과목 comes from `accounts_chart` with its normal side named."""
     if group_id == CHART_GROUP:
         return _q(conn, """
-            select a.code, a.name, '정상잔액 ' || coalesce(n.name, a.normal_side) as description, '사용' as in_use
+            select a.code, a.name, '정상잔액 ' || coalesce(n.name, a.normal_side) as description,
+                   case when a.in_use then '사용' else '사용 중지' end as in_use
               from accounts_chart a
               left join common_codes n on n.group_id = 'NORMAL_SIDE' and n.code = a.normal_side
              order by a.code""")

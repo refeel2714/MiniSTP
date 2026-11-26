@@ -123,7 +123,7 @@ def test_daily_recognises_the_dividend_then_books_the_cash_on_the_pay_date(conn,
     assert "배당 입금 CA-1 069500: 450원에서 세금 69원을 떼고 381원" in rep.notes
     led = books(conn).ledger
     assert led.cash_balance() == cash + 381 and led.account_balance(Account.DIVIDEND_RECEIVABLE) == 0
-    assert led.account_balance(Account.DIVIDEND_INCOME) == 450 and led.account_balance(Account.WITHHOLDING_TAX) == 69
+    assert led.account_balance(Account.DISTRIBUTION_INCOME) == 450 and led.account_balance(Account.PREPAID_TAX) == 69
     assert _dividends(conn) == [("A0001", 1, "069500", 1, 450, MON, 450, 69, WED, None, "PAID")]
     assert conn.execute("select date, reason, amount, ref_id from cash_ledger where reason = 'DIVIDEND'").fetchall() == [
         (WED, "DIVIDEND", 381, "CA-1")]
@@ -168,7 +168,7 @@ def test_a_cancelled_action_is_taken_back_by_the_next_daily(conn, broker):
     assert rep.clean and rep.closed and rep.nav.receivables == 450
     assert [n[:8] for n in rep.notes] == ["배당 인식 취소", "배당 인식 CA"]
     assert [(r[1], r[4], r[-1]) for r in _dividends(conn)] == [(1, 45, "CANCELED"), (3, 450, "ACCRUED")]
-    assert _dividends(conn)[0][9] == TUE and books(conn).ledger.account_balance(Account.DIVIDEND_INCOME) == 450
+    assert _dividends(conn)[0][9] == TUE and books(conn).ledger.account_balance(Account.DISTRIBUTION_INCOME) == 450
     assert _check(conn, "rights").ok and _check(conn, "dividends", "A0001").ok
 
 
@@ -191,7 +191,7 @@ def test_the_actual_payment_can_be_recorded_by_hand(conn, broker):
     with pytest.raises(OpsError, match="이미 입금으로"):
         rights.record_payment(books(conn), 1, WED)
     led = books(conn).ledger
-    assert led.account_balance(Account.DIVIDEND_INCOME) == 760 and led.account_balance(Account.WITHHOLDING_TAX) == 116
+    assert led.account_balance(Account.DISTRIBUTION_INCOME) == 760 and led.account_balance(Account.PREPAID_TAX) == 116
     row = audit.rows(conn, action="DIVIDEND_PAY", limit=2)[1]
     assert (row.account_id, row.target) == ("A0001", "CA-1")
     assert row.detail == {"symbol": "069500", "date": "2026-11-25", "gross": 460, "tax": 70, "accrued": 450}

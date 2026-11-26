@@ -25,7 +25,7 @@ def test_interest_is_income_less_the_tax_withheld(funded):
     cash, units = funded.cash_balance(), funded.units
     before = funded.nav(d("11-04"), {"A": 10_000})
     a = funded.adjust(d("11-05"), 1, "INTEREST", 12_340, tax=1_890, memo="3분기 예탁금 이용료")
-    assert lines(funded.journal[-1]) == [("1010", 10_450, 0), ("4040", 0, 12_340), ("5050", 1_890, 0)]
+    assert lines(funded.journal[-1]) == [("1010", 10_450, 0), ("1040", 1_890, 0), ("4040", 0, 12_340)]
     assert (funded.journal[-1].kind, funded.journal[-1].source_id, funded.journal[-1].date) == (
         "ADJUSTMENT", "ADJ-1", d("11-05"))
     assert a == Adjustment(1, d("11-05"), "INTEREST", 12_340, 1_890, "3분기 예탁금 이용료") and a.cash == 10_450
@@ -33,7 +33,7 @@ def test_interest_is_income_less_the_tax_withheld(funded):
     after = funded.nav(d("11-05"), {"A": 10_000})
     assert after.net_assets == before.net_assets + 10_450 and after.nav_per_1000 > before.nav_per_1000
     assert funded.account_balance(Account.INTEREST_INCOME) == 12_340
-    assert funded.account_balance(Account.WITHHOLDING_TAX) == 1_890
+    assert funded.account_balance(Account.PREPAID_TAX) == 1_890
 
 
 def test_the_reason_decides_the_other_account(funded):
@@ -46,10 +46,10 @@ def test_the_reason_decides_the_other_account(funded):
         [("1010", 0, 30), ("5030", 30, 0)],      # the broker charged 30 more: 지급수수료
         [("1010", 20, 0), ("5030", 0, 20)],      # or 20 less
         [("1010", 0, 7), ("5040", 7, 0)],        # 세금과공과
-        [("1010", 90, 0), ("4030", 0, 90)],      # a dividend paid 90 more than booked: 배당수익
+        [("1010", 90, 0), ("4030", 0, 90)],      # a dividend paid 90 more than booked: 배당금수익
         [("1010", 0, 40), ("4030", 40, 0)],
-        [("1010", 0, 14), ("5050", 14, 0)],      # 14 more withheld: 법인세등
-        [("1010", 5, 0), ("5050", 0, 5)],
+        [("1010", 0, 14), ("1040", 14, 0)],      # 14 more withheld: 선납세금 (v2)
+        [("1010", 5, 0), ("1040", 0, 5)],
         [("1010", 3, 0), ("4090", 0, 3)],        # 잡이익
         [("1010", 0, 2), ("5090", 2, 0)],        # 잡손실
     ]
@@ -89,11 +89,11 @@ def test_a_cancel_is_the_opposite_entry_and_the_adjustment_stays(funded):
     booked, cash = funded.journal[-1], funded.cash_balance()
     a = funded.cancel_adjustment(d("11-06"), 1, "다른 계좌의 이자였음")
     undo = funded.journal[-1]
-    assert lines(undo) == [("1010", 0, 10_450), ("4040", 12_340, 0), ("5050", 0, 1_890)]
+    assert lines(undo) == [("1010", 0, 10_450), ("1040", 0, 1_890), ("4040", 12_340, 0)]
     assert (undo.kind, undo.source_id, undo.date, undo.reverses) == ("ADJUSTMENT_CANCEL", "ADJ-1", d("11-06"), booked)
     assert (a.canceled_on, a.cancel_memo, a.date, a.amount) == (d("11-06"), "다른 계좌의 이자였음", d("11-05"), 12_340)
     assert funded.cash_balance() == cash - 10_450
-    assert funded.account_balance(Account.INTEREST_INCOME) == funded.account_balance(Account.WITHHOLDING_TAX) == 0
+    assert funded.account_balance(Account.INTEREST_INCOME) == funded.account_balance(Account.PREPAID_TAX) == 0
     for again in (lambda: funded.cancel_adjustment(d("11-06"), 1, "두 번"),
                   lambda: funded.cancel_adjustment(d("11-06"), 9, "없는 번호")):
         with pytest.raises(AdjustmentError):

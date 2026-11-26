@@ -80,8 +80,8 @@ def test_interest_from_the_broker_is_booked_with_its_tax(conn, broker):
     broker.cash += 10_450                                              # 12,340 of 예탁금 이용료 less 1,890 withheld
     a = adjustments.add(books(conn), MON, "INTEREST", 12_340, tax=1_890, memo="3분기 예탁금 이용료", today=MON)
     assert a.cash == 10_450
-    assert dict(conn.execute("select code, balance from account_balances_v where code in ('4040', '5050')"
-                             " and account_id = 'A0001'")) == {"4040": 12_340, "5050": 1_890}
+    assert dict(conn.execute("select code, balance from account_balances_v where code in ('4040', '1040')"
+                             " and account_id = 'A0001'")) == {"4040": 12_340, "1040": 1_890}
     report = _daily(conn, broker, MON)
     assert report.closed and report.nav.net_assets == OPENING + 80_540 + 10_450   # it is income: the NAV moves up
     assert report.nav.units == OPENING + 80_540
@@ -231,3 +231,15 @@ def test_adjust_commands(conn, broker, capsys):
     assert "조정: 수동 조정 3건(취소 2건) 일치, 예수금 반영 합계 +10,450원" in capsys.readouterr().out
     assert cli.run(["code", "list", "ADJUSTMENT_REASON"], **kw) == 0
     assert "INTEREST" in capsys.readouterr().out
+
+
+
+def test_a_retired_account_takes_no_new_journal_line(conn, broker):   # noqa: F811
+    """계정과목표 v2 (ERD v2.13): 5050은 사용 중지. 지난 전표만 가리키고 새 분개 줄은 DB가 거부한다."""
+    assert conn.execute("select in_use from accounts_chart where code = '5050'").fetchone()[0] is False
+    assert conn.execute("select name, normal_side from accounts_chart where code in ('1040', '4050') order by code"
+                        ).fetchall() == [("선납세금", "D"), ("분배금수익", "C")]
+    _opened(conn, broker)
+    eid = conn.execute("select min(entry_id) from journal_entries").fetchone()[0]
+    with pytest.raises(psycopg.errors.CheckViolation, match="5050 is retired"):
+        conn.execute("insert into journal_lines (entry_id, account_code, debit) values (%s, '5050', 1)", (eid,))

@@ -218,8 +218,8 @@ class LedgerMachine(RuleBasedStateMachine):
     def _equity(self) -> int:
         a = self.led.account_balance
         return (a(Account.CONTRIBUTED_CAPITAL) + a(Account.TRADING_GAIN) + a(Account.VALUATION_GAIN)
-                + a(Account.DIVIDEND_INCOME) - a(Account.TRADING_LOSS) - a(Account.VALUATION_LOSS)
-                - a(Account.COMMISSION) - a(Account.TAXES) - a(Account.WITHHOLDING_TAX))
+                + a(Account.DIVIDEND_INCOME) + a(Account.DISTRIBUTION_INCOME) - a(Account.TRADING_LOSS) - a(Account.VALUATION_LOSS)
+                - a(Account.COMMISSION) - a(Account.TAXES) - a(Account.PREPAID_TAX))   # v2: 선납세금 left the account
 
 
 # 평소에는 150가지, 깊게 돌릴 때는 MINISTP_PROPERTY_EXAMPLES=5000처럼 늘려요.

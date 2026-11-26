@@ -43,7 +43,7 @@ def test_every_day_of_the_sample_is_explained_by_its_journal(ctx):
         bridge = run_tx("STP2210R02", ctx, {"date": r["date"]}).datasets["main"].records()
         assert bridge[-1]["running"] == r["net_assets"] and bridge[-2]["amount"] == 0
         assert bridge[0]["running"] + sum(b["amount"] or 0 for b in bridge) == r["net_assets"]
-        assert all(b["code"][0] in "345" for b in bridge[1:-2])     # only equity, income and expense explain
+        assert all(b["code"][0] in "345" or b["code"] == "1040" for b in bridge[1:-2])   # and 선납세금 (v2)
 
 
 def test_the_period_narrows_the_list_and_a_day_without_a_nav_is_refused(ctx, sample):

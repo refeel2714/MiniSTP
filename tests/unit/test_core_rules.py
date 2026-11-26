@@ -45,7 +45,7 @@ def test_unbalanced_entry_rejected():
 def test_account_codes_follow_the_numbering_rule():
     """스펙 D4 채번 규칙: 대분류(1 자산, 2 부채, 3 자본, 4 수익, 5 비용), 중분류, 순번, 세목. 숫자 4자리."""
     codes = [a.code for a in Account]
-    assert len(set(codes)) == len(codes) == 18 and all(len(c) == 4 and c.isdigit() for c in codes)
+    assert len(set(codes)) == len(codes) == 20 and all(len(c) == 4 and c.isdigit() for c in codes)
     side = {"1": "D", "2": "C", "3": "C", "4": "C", "5": "D"}     # no contra account yet: the class gives the side
     assert all(side[a.code[0]] == a.normal_side for a in Account)
     assert all(c[3] == "0" for c in codes)                         # no sub-account (세목) is in use

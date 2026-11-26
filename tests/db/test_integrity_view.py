@@ -51,7 +51,7 @@ def test_every_check_of_a_clean_database_has_numbers_and_they_all_agree(conn):
 def test_the_numbers_are_the_ones_the_books_hold(conn):
     books = load_books(conn, CAL, FEES)
     assert rows(conn, "cash")["예수금"].stored == books.ledger.cash_balance()
-    assert rows(conn, "accounts")["1010 예수금"].expected == books.ledger.cash_balance()
+    assert rows(conn, "accounts")["1010 증권예치금"].expected == books.ledger.cash_balance()
     symbol, position = next(iter(books.ledger.positions().items()))
     got = rows(conn, "positions")
     assert (got[f"{symbol} 보유수량"].stored, got[f"{symbol} 장부금액"].stored) == (position.qty, position.book_cost)

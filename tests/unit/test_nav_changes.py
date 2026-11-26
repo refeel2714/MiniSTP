@@ -24,7 +24,7 @@ def test_every_won_of_a_day_has_an_entry_behind_it(ledger):
     assert (first.prev_net_assets, first.unexplained, second.unexplained) == (0, 0, 0)
     assert second.prev_net_assets == first.net_assets
     moved = {name: amount for _, _, name, amount in first.moves}
-    assert moved["투자원금"] == 1_000_000 and moved["평가이익"] == 5_000 and moved["지급수수료"] < 0
+    assert moved["본사 자금 대체"] == 1_000_000 and moved["평가이익"] == 5_000 and moved["지급수수료"] < 0
     kinds = {name: kind for kind, _, name, _ in second.moves}
     assert kinds["매매이익"] == "수익" and kinds["세금과공과"] == "비용"
     assert second.change == second.explained == sum(m[3] for m in second.moves)
@@ -50,7 +50,7 @@ def test_a_day_struck_twice_counts_once_at_its_last_nav(ledger):
     ledger.nav(d("11-02"), {"A": 10_000})
     [c] = q.nav_changes(ledger)
     assert c.prev_net_assets == 0 and c.unexplained == 0 and c.struck == 2      # the history says it was restruck
-    assert {m[2] for m in c.moves} == {"투자원금", "지급수수료"}
+    assert {m[2] for m in c.moves} == {"본사 자금 대체", "지급수수료"}
 
 
 def test_the_bridge_reads_from_yesterday_to_today(ledger):
