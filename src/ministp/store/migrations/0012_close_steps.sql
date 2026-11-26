@@ -146,6 +146,6 @@ insert into common_codes (group_id, code, name, description, sort_order) values
     ('CLOSE_STEP_STATE', 'WARN', '주의', '끝났지만 한번 볼 것', 4),
     ('CLOSE_STEP_STATE', 'BAD', '확인 필요', '누가 판단해야 함', 5),
     ('CLOSE_STEP_STATE', 'MISSING', '누락', '날이 지났는데 하지 않음', 6),
-    ('CLOSE_DAY_STATE', 'DONE', '점검 완료', '필수 단계가 모두 끝남', 1),
+    ('CLOSE_DAY_STATE', 'DONE', '필수 완료', '필수 단계가 모두 끝남 (선택 단계는 남아 있을 수 있음)', 1),
     ('CLOSE_DAY_STATE', 'OPEN', '진행 중', '오늘 아직 남은 필수 단계가 있음', 2),
     ('CLOSE_DAY_STATE', 'ATTENTION', '확인 필요', '필수 단계에 확인 필요나 누락이 있음', 3);

@@ -23,7 +23,7 @@ from . import audit
 from .ledger import ExecutionEvent, Ledger, book_date
 
 DONE, NONE, WAIT, WARN, BAD, MISSING = "완료", "대상 없음", "대기", "주의", "확인 필요", "누락"
-DAY_DONE, DAY_OPEN, DAY_BAD = "점검 완료", "진행 중", "확인 필요"
+DAY_DONE, DAY_OPEN, DAY_BAD = "필수 완료", "진행 중", "확인 필요"   # 필수 완료: 선택 단계는 남아 있을 수 있어요
 STATE_CODES = {DONE: "DONE", NONE: "NONE", WAIT: "WAIT", WARN: "WARN", BAD: "BAD", MISSING: "MISSING"}
 DAY_STATE_CODES = {DAY_DONE: "DONE", DAY_OPEN: "OPEN", DAY_BAD: "ATTENTION"}
 _FINISHED = (DONE, NONE, WARN)
@@ -95,6 +95,15 @@ def finished(steps: list[Step]) -> int:
 
 def required(steps: list[Step]) -> int:
     return sum(s.required for s in steps)
+
+
+def optional_left(steps: list[Step]) -> str:
+    """선택 단계가 어디까지 왔는지 한마디: 남은 선택 단계 이름과 상태, 모두 끝났으면 '모두 끝남', 없으면 '없음'."""
+    optional = [s for s in steps if not s.required]
+    if not optional:
+        return "없음"
+    left = [f"{s.name} {s.state}" for s in optional if s.state not in _FINISHED]
+    return ", ".join(left) if left else "모두 끝남"
 
 
 def needing(steps: list[Step]) -> int:

@@ -456,7 +456,7 @@ def _run(argv, *, environ=os.environ, client_factory=KisClient, connect=psycopg.
     q.add_argument("--use", dest="in_use", action="store_true", default=None, help="사용")
     q.add_argument("--no-use", dest="in_use", action="store_false", help="사용 안 함 (점검에서 빠져요)")
     q.add_argument("--required", dest="required", action="store_true", default=None, help="필수 단계")
-    q.add_argument("--optional", dest="required", action="store_false", help="선택 단계 (그날 점검 완료를 막지 않아요)")
+    q.add_argument("--optional", dest="required", action="store_false", help="선택 단계 (그날 필수 완료를 막지 않아요)")
     q.add_argument("--screen", help="상세 화면 (빈 값이면 없음)")
     q.add_argument("--asset-type", help="이 자산 유형을 거래·보유한 계좌에만 (빈 값이면 모든 계좌)")
     q.add_argument("--description", help="설명")
