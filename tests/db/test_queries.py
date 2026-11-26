@@ -194,6 +194,9 @@ def test_nav_series_keeps_each_day_as_it_was(conn, broker):
     assert [r["date"] for r in rows] == [DAY, D("2026-11-23")]
     assert rows[0]["market_value"] == 3 * 80_540 and rows[1]["market_value"] == 3 * 81_000
     assert nav_series(led, date_from=D("2026-11-21")).rows[0][0] == D("2026-11-23")
+    # 설정 이후 수익률 is the NAV against 1,000.00, in percent: the screen shows it instead of 기준가·좌수
+    for r in rows:
+        assert r["since_start"] == round(float(r["nav_per_1000"]) / 10 - 100, 2)
 
 
 def test_every_transaction_is_registered_once():
