@@ -5,18 +5,22 @@ import getpass
 from .calendar import BusinessCalendar
 
 PROMPTS = [
-    ("MINISTP_KIS_APP_KEY", "모의투자 앱키"),
-    ("MINISTP_KIS_APP_SECRET", "모의투자 앱시크릿"),
-    ("MINISTP_KIS_ACCOUNT", "모의투자 계좌번호 (예: 12345678-01)"),
+    ("APP_KEY", "모의투자 앱키"),
+    ("APP_SECRET", "모의투자 앱시크릿"),
+    ("ACCOUNT", "모의투자 계좌번호 (예: 12345678-01)"),
 ]
 
 
-def ask_missing(environ) -> dict:
-    """Ask for anything not set in the environment. Input is hidden and not saved."""
+def ask_missing(environ, prefix: str = "MINISTP_KIS", who: str = "") -> dict:
+    """Ask for anything not set in the environment. Input is hidden and not saved.
+
+    `prefix` picks one account's variables (`MINISTP_KIS_2_APP_KEY` ...); `who` names
+    that account in the prompt so a key is not typed in for the wrong one."""
     env = dict(environ)
-    for key, label in PROMPTS:
+    for name, label in PROMPTS:
+        key = f"{prefix}_{name}"
         if not env.get(key):
-            env[key] = getpass.getpass(f"{label} (입력 내용은 화면에 표시되지 않아요): ").strip()
+            env[key] = getpass.getpass(f"{who}{label} (입력 내용은 화면에 표시되지 않아요): ").strip()
     return env
 
 

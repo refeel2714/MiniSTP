@@ -21,6 +21,7 @@ class RiskDecision:
 REASON_TEXT = {
     "": "주문 가능",
     "KILL_SWITCH": "킬 스위치가 켜져 있어요",
+    "ACCOUNT_NOT_OPEN": "정상 상태의 계좌가 아니에요 (정지·해지 계좌는 주문을 받지 않아요, R-39)",
     "NOT_BUSINESS_DAY": "영업일이 아니에요 (휴장일에는 주문을 내지 않아요, R-38)",
     "BAD_QTY": "수량을 1주 이상 넣어 주세요",
     "BAD_TICK": "호가단위에 맞지 않는 가격이에요 (R-38)",
@@ -40,13 +41,17 @@ def explain(reason: str) -> str:
 def check_order(limits: RiskLimits, *, side: Side, qty: int, ref_price: int,
                 held_qty: int, pending_sell_qty: int, buying_power: int,
                 pending_buy_value: int, halted: bool, limit_price: int | None = None,
-                tick: int | None = None, business_day: bool = True) -> RiskDecision:
-    """`limit_price` with `tick` checks the price unit; `business_day=False` refuses the order (R-38).
+                tick: int | None = None, business_day: bool = True,
+                account_open: bool = True) -> RiskDecision:
+    """`limit_price` with `tick` checks the price unit; `business_day=False` refuses the order (R-38);
+    `account_open=False` refuses it because the account is suspended or closed (R-39).
 
     Order form first (day, quantity, price unit), then limits and capacity, so a
     mistyped order is reported as mistyped and not as a shortage of cash."""
     if halted:
         return RiskDecision(False, "KILL_SWITCH")
+    if not account_open:
+        return RiskDecision(False, "ACCOUNT_NOT_OPEN")
     if not business_day:
         return RiskDecision(False, "NOT_BUSINESS_DAY")
     if qty <= 0:

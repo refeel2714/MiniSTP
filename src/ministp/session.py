@@ -58,6 +58,8 @@ class TradingSession:
     last_balance: BrokerBalance | None = None
     on_submit: object = None  # callable(cid, day, symbol, side, qty, limit) before the broker call
     on_ack: object = None     # callable(cid, ack | None, detail) after it
+    account_open: bool = True  # R-39: a suspended or closed account takes no new orders
+    id_prefix: str = "S"       # client order ids are unique in the database; other accounts add their id
     on_cancel: object = None  # callable(cid, ack) after the broker took a cancel request
 
     def _open_orders(self):
@@ -95,7 +97,7 @@ class TradingSession:
                limit_price: int | None = None) -> str | None:
         """Returns the client order id, or None if risk or the broker refused it."""
         self._seq += 1
-        cid = f"S{day:%Y%m%d}-{self._seq:04d}"
+        cid = f"{self.id_prefix}{day:%Y%m%d}-{self._seq:04d}"
         if self.oms.halted:
             self.anomalies.append(Anomaly(day, "SUBMIT_FAILED", cid, "kill switch engaged"))
             return None
@@ -107,7 +109,8 @@ class TradingSession:
         inst = self.ledger.instruments.get(symbol)
         decision = check(self.capacity(symbol, ref), side, qty, self.limits, self.oms.halted,
                          limit_price=limit_price, asset_type=inst.asset_type if inst else None,
-                         business_day=self.ledger.calendar.is_business_day(day))
+                         business_day=self.ledger.calendar.is_business_day(day),
+                         account_open=self.account_open)
         self.oms.create(cid, symbol=symbol, side=side, qty=qty, limit_price=limit_price or 0)
         if not decision.ok:
             self.oms.on_rejected(cid)

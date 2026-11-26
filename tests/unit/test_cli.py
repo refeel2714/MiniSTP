@@ -10,6 +10,15 @@ def test_asks_only_for_missing_values(monkeypatch):
     assert len(asked) == 2
 
 
+def test_asks_for_the_named_account_only(monkeypatch):
+    asked = []
+    monkeypatch.setattr(cli.getpass, "getpass", lambda prompt: asked.append(prompt) or "v")
+    env = cli.ask_missing({"MINISTP_KIS_APP_KEY": "k", "MINISTP_KIS_2_ACCOUNT": "2"}, "MINISTP_KIS_2", "[A0002 연습] ")
+    assert env["MINISTP_KIS_2_APP_KEY"] == env["MINISTP_KIS_2_APP_SECRET"] == "v" and env["MINISTP_KIS_2_ACCOUNT"] == "2"
+    assert "MINISTP_KIS_APP_SECRET" not in env
+    assert len(asked) == 2 and all(p.startswith("[A0002 연습] ") for p in asked)
+
+
 def test_database_url_quotes_password(monkeypatch):
     from ministp import __main__ as cli
     monkeypatch.setattr(cli.getpass, "getpass", lambda prompt: "p@ss/word")

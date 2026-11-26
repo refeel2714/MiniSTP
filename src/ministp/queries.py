@@ -875,7 +875,8 @@ def order_check(books, day: dt.date, symbol: str, side: str, qty: int, limit_pri
                                   None, None, None, None, False, "NO_PRICE", REASON_TEXT["NO_PRICE"]),))
     cap = order_capacity(books, day, symbol, ref, closes)
     reason = check(cap, s, qty, halted=halted, limit_price=limit_price, asset_type=inst.asset_type,
-                   business_day=books.ledger.calendar.is_business_day(day)).reason
+                   business_day=books.ledger.calendar.is_business_day(day),
+                   account_open=books.status == "OPEN").reason
     value = qty * ref
     required = int(value * (1 + RiskLimits().cash_buffer_rate)) if s is Side.BUY else 0
     return Dataset(columns, ((symbol, inst.name, side, qty, ref, "지정가" if limit_price else "최근 종가", value,

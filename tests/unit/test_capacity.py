@@ -97,8 +97,17 @@ def test_a_mistyped_order_is_reported_as_mistyped_not_as_short_of_cash(ledger):
                  business_day=False).reason == "NOT_BUSINESS_DAY"
 
 
+def test_no_order_on_an_account_that_is_not_open(ledger):
+    """R-39: asked before the order form, so the answer is about the account and not the typing."""
+    ledger.deposit(DAY, 10_000_000)
+    cap = capacity(ledger, [], "A", 60_000)
+    assert check(cap, Side.BUY, 1, account_open=False).reason == "ACCOUNT_NOT_OPEN"
+    assert check(cap, Side.BUY, 0, account_open=False, business_day=False).reason == "ACCOUNT_NOT_OPEN"
+    assert check(cap, Side.BUY, 1, halted=True, account_open=False).reason == "KILL_SWITCH"
+
+
 def test_every_refusal_has_a_wording():
-    for reason in ("KILL_SWITCH", "NOT_BUSINESS_DAY", "BAD_QTY", "BAD_TICK", "MAX_ORDER_VALUE",
+    for reason in ("KILL_SWITCH", "ACCOUNT_NOT_OPEN", "NOT_BUSINESS_DAY", "BAD_QTY", "BAD_TICK", "MAX_ORDER_VALUE",
                    "SHORT_SELL", "INSUFFICIENT_CASH"):
         assert REASON_TEXT[reason] and explain(reason).endswith(f"[{reason}]")
     assert explain("SOMETHING_NEW") == "SOMETHING_NEW"

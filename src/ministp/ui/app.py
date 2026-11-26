@@ -29,7 +29,7 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from ..calendar import BusinessCalendar, CalendarNotLoadedError
 from ..fees import FeeSchedule
-from ..ops import OpsError, acquire_writer
+from ..ops import OpsError, acquire_writer, require_current_schema
 from ..store import erd
 from .actions import ActionContext, ActionError, run_action
 from .definitions import (DefinitionError, jump_targets, load_lookups, load_menu, load_screens,
@@ -230,6 +230,7 @@ def create_app(dsn: str, *, calendar: BusinessCalendar, fees: FeeSchedule, today
         try:
             with connect(write_dsn, autocommit=True) as conn:
                 acquire_writer(conn)          # one writer at a time: waits its turn behind run, daily, ...
+                require_current_schema(conn)  # like every CLI command: never write a ledger of another shape
                 with conn.transaction():      # all of it or none of it
                     message = run_action(tx_id, ActionContext(conn, calendar, fees, business_day()),
                                          body.get("params", {}))
