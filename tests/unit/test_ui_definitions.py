@@ -483,6 +483,48 @@ def test_a_screen_number_outside_the_classification_is_a_problem():
     assert "대분류 번호는 1~9 한 자리" in menu_problems([MenuArea("10", "기타", "", ())], {})[0]
 
 
+def test_a_column_that_stores_a_common_code_is_shown_by_the_codes_name():
+    from ministp.ui.definitions import code_group
+    catalog = {**CATALOG, "ledger_events": {"columns": [{"name": "event_type", "comment": "이벤트 유형"}]}}
+    cols = [Column("event_type", "ledger_events.event_type", format="code"),       # the group stored in that column
+            Column("cause", label="판단 원인", format="code", codes="RECON_CAUSE"),  # a computed value says its group
+            Column("symbol", "instruments.symbol", format="code")]                  # not a common code
+    assert [code_group(c) for c in cols] == ["EVENT_TYPE", "RECON_CAUSE", None]
+    s = screen(cols, [Condition("event_type", "select", source="ledger_events.event_type", options=["NavEvent"])],
+               tx="STP3100R01", sid="STP-3100")
+    assert validate(s, catalog) == []
+    spec = resolve(s["STP-3100"], catalog)
+    assert [c["codes"] for c in spec["grids"][0]["columns"]] == ["EVENT_TYPE", "RECON_CAUSE", None]
+    assert spec["conditions"][0]["codes"] == "EVENT_TYPE"                          # the select lists names too
+
+    def problems(col):
+        return validate(screen([col]), catalog)
+    assert any("없는 코드 그룹 NOPE" in e for e in problems(Column("x", label="x", codes="NOPE")))
+    assert any("코드나 글자 열에만" in e for e in problems(Column("x", label="x", format="money", codes="RECON_CAUSE")))
+    assert any("적지 않아도 돼요" in e
+               for e in problems(Column("event_type", "ledger_events.event_type", format="code", codes="EVENT_TYPE")))
+
+
+def test_every_shipped_code_column_names_a_seeded_group_and_event_types_are_named_everywhere():
+    from ministp.codes import SEED
+    from ministp.ui.definitions import code_group
+    groups = {g.group_id for g in SEED}
+    shipped = load_screens()
+    named = {(sid, g.id, c.name): code_group(c) for sid, s in shipped.items() for g in s.grids for c in g.columns
+             if code_group(c)}
+    assert set(named.values()) <= groups
+    assert named[("STP-3100", "events", "event_type")] == named[("STP-3200", "events", "event_type")] == "EVENT_TYPE"
+    assert named[("STP-2100", "results", "item")] == "RECON_ITEM" and named[("STP-2100", "results", "status")] == "RECON_STATUS"
+    assert named[("STP-2100", "results", "resolved_cause")] == named[("STP-2100", "results", "cause_code")] == "RECON_CAUSE"
+    assert named[("STP-3100", "cash", "reason")] == "CASH_REASON"
+    # 분개 조회는 서버가 붙인 전표 유형 이름(kind_name)을 보여요: 그 이름표가 공통코드와 같아야 해요
+    from ministp.journal_templates import KIND_NAMES
+    assert KIND_NAMES == {code: name for g in SEED if g.group_id == "JOURNAL_KIND" for code, name, _ in g.codes}
+    # no column whose source is a stored code column is left showing the bare code
+    stored = {g.used_by for g in SEED if g.used_by}
+    assert all(code_group(c) for s in shipped.values() for g in s.grids for c in g.columns if c.source in stored)
+
+
 def test_an_input_grid_types_one_column_and_feeds_a_grid_that_takes_its_values():
     from ministp.ui.definitions import load_lookups, split_sides
     shipped = load_screens()["STP-1310"]

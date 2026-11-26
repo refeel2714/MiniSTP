@@ -41,12 +41,12 @@ class JournalTemplate:
 
 
 # 전표 유형 코드 -> 화면에 적는 이름 (분개 모형 STP-4500과 분개 조회 전표 보기가 함께 써요).
-# 없는 코드는 코드 그대로 보여요.
+# 공통코드 JOURNAL_KIND(codes.SEED)의 이름과 같아요(시험이 확인). 없는 코드는 코드 그대로 보여요.
 KIND_NAMES = {
-    "DEPOSIT": "입금", "WITHDRAWAL": "출금", "TRANSFER_IN": "대체 입금", "TRANSFER_OUT": "대체 출금",
-    "OPENING": "기초 잔고", "EXECUTION": "체결", "LATE_EXECUTION": "지연 체결", "SETTLEMENT": "결제",
-    "VALUATION": "평가", "VALUATION_REVERSAL": "평가 역분개", "DIVIDEND_ACCRUAL": "배당 미수", "DIVIDEND": "배당 입금",
-    "DIVIDEND_CANCEL": "배당 취소", "ADJUSTMENT": "수동 조정", "ADJUSTMENT_CANCEL": "조정 취소",
+    "DEPOSIT": "입금", "OPENING": "시작 보유", "EXECUTION": "체결", "SETTLEMENT": "결제", "VALUATION": "평가",
+    "VALUATION_REVERSAL": "평가 환입", "LATE_EXECUTION": "마감 후 체결", "DIVIDEND_ACCRUAL": "배당 인식",
+    "DIVIDEND": "배당 입금", "DIVIDEND_CANCEL": "배당 인식 취소", "WITHDRAWAL": "출금", "TRANSFER_OUT": "대체 출금",
+    "TRANSFER_IN": "대체 입금", "ADJUSTMENT": "수동 조정", "ADJUSTMENT_CANCEL": "수동 조정 취소",
 }
 SIDE_NAMES = {"D": "차변", "C": "대변"}
 

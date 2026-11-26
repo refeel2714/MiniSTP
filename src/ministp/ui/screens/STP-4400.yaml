@@ -15,7 +15,7 @@ grids:
       - {name: account_id, source: trading_accounts.account_id, format: code}
       - {name: alias, source: trading_accounts.alias}
       - {name: customer_alias, source: customers.alias}
-      - {name: status, source: account_status_v.status, format: code, color: status}
+      - {name: status, source: account_status_v.status, format: code, codes: ACCOUNT_STATUS, color: status}
       - {name: broker, source: trading_accounts.broker, format: code}
       - {name: env, source: trading_accounts.env, format: code}
       - {name: account_type, source: trading_accounts.account_type, format: code}

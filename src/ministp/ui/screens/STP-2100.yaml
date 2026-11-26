@@ -44,7 +44,7 @@ grids:
       - {name: status_name, label: 결과, color: status, display: pill}
       - {name: cause_code, source: recon_results.cause_code, format: code, hidden: true}
       - {name: cause_name, label: 추정 원인}
-      - {name: resolved_cause, label: 판단 원인 코드, format: code, hidden: true}
+      - {name: resolved_cause, label: 판단 원인 코드, format: code, codes: RECON_CAUSE, hidden: true}
       - {name: resolved_cause_name, label: 판단 원인}
       - {name: resolved_note, label: 판단 메모}
       - {name: resolved_at, label: 판단 시각, format: datetime}

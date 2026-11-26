@@ -163,9 +163,19 @@ def create_app(dsn: str, *, calendar: BusinessCalendar, fees: FeeSchedule, today
                 "select s.account_id, s.alias, s.customer_id, s.status, t.env from account_status_v s"
                 " join trading_accounts t using (account_id) order by s.account_id")]
 
+    def code_names() -> dict[str, dict[str, str]]:
+        """공통코드 as the page shows it: group -> code -> name, read when the page is made so a renamed code
+        shows its new name on the next open. A code switched off keeps its name: old rows still carry it."""
+        out: dict[str, dict[str, str]] = {}
+        with connect_read_only(dsn, connect) as conn:
+            for group_id, code, name in conn.execute(
+                    "select group_id, code, name from common_codes order by group_id, sort_order, code"):
+                out.setdefault(group_id, {})[code] = name
+        return out
+
     def shell_data(screen_id: str | None) -> str:
         data = {"menu": menu, "jump": jump, "today": business_day().isoformat(), "db": db_name, "label": label,
-                "accounts": accounts(), "default_account": DEFAULT_ACCOUNT,
+                "accounts": accounts(), "default_account": DEFAULT_ACCOUNT, "codes": code_names(),
                 "tree": tree, "path": menu_path(classes, screen_id) if screen_id else [],   # 화면 분류
                 "writable": write_dsn is not None, "token": token if write_dsn else "",
                 "screen": resolved.get(screen_id) if screen_id else None}
