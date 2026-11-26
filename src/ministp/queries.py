@@ -7,6 +7,7 @@ registered under a transaction id (`TRANSACTIONS`), one id per read the screens
 need (화면 기획서: 조회 트랜잭션 하나 = 조회 서비스 하나).
 """
 import datetime as dt
+import json
 from dataclasses import dataclass
 
 import psycopg
@@ -181,10 +182,17 @@ def recon_history(conn: psycopg.Connection, date_from: dt.date | None = None, da
     matches, so a break of one holding out of a hundred is not lost in the middle. `key_name` names the
     instrument when the key is a symbol."""
     return _q(conn, """
-        select r.id, r.date, s.kind, s.taken_at, r.item, r.key, i.name as key_name,
+        select r.id, r.date, s.kind, s.taken_at, r.item,
+               coalesce(%(items)s::jsonb ->> r.item, r.item) as item_name,
+               case when i.symbol is not null then '종목' when r.key ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' then '일자'
+                    when coalesce(r.key, '') = '' then '계좌 전체' else '기타' end as key_kind,
+               r.key, i.name as key_name,
                r.internal_value, r.broker_value, r.diff,
-               r.status, r.cause_code,
-               j.id as resolved_by, j.cause_code as resolved_cause, j.note as resolved_note,
+               r.status, case when r.status = 'MATCH' then '일치' when j.id is null then '불일치'
+                              else '불일치(판단함)' end as status_name,
+               r.cause_code, %(causes)s::jsonb ->> r.cause_code as cause_name,
+               j.id as resolved_by, j.cause_code as resolved_cause, %(causes)s::jsonb ->> j.cause_code as resolved_cause_name,
+               j.note as resolved_note,
                j.created_at as resolved_at
           from recon_results r
           join broker_snapshots s on s.snapshot_id = r.run_id
@@ -197,7 +205,15 @@ def recon_history(conn: psycopg.Connection, date_from: dt.date | None = None, da
            and (%(t)s::date is null or r.date <= %(t)s)
            and (not %(ob)s or r.status = 'BREAK')
          order by r.date desc, r.run_id desc, (r.status = 'BREAK' and j.id is null) desc, r.status = 'BREAK' desc, r.id""",
-              {"kind": kind, "f": date_from, "t": date_to, "ob": only_breaks})
+              {"kind": kind, "f": date_from, "t": date_to, "ob": only_breaks,
+               "items": json.dumps(RECON_ITEM_NAMES), "causes": json.dumps(RECON_CAUSE_NAMES)})
+
+
+# 대사 항목과 원인의 한글 이름 (화면에 영어 코드 대신)
+RECON_ITEM_NAMES = {"CASH_D0": "예수금 D+0", "CASH_PROJECTED": "예수금 D+2", "EXEC_QTY": "체결 수량",
+                    "EXEC_COUNT": "체결 건수", "POSITION_QTY": "보유 수량", "BOOK_COST": "장부금액"}
+RECON_CAUSE_NAMES = {"MISSING_EXEC": "체결 누락", "FEE_DIFF": "수수료 차이", "TAX_DIFF": "세금 차이",
+                     "ROUNDING": "끝수 차이", "CORP_ACTION": "권리 처리", "TIMING": "시점 차이", "UNKNOWN": "원인 모름"}
 
 
 def _open_day(calendar, day: dt.date) -> bool | None:
@@ -213,7 +229,7 @@ def recon_calendar(conn: psycopg.Connection, calendar, today: dt.date, date_from
     """날짜별 대사 요약, newest first: one row a day, judged by that day's latest run (ops.recon_days,
     the same reading the gate count uses).
 
-    일치 = no break · 판단 완료 = breaks, every one judged (the gate still counts the day) ·
+    일치 = no break · 불일치(판단함) = breaks, every one judged (the gate still counts the day) ·
     불일치 = a break nobody has judged. A weekday without a run is 휴장 on an exchange holiday,
     대사 전 if it is today, 대사 없음 if it has passed (일 마감 대사 only: a missed day ends the
     clean streak; an intraday recon is not owed every day). Days before the first run and after
@@ -231,7 +247,7 @@ def recon_calendar(conn: psycopg.Connection, calendar, today: dt.date, date_from
     while d >= date_from:
         day = days.get(d)
         if day is not None:
-            state = "일치" if not day.breaks else "판단 완료" if day.clean else "불일치"
+            state = "일치" if not day.breaks else "불일치(판단함)" if day.clean else "불일치"
             rows.append((d, state, kind, day.items, day.breaks, day.open_breaks))
         elif d.weekday() < 5:
             if _open_day(calendar, d) is False:
