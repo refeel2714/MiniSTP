@@ -8,8 +8,9 @@ codes; then a file is written only when every account in the range is mapped. Ev
 Two shapes:
 - 건별 (`entry`): one document per journal entry. 증빙번호 `MSTP-<이벤트 번호>-<k>` (k-th entry the event
   wrote), so the ERP can refuse a document it already has. A reversal points at the document it reverses.
-- 일별 합계 (`day`): one document per day and account, net amount per ERP account. Only for days whose daily
-  close is done (NAV recorded), since a day still open can gain entries and its total would change.
+- 일별 합계 (`day`): one document per day and account, net amount per ERP account. Only for days the account's
+  books are closed through (R-77 일 마감, `day_closes`): a day still open can gain entries (a late fill, a
+  dividend) and its total would change. A close locks every day up to its date, so one close covers them all.
 
 One account at a time by default (the CLI's `--account`); `account_id=None` takes every account into one file.
 Every line carries its account (계좌, 계좌명) and, when the entry is about one stock, the stock (종목코드): the
@@ -31,7 +32,11 @@ BY = ("entry", "day")
 HEADER = ["회사코드", "전표유형", "증빙번호", "전표일자", "통화", "줄번호", "계정코드", "계정명", "차변", "대변", "적요",
           "계좌", "계좌명", "종목코드", "MiniSTP계정", "원장이벤트", "반대전표대상"]
 KIND_NAMES = {"DEPOSIT": "투자원금 입금", "OPENING": "기초 보유", "EXECUTION": "체결", "SETTLEMENT": "결제",
-              "VALUATION": "공정가치 평가", "VALUATION_REVERSAL": "전일 평가 역분개"}
+              "VALUATION": "공정가치 평가", "VALUATION_REVERSAL": "전일 평가 역분개",
+              "LATE_EXECUTION": "마감 후 체결", "DIVIDEND_ACCRUAL": "배당 인식", "DIVIDEND": "배당 입금",
+              "DIVIDEND_CANCEL": "배당 인식 취소", "WITHDRAWAL": "출금", "TRANSFER_OUT": "대체 출금",
+              "TRANSFER_IN": "대체 입금", "ADJUSTMENT": "수동 조정", "ADJUSTMENT_CANCEL": "수동 조정 취소"}
+# The 적요 of a reversal names the kind of the entry it is; the code table (JOURNAL_KIND) wins over these.
 SIDE_NAMES = {"BUY": "매수", "SELL": "매도"}
 MINISTP_NAMES = {a.code: a.value[1] for a in Account}
 
@@ -166,16 +171,20 @@ def _memos(conn: psycopg.Connection, seqs: set[int]) -> dict[int, str]:
         "select seq, event_type, payload from ledger_events where seq = any(%s)", (sorted(seqs),))}
     exec_ids = [p["exec_id"] for t, p in events.values() if t == "SettlementEvent"]
     fills = {p["exec_id"]: p for (p,) in conn.execute(
-        "select payload from ledger_events where event_type = 'ExecutionEvent' and payload->>'exec_id' = any(%s)",
+        "select payload from ledger_events where event_type in ('ExecutionEvent', 'LateExecutionEvent')"
+        " and payload->>'exec_id' = any(%s)",
         (exec_ids,))} if exec_ids else {}
 
     def stock(sym: str) -> str:
         return f"{sym} {names.get(sym, '')}".strip()
 
+    reasons = dict(conn.execute("select code, name from common_codes where group_id = 'ADJUSTMENT_REASON'").fetchall())
+
     out = {}
     for seq, (t, p) in events.items():
-        if t == "ExecutionEvent":
-            out[seq] = f"{SIDE_NAMES.get(p['side'], p['side'])} 체결 {stock(p['symbol'])} {p['qty']:,}주 @{p['price']:,}"
+        if t in ("ExecutionEvent", "LateExecutionEvent"):
+            late = f" (마감 후 체결, 매매일 {p['trade_date']})" if t == "LateExecutionEvent" else ""
+            out[seq] = f"{SIDE_NAMES.get(p['side'], p['side'])} 체결 {stock(p['symbol'])} {p['qty']:,}주 @{p['price']:,}{late}"
         elif t == "SettlementEvent":
             f = fills.get(p["exec_id"])
             what = f"{SIDE_NAMES.get(f['side'], f['side'])} 결제 {stock(f['symbol'])} {f['qty']:,}주" if f else "결제"
@@ -186,14 +195,35 @@ def _memos(conn: psycopg.Connection, seqs: set[int]) -> dict[int, str]:
             out[seq] = f"기초 보유 {stock(p['symbol'])} {p['qty']:,}주"
         elif t in ("NavEvent", "RevaluationEvent"):
             out[seq] = f"{p['date']} 종가 공정가치 평가"
+        elif t == "WithdrawalEvent":
+            out[seq] = "투자원금 출금"
+        elif t == "TransferOutEvent":
+            out[seq] = f"계좌 대체 출금 → {p['to_account']} (대체 {p['transfer_id']})"
+        elif t == "TransferInEvent":
+            out[seq] = f"계좌 대체 입금 ← {p['from_account']} (대체 {p['transfer_id']})"
+        elif t == "DividendAccrualEvent":
+            out[seq] = f"배당 인식 {stock(p['symbol'])} {p['qty']:,}주 (권리 {p['action_id']})"
+        elif t == "DividendPaymentEvent":
+            out[seq] = f"배당 입금 {stock(p['symbol'])} (권리 {p['action_id']}, 원천징수 {p['tax']:,})"
+        elif t == "DividendCancelEvent":
+            out[seq] = f"배당 인식 취소 {stock(p['symbol'])} (권리 {p['action_id']})"
+        elif t == "AdjustmentEvent":
+            out[seq] = f"수동 조정 {reasons.get(p['reason'], p['reason'])} (조정 {p['adjustment_id']}): {p['memo']}"
+        elif t == "AdjustmentCancelEvent":
+            out[seq] = f"수동 조정 취소 (조정 {p['adjustment_id']}): {p['memo']}"
     return out
 
 
-def _closed_days(conn: psycopg.Connection, f: dt.date, t: dt.date) -> set[tuple[str, dt.date]]:
-    """(account, day) pairs whose daily close is done."""
-    return {(a, dt.date.fromisoformat(d)) for a, d in conn.execute(
-        "select account_id, payload->>'date' from ledger_events where event_type = 'NavEvent'"
-        " and (payload->>'date')::date between %s and %s", (f, t))}
+def _closed_through(conn: psycopg.Connection) -> dict[str, dt.date]:
+    """Per account, the last day its books are closed (R-77). Every day up to it is closed too."""
+    return dict(conn.execute("select account_id, max(date) from day_closes group by account_id").fetchall())
+
+
+def _kind_names(conn: psycopg.Connection) -> dict[str, str]:
+    """전표 유형 names from the code table (JOURNAL_KIND), so a kind added later is named without a release."""
+    names = dict(KIND_NAMES)
+    names.update(conn.execute("select code, name from common_codes where group_id = 'JOURNAL_KIND'").fetchall())
+    return names
 
 
 def own_chart(conn: psycopg.Connection) -> Mapping:
@@ -221,10 +251,11 @@ def export(conn: psycopg.Connection, mapping: Mapping | None, date_from: dt.date
     if by == "entry":
         result = Export(by, _by_entry(conn, rows, mapping, aliases), mapping, account_id)
     else:
-        closed = _closed_days(conn, date_from, date_to)
-        open_days = sorted({(r[11], r[3]) for r in rows} - closed)
+        through = _closed_through(conn)
+        open_days = sorted({(r[11], r[3]) for r in rows if r[3] > through.get(r[11], dt.date.min)})
         if open_days:
-            raise ErpError("일 마감 전인 날은 일별 합계를 만들 수 없어요(전표가 더 생길 수 있어요): "
+            raise ErpError("일 마감 전인 날은 일별 합계를 만들 수 없어요(마감 후 체결·배당으로 전표가 더 생길 수 있어요). "
+                           "close 명령이나 daily로 마감한 뒤 내보내세요: "
                            + ", ".join(f"{a} {d.isoformat()}" for a, d in open_days))
         result = Export(by, _by_day(rows, mapping, aliases), mapping, account_id)
     _check_balanced(result.lines)
@@ -233,17 +264,17 @@ def export(conn: psycopg.Connection, mapping: Mapping | None, date_from: dt.date
 
 def _by_entry(conn, rows, mapping: Mapping, aliases: dict[str, str]) -> list[DocLine]:
     seqs = {r[1] for r in rows}
-    memos, symbols = _memos(conn, seqs), _symbols(conn, seqs)
+    memos, symbols, kinds = _memos(conn, seqs), _symbols(conn, seqs), _kind_names(conn)
     out, line_no, current = [], 0, None
     for entry_id, seq, k, date, kind, source_id, rev_seq, rev_k, code, dr, cr, acct in rows:
         if entry_id != current:
             current, line_no = entry_id, 0
         line_no += 1
         erp_code, erp_name = mapping.accounts[code]
-        memo = memos.get(seq) or KIND_NAMES.get(kind, kind)
+        memo = memos.get(seq) or kinds.get(kind, kind)
         reverses = doc_no(rev_seq, rev_k) if rev_seq is not None else ""
         if reverses:
-            memo = f"{KIND_NAMES.get(kind, kind)} (반대전표: {reverses})"
+            memo = f"{kinds.get(kind, kind)} (반대전표: {reverses})"
         out.append(DocLine(doc_no(seq, k), date, line_no, erp_code, erp_name, dr, cr, memo, code, str(seq), reverses,
                            acct, aliases.get(acct, ""), symbols.get(seq, "")))
     return out
