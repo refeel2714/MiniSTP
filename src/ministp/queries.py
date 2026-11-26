@@ -665,10 +665,10 @@ def close_days(conn: psycopg.Connection, calendar, fees, today: dt.date, date_fr
                date_to: dt.date | None = None, account_id: str = DEFAULT_ACCOUNT) -> Dataset:
     """영업일 목록, newest first: how many of the day's steps are finished and whether anything needs a decision."""
     from . import closeboard as cb
-    rows = [(day, cb.finished(steps), cb.required(steps), cb.needing(steps), cb.day_state(steps))
+    rows = [(day, cb.finished(steps), cb.required(steps), cb.needing(steps), cb.day_state(steps), cb.optional_left(steps))
             for day, steps in _close_board(conn, calendar, fees, today, account_id).items()
             if (date_from is None or day >= date_from) and (date_to is None or day <= date_to)]
-    return Dataset(("date", "done", "steps", "attention", "state"), tuple(rows))
+    return Dataset(("date", "done", "steps", "attention", "state", "optional"), tuple(rows))
 
 
 def close_day_steps(conn: psycopg.Connection, calendar, fees, today: dt.date, date: dt.date,

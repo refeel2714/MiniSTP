@@ -230,7 +230,7 @@ SEED: tuple[CodeGroup, ...] = (
         ("BAD", "확인 필요", "누가 판단해야 함"),
         ("MISSING", "누락", "날이 지났는데 하지 않음"))),
     CodeGroup("CLOSE_DAY_STATE", "마감 점검 일 상태", "필수 단계를 모아 본 그날의 상태 (R-105).", "close_checks.day_state", (
-        ("DONE", "점검 완료", "필수 단계가 모두 끝남"),
+        ("DONE", "필수 완료", "필수 단계가 모두 끝남 (선택 단계는 남아 있을 수 있음)"),
         ("OPEN", "진행 중", "오늘 아직 남은 필수 단계가 있음"),
         ("ATTENTION", "확인 필요", "필수 단계에 확인 필요나 누락이 있음"))),
     CodeGroup("AUDIT_CHANNEL", "감사 로그 경로", "어디로 들어온 요청인지.", "audit_log.channel", (
