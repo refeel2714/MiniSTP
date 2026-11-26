@@ -32,7 +32,7 @@ STEP_STATES = {"done", "now", "stop", "wait"}
 MAX_STEPS = 6
 PILL_COLORS = {"status", "side", "verdict"}
 # 그리드 보기: grid 표 · cards 한 행 요약 카드 · calendar 달력(하루가 한 칸, 칸 색은 상태 열의 색 규칙)
-#            · taccount T계정(분개 한 줄이 계정의 차변은 왼쪽, 대변은 오른쪽에. 표로 바꿔 볼 수 있음)
+#            · taccount 분개(처음엔 전표 보기: ERP 전표처럼 차변 계정·과목·금액과 대변 계정·과목·금액을 나란히. T계정과 표로 바꿔 볼 수 있음)
 #            · map 구성 지도(행 하나가 타일 하나, 면적은 크기 열, 색은 부호 열. 표 보기의 그리드에 map만 적으면 바꿔 보는 보기로 붙음)
 VIEWS = {"grid", "cards", "calendar", "taccount", "map"}
 VIEW_NAMES = {"cards": "카드", "calendar": "달력", "taccount": "T계정", "map": "구성 지도"}
@@ -159,6 +159,10 @@ class Grid:
     #   column 고쳐 쓰는 열 · base 되돌아갈 값이 있는 열 · param 이 열의 값들을 받는 같은 화면 트랜잭션의 조건
     #   (`행키:값,행키:값`) · reset 모두 되돌리는 버튼 이름 · add 행을 더할 때 여는 찾기 팝업
     edit: dict | None = None
+    # 묶음 머리: a row over the column headers, [{label, span}] covering the visible columns left to right
+    #   (시산표의 차변 | 계정과목 | 대변). The table is then read in its own order and not sorted.
+    bands: list[dict] = field(default_factory=list)
+    emphasis: str | None = None   # a column whose value is the row's level: class and total rows are drawn bold
 
 
 @dataclass
@@ -227,6 +231,7 @@ def load_lookups(path=None) -> dict[str, Lookup]:
 class MenuGroup:
     id: str                     # 중분류: two digits, the first is its 대분류
     name: str
+    first: tuple[str, ...] = ()  # screens shown first, in this order (the rest follow in number order)
 
 
 @dataclass(frozen=True)
@@ -242,7 +247,7 @@ def load_menu(path=None) -> list[MenuArea]:
     raw = yaml.safe_load(f.read_text(encoding="utf-8")) or []
     try:
         return [MenuArea(str(a["id"]), a["name"], a.get("note", ""),
-                         tuple(MenuGroup(str(g["id"]), g["name"]) for g in a["groups"])) for a in raw]
+                         tuple(MenuGroup(str(g["id"]), g["name"], tuple(g.get("first", ()))) for g in a["groups"])) for a in raw]
     except (KeyError, TypeError) as e:
         raise DefinitionError(f"menu.yaml: 형식 오류 {e}") from e
 
@@ -271,16 +276,25 @@ def menu_problems(menu: list[MenuArea], screens: dict[str, Screen]) -> list[str]
             errs.append(f"{s.id} {s.title}: 중분류 {digits[:2]}가 menu.yaml에 없어요")
         used.add(digits[:2])
     errs += [f"menu.yaml: 중분류 {g.id} {g.name}에 화면이 없어요" for a in menu for g in a.groups if g.id not in used]
+    errs += [f"menu.yaml: 중분류 {g.id}의 first에 적은 {sid}는 그 중분류의 화면이 아니에요"
+             for a in menu for g in a.groups for sid in g.first
+             if sid not in screens or sid.removeprefix("STP-")[:2] != g.id]
     return errs
 
 
 def menu_tree(menu: list[MenuArea], screens: dict[str, Screen]) -> list[dict]:
-    """대분류 → 중분류 → 화면, in number order: what the left menu, the home page and the index doc draw."""
+    """대분류 → 중분류 → 화면 in menu.yaml's order (a group's `first` screens, then the rest in number order):
+    what the left menu, the home page and the index doc draw."""
     by_group: dict[str, list[dict]] = {}
     for s in sorted(screens.values(), key=lambda s: s.id):
         by_group.setdefault(s.id.removeprefix("STP-")[:2], []).append({"id": s.id, "title": s.title})
+
+    def ordered(g: MenuGroup) -> list[dict]:
+        listed = by_group.get(g.id, [])
+        rank = {sid: i for i, sid in enumerate(g.first)}
+        return sorted(listed, key=lambda x: (rank.get(x["id"], len(rank)), x["id"]))
     return [{"id": a.id, "name": a.name, "note": a.note,
-             "groups": [{"id": g.id, "name": g.name, "screens": by_group.get(g.id, [])} for g in a.groups]}
+             "groups": [{"id": g.id, "name": g.name, "screens": ordered(g)} for g in a.groups]}
             for a in menu]
 
 
@@ -459,6 +473,28 @@ def _map_problems(g: Grid, gw: str) -> list[str]:
     return errs
 
 
+EMPHASIS_LEVELS = {"class", "total"}
+
+
+def _band_problems(g: Grid, gw: str) -> list[str]:
+    errs = []
+    names = {c.name for c in g.columns}
+    if g.emphasis and g.emphasis not in names:
+        errs.append(f"{gw}: 강조 기준 열 {g.emphasis}가 이 그리드에 없어요")
+    if not g.bands:
+        return errs
+    if g.view != "grid":
+        errs.append(f"{gw}: 묶음 머리(bands)는 표 보기에만 써요")
+    if any(not isinstance(b, dict) or set(b) != {"label", "span"} or not isinstance(b["span"], int) or b["span"] < 1
+           for b in g.bands):
+        return errs + [f"{gw}: 묶음 머리는 [{{label, span}}]이고 span은 1 이상 정수예요"]
+    inside = {n for x in g.columns for n in (x.code, x.shape, x.of, x.sub) if n}
+    visible = sum(1 for c in g.columns if not c.hidden and c.name not in inside)
+    if sum(b["span"] for b in g.bands) != visible:
+        errs.append(f"{gw}: 묶음 머리의 span 합({sum(b['span'] for b in g.bands)})이 보이는 열 수({visible})와 달라요")
+    return errs
+
+
 def lookup_problems(lookups: dict[str, Lookup], catalog: dict) -> list[str]:
     """찾기 팝업 definitions against the schema catalog and the read transactions."""
     errs = []
@@ -625,6 +661,7 @@ def validate(screens: dict[str, Screen], catalog: dict, lookups: dict[str, Looku
             errs += _calendar_problems(g, gw)
             errs += _taccount_problems(g, s, gw)
             errs += _map_problems(g, gw)
+            errs += _band_problems(g, gw)
             errs += _button_problems(g, s, gw, catalog, lookups)
             errs += _edit_problems(g, s, gw, lookups)
             if not isinstance(g.weight, int) or not 1 <= g.weight <= 5:
