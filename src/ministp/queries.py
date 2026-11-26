@@ -1017,21 +1017,21 @@ def order_check(books, day: dt.date, symbol: str, side: str, qty: int, limit_pri
                               cap.max_buy_qty, cap.held_qty, cap.pending_sell_qty, cap.sellable_qty,
                               reason == "", reason, REASON_TEXT.get(reason, reason)),))
 
-# ---------- STP-4400 계좌 목록 · STP-1400 고객별 보유 (조회 전용) ----------
+# ---------- STP-4400 계좌 목록 · STP-1400 법인별 보유 (조회 전용) ----------
 
 def account_list(conn: psycopg.Connection) -> Dataset:
-    """Every account as it is registered: its customer, current status, broker, environment and opening day.
+    """Every account as it is registered: its company, current status, broker, environment and opening day.
 
     Reference data only: what an account holds is on the account's own screens (STP-3400, STP-1100, STP-1400).
     The account number and the keys are not in the database; `credential_ref` is only
     the name of the environment variables the owner's PC keeps them in."""
     return _q(conn, """
-        select t.account_id, t.alias, t.customer_id, c.alias as customer_alias, t.broker, t.env,
+        select t.account_id, t.alias, t.company_id, c.alias as company_alias, t.broker, t.env,
                t.account_type, s.status, s.effective_from as status_from, t.opened_on, t.credential_ref
           from trading_accounts t
-          join customers c using (customer_id)
+          join companies c using (company_id)
           join account_status_v s using (account_id)
-         order by t.customer_id, t.account_id""")
+         order by t.company_id, t.account_id""")
 
 
 def account_status_history(conn: psycopg.Connection, account_id: str) -> Dataset:
@@ -1040,42 +1040,52 @@ def account_status_history(conn: psycopg.Connection, account_id: str) -> Dataset
                     " where account_id = %s order by effective_from desc, id desc", (account_id,))
 
 
-def customer_positions(conn: psycopg.Connection, customer_id: str | None = None) -> Dataset:
-    """고객별 보유 합산: one customer's accounts added up per symbol (`customer_positions_v`).
+def company_positions(conn: psycopg.Connection, company_id: str | None = None) -> Dataset:
+    """법인별 보유 합산: one company's accounts added up per symbol (`company_positions_v`).
 
-    With `customer_id` only that customer's rows (the detail under an account row)."""
+    With `company_id` only that company's rows (the detail under a company row)."""
     return _q(conn, """
-        select v.customer_id, c.alias as customer_alias, v.symbol, i.name as instrument_name, v.qty, v.book_cost,
+        select v.company_id, c.alias as company_alias, v.symbol, i.name as instrument_name, v.qty, v.book_cost,
                (select count(distinct p.account_id) from positions_v p join trading_accounts t using (account_id)
-                 where t.customer_id = v.customer_id and p.symbol = v.symbol) as accounts,
+                 where t.company_id = v.company_id and p.symbol = v.symbol) as accounts,
                i.asset_type
-          from customer_positions_v v
-          join customers c using (customer_id)
+          from company_positions_v v
+          join companies c using (company_id)
           join instruments i using (symbol)
-         where (%(c)s::text is null or v.customer_id = %(c)s)
-         order by v.customer_id, v.book_cost desc""", {"c": customer_id})
+         where (%(c)s::text is null or v.company_id = %(c)s)
+         order by v.company_id, v.book_cost desc""", {"c": company_id})
 
 
-def customer_list(conn: psycopg.Connection) -> Dataset:
-    """고객 목록: every customer with the number of accounts and what they add up to."""
+def company_list(conn: psycopg.Connection) -> Dataset:
+    """법인 목록: every company with its ERP company code today, the number of accounts and what they add up to."""
     return _q(conn, """
-        select c.customer_id, c.alias, count(t.account_id) as accounts,
+        select c.company_id, c.alias,
+               (select e.erp_company_code from company_erp_codes e
+                 where e.company_id = c.company_id and e.effective_from <= current_date
+                 order by e.effective_from desc, e.id desc limit 1) as erp_company_code,
+               count(t.account_id) as accounts,
                coalesce(sum((select balance from cash_balance_v b where b.account_id = t.account_id)), 0) as cash_d0,
                coalesce(sum((select sum(p.book_cost) from positions_v p where p.account_id = t.account_id)), 0) as book_cost
-          from customers c left join trading_accounts t using (customer_id)
-         group by c.customer_id, c.alias
-         order by c.customer_id""")
+          from companies c left join trading_accounts t using (company_id)
+         group by c.company_id, c.alias
+         order by c.company_id""")
 
 
-def customer_accounts(conn: psycopg.Connection, customer_id: str) -> Dataset:
-    """One customer's accounts with their status, cash and holdings at book cost."""
+def company_accounts(conn: psycopg.Connection, company_id: str) -> Dataset:
+    """One company's accounts with their status, cash and holdings at book cost."""
     return _q(conn, """
         select t.account_id, t.alias, s.status,
                (select balance from cash_balance_v b where b.account_id = t.account_id) as cash_d0,
                (select coalesce(sum(p.book_cost), 0) from positions_v p where p.account_id = t.account_id) as book_cost
           from trading_accounts t join account_status_v s using (account_id)
-         where t.customer_id = %s
-         order by t.account_id""", (customer_id,))
+         where t.company_id = %s
+         order by t.account_id""", (company_id,))
+
+
+def company_erp_codes(conn: psycopg.Connection, company_id: str) -> Dataset:
+    """One company's ERP company codes, newest first (a change is a new row, never an update)."""
+    return _q(conn, "select id, erp_company_code, effective_from, reason, created_at from company_erp_codes"
+                    " where company_id = %s order by effective_from desc, id desc", (company_id,))
 
 
 # ---------- STP-4600 코드 조회 (조회 전용) ----------

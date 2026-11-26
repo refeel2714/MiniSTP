@@ -24,14 +24,15 @@ code:
     - {name: name, source: common_codes.name}
     - {name: description, source: common_codes.description}
     - {name: in_use, source: common_codes.in_use}
-customer:
-  title: 고객 찾기
+company:
+  title: 법인 찾기
   tx: STP1400R01
-  value: customer_id
+  value: company_id
   shows: alias
   columns:
-    - {name: customer_id, source: customers.customer_id, format: code}
-    - {name: alias, source: customers.alias}
+    - {name: company_id, source: companies.company_id, format: code}
+    - {name: alias, source: companies.alias}
+    - {name: erp_company_code, source: company_erp_codes.erp_company_code, format: code}
     - {name: accounts, label: 계좌 수, format: number}
 account:
   title: 계좌 찾기
@@ -41,5 +42,5 @@ account:
   columns:
     - {name: account_id, source: trading_accounts.account_id, format: code}
     - {name: alias, source: trading_accounts.alias}
-    - {name: customer_id, source: trading_accounts.customer_id, format: code}
+    - {name: company_id, source: trading_accounts.company_id, format: code}
     - {name: status, source: account_status_v.status, format: code, codes: ACCOUNT_STATUS}

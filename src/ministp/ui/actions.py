@@ -71,12 +71,12 @@ def _resolve(c: ActionContext, p) -> str:
     return f"불일치 {p['result_id']}번에 판단을 기록했어요 (새 행 {rid}). 원래 행은 그대로예요."
 
 
-# ---------- 계좌 관리 (STP-4400), 고객 (STP-1400): the `customer` and `account` commands ----------
+# ---------- 계좌 관리 (STP-4400), 법인 (STP-1400): the `company` and `account` commands ----------
 
 def _account_add(c: ActionContext, p) -> str:
-    a = accounts.add_account(c.conn, p["account_id"], p["customer_id"], p["alias"],
+    a = accounts.add_account(c.conn, p["account_id"], p["company_id"], p["alias"],
                              credential_ref=p["credential_ref"], opened_on=c.today)
-    return (f"계좌를 등록했어요: {a.account_id} {a.alias} (고객 {a.customer_id}, 모의투자, 개설일 {a.opened_on}). "
+    return (f"계좌를 등록했어요: {a.account_id} {a.alias} (법인 {a.company_id}, 모의투자, 개설일 {a.opened_on}). "
             f"키는 이 PC의 환경변수 {a.env_prefix}_*에서 읽어요.")
 
 
@@ -85,9 +85,17 @@ def _account_status(c: ActionContext, p) -> str:
     return f"계좌 상태를 바꿨어요: {a.account_id} → {a.status} ({a.status_from}부터). 이전 상태는 이력에 남아 있어요."
 
 
-def _customer_add(c: ActionContext, p) -> str:
-    accounts.add_customer(c.conn, p["customer_id"], p["alias"])
-    return f"고객을 등록했어요: {p['customer_id']} {p['alias']}"
+def _company_add(c: ActionContext, p) -> str:
+    accounts.add_company(c.conn, p["company_id"], p["alias"], erp_code=p.get("erp_code") or None,
+                         effective_from=c.today)
+    code = f" (ERP 회사코드 {p['erp_code']}, {c.today}부터)" if p.get("erp_code") else ""
+    return f"법인을 등록했어요: {p['company_id']} {p['alias']}{code}"
+
+
+def _company_erp_code(c: ActionContext, p) -> str:
+    day = p.get("effective_from") or c.today
+    accounts.set_erp_code(c.conn, p["company_id"], p["erp_code"], day, p["reason"])
+    return f"법인 {p['company_id']}의 ERP 회사코드를 {p['erp_code']}로 정했어요 ({day}부터). 이전 코드는 이력에 남아 있어요."
 
 
 # ---------- 코드 관리 (STP-4600): the `code` command ----------
@@ -223,14 +231,17 @@ def _revoke(c: ActionContext, p) -> str:
 ACTIONS: dict[str, Action] = {a.tx_id: a for a in [
     Action("STP2100U01", "불일치 원인 판단", {"result_id": "int", "cause": "text", "note": "text"}, _resolve,
            audit="RESOLVE", target=("result_id",)),
-    Action("STP4400U01", "계좌 등록", {"account_id": "text", "customer_id": "text", "alias": "text",
+    Action("STP4400U01", "계좌 등록", {"account_id": "text", "company_id": "text", "alias": "text",
                                     "credential_ref": "text"}, _account_add,
            audit="ACCOUNT_ADD", target=("account_id",), account="account_id"),
     Action("STP4400U02", "계좌 상태 변경", {"account_id": "text", "status": "text", "effective_from": "date",
                                        "reason": "text"}, _account_status, optional=("effective_from",),
            audit="ACCOUNT_STATUS", target=("account_id",), account="account_id"),
-    Action("STP1400U01", "고객 등록", {"customer_id": "text", "alias": "text"}, _customer_add,
-           audit="CUSTOMER_ADD", target=("customer_id",)),
+    Action("STP1400U01", "법인 등록", {"company_id": "text", "alias": "text", "erp_code": "text"}, _company_add,
+           optional=("erp_code",), audit="COMPANY_ADD", target=("company_id",)),
+    Action("STP1400U02", "ERP 회사코드 지정", {"company_id": "text", "erp_code": "text", "effective_from": "date",
+                                          "reason": "text"}, _company_erp_code, optional=("effective_from",),
+           audit="COMPANY_ERP_CODE", target=("company_id",)),
     Action("STP4600U01", "코드 그룹 추가", {"group_id": "text", "name": "text", "description": "text"}, _group_add,
            optional=("description",), audit="CODE_GROUP_ADD", target=("group_id",)),
     Action("STP4600U02", "코드 추가", {"group_id": "text", "code": "text", "name": "text", "description": "text"},

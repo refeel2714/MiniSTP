@@ -180,15 +180,15 @@ def test_an_order_refused_before_the_broker_is_in_no_order_table_but_in_the_log(
 
 
 def test_a_change_that_cannot_be_logged_does_not_happen(conn, monkeypatch):
-    monkeypatch.setattr(audit, "ACTIONS", {k: v for k, v in audit.ACTIONS.items() if k != "CUSTOMER_ADD"})
+    monkeypatch.setattr(audit, "ACTIONS", {k: v for k, v in audit.ACTIONS.items() if k != "COMPANY_ADD"})
     with pytest.raises(ValueError, match="행위 코드"):
-        accounts.add_customer(conn, "C0002", "둘째")
-    assert conn.execute("select count(*) from customers where customer_id = 'C0002'").fetchone()[0] == 0
+        accounts.add_company(conn, "C0002", "둘째")
+    assert conn.execute("select count(*) from companies where company_id = 'C0002'").fetchone()[0] == 0
     monkeypatch.undo()
-    accounts.add_customer(conn, "C0002", "둘째")
+    accounts.add_company(conn, "C0002", "둘째")
     accounts.add_account(conn, "A0002", "C0002", "둘째 계좌", credential_ref="KIS_2", opened_on=DAY)
     accounts.set_status(conn, "A0002", "SUSPENDED", DAY, "점검")
-    assert log(conn)[1:] == [("CUSTOMER_ADD", "DONE", None, "C0002"), ("ACCOUNT_ADD", "DONE", "A0002", "A0002"),
+    assert log(conn)[1:] == [("COMPANY_ADD", "DONE", None, "C0002"), ("ACCOUNT_ADD", "DONE", "A0002", "A0002"),
                              ("ACCOUNT_STATUS", "DONE", "A0002", "A0002")]
     assert last(conn).detail == {"from": "OPEN", "to": "SUSPENDED", "effective_from": "2026-11-20", "reason": "점검"}
     assert "12345678" not in str(conn.execute("select detail from audit_log").fetchall())
@@ -274,19 +274,19 @@ def test_applying_a_migration_is_the_first_row_of_a_migrated_database(capsys):
     assert cli.run(["db-migrate", "--apply"], environ=env) == 0
     capsys.readouterr()
     with psycopg.connect(URL, autocommit=True) as c:
-        assert list(mg.applied(c)) == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
-        assert log(c) == [("DB_MIGRATE", "DONE", None, "ERD v2.13")]
-        assert len(last(c).detail["applied"]) == 13 and last(c).channel == "CLI"
+        assert list(mg.applied(c)) == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]
+        assert log(c) == [("DB_MIGRATE", "DONE", None, "ERD v2.14")]
+        assert len(last(c).detail["applied"]) == 14 and last(c).channel == "CLI"
         assert codes.check(c) == [] and audit.chain_problems(c)[2] == []
 
 
 # ---------- the screens ----------
 
 def test_a_button_leaves_rows_that_name_the_screen_transaction(press, conn):
-    assert press("STP1400U01", customer_id="C0002", alias="둘째")[0] == 200
+    assert press("STP1400U01", company_id="C0002", alias="둘째")[0] == 200
     row = last(conn)
     assert (row.channel, row.actor, row.action, row.outcome, row.target) == (
-        "UI", getpass.getuser(), "CUSTOMER_ADD", "DONE", "C0002")
+        "UI", getpass.getuser(), "COMPANY_ADD", "DONE", "C0002")
     assert row.detail == {"alias": "둘째", "tx": "STP1400U01"}
 
     status, said = press("STP4600U04", group_id="ACCOUNT_STATUS", code="CLOSED", in_use="사용 안 함")

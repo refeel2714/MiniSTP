@@ -52,9 +52,9 @@ def test_the_page_carries_the_accounts_to_pick_from_and_nothing_secret(client):
     page = client.get("/screen/STP-1100").text
     data = json.loads(re.search(r'<script id="stpui-data" type="application/json">(.*?)</script>', page, re.S).group(1))
     assert data["default_account"] == "A0001"
-    assert [(a["account_id"], a["customer_id"], a["status"]) for a in data["accounts"]] == [
+    assert [(a["account_id"], a["company_id"], a["status"]) for a in data["accounts"]] == [
         ("A0001", "C0001", "OPEN"), ("A0002", "C0001", "OPEN"), ("A0003", "C0002", "OPEN")]
-    assert set(data["accounts"][0]) == {"account_id", "alias", "customer_id", "status", "env"}
+    assert set(data["accounts"][0]) == {"account_id", "alias", "company_id", "status", "env"}
     # 실전 테두리: the page is told each account's environment, so picking a LIVE one frames the screens
     # even when the shell that started the server points at 모의. The sample's accounts are all 모의.
     assert {a["env"] for a in data["accounts"]} == {"PAPER"}
@@ -118,7 +118,7 @@ def test_a_bad_account_is_refused(client, account, message):
 def test_account_list_and_status_history(client, conn, sample):
     accounts, body = rows(client, "STP4400R01", "A0003")          # the list is the same from any account
     assert body["meta"]["selected"] == "A0003"
-    assert [(a["account_id"], a["customer_id"], a["status"]) for a in accounts] == [
+    assert [(a["account_id"], a["company_id"], a["status"]) for a in accounts] == [
         ("A0001", "C0001", "OPEN"), ("A0002", "C0001", "OPEN"), ("A0003", "C0002", "OPEN")]
     second = accounts[1]
     assert second["opened_on"] == sample.others[0].opened_on.isoformat() and second["credential_ref"] == "KIS_2"
@@ -139,7 +139,7 @@ def test_the_account_list_shows_little_and_its_detail_is_on_the_right(client, co
     screen = load_screens()["STP-4400"]
     master, *details = screen.grids
     assert screen.layout == "split" and master.id == "accounts" and master.load == "open"
-    assert [c.name for c in master.columns] == ["account_id", "alias", "customer_alias", "status", "broker", "env",
+    assert [c.name for c in master.columns] == ["account_id", "alias", "company_alias", "status", "broker", "env",
                                                 "account_type", "opened_on"]
     assert not master.totals                                      # 기준정보: no balances to add up
     assert [(g.id, g.load, g.master, g.link) for g in details] == [
@@ -154,33 +154,37 @@ def test_the_account_list_shows_little_and_its_detail_is_on_the_right(client, co
     assert "STP4400R03" not in TRANSACTIONS                       # 계좌 보유는 이 화면에 없어요
 
 
-def test_customer_holdings_add_up_the_accounts_of_one_customer(client, conn):
-    """STP-1400 고객별 보유: 고객 → 그 고객의 종목별 합산과 계좌."""
+def test_company_holdings_add_up_the_accounts_of_one_company(client, conn):
+    """STP-1400 법인별 보유: 법인 → 그 법인의 종목별 합산과 계좌."""
     screen = load_screens()["STP-1400"]
     assert screen.layout == "split"
     assert [(g.id, g.load, g.master) for g in screen.grids] == [
-        ("customers", "open", None), ("positions", "master", "customers"), ("accounts", "master", "customers")]
+        ("companies", "open", None), ("positions", "master", "companies"), ("accounts", "master", "companies"),
+        ("erp_codes", "master", "companies")]
 
-    customers, _ = rows(client, "STP1400R01", "A0003")            # the same from any account
-    assert [(c["customer_id"], c["accounts"]) for c in customers] == [("C0001", 2), ("C0002", 1)]
-    for c in customers:
-        mine, _ = rows(client, "STP1400R03", params={"customer_id": c["customer_id"]})
-        want = [r[0] for r in conn.execute("select account_id from trading_accounts where customer_id = %s"
-                                           " order by account_id", (c["customer_id"],))]
+    companies, _ = rows(client, "STP1400R01", "A0003")            # the same from any account
+    assert [(c["company_id"], c["accounts"], c["erp_company_code"]) for c in companies] == [
+        ("C0001", 2, None), ("C0002", 1, "2000")]                 # 샘플: 계열사 B만 ERP 회사코드가 있음
+    codes, _ = rows(client, "STP1400R04", params={"company_id": "C0002"})
+    assert [(r["erp_company_code"], r["reason"]) for r in codes] == [("2000", "법인 등록")]
+    for c in companies:
+        mine, _ = rows(client, "STP1400R03", params={"company_id": c["company_id"]})
+        want = [r[0] for r in conn.execute("select account_id from trading_accounts where company_id = %s"
+                                           " order by account_id", (c["company_id"],))]
         assert [a["account_id"] for a in mine] == want
         assert sum(a["cash_d0"] for a in mine) == c["cash_d0"] and sum(a["book_cost"] for a in mine) == c["book_cost"]
-        totals, _ = rows(client, "STP1400R02", params={"customer_id": c["customer_id"]})
-        assert totals and {t["customer_id"] for t in totals} == {c["customer_id"]}
+        totals, _ = rows(client, "STP1400R02", params={"company_id": c["company_id"]})
+        assert totals and {t["company_id"] for t in totals} == {c["company_id"]}
         kinds = dict(conn.execute("select symbol, asset_type from instruments").fetchall())
         assert all(t["asset_type"] == kinds[t["symbol"]] for t in totals)      # 배지 모양이 되는 자산 유형
         assert sum(t["book_cost"] for t in totals) == c["book_cost"]
     assert client.post("/api/tx/STP1400R03", json={"params": {}}).status_code == 400
 
-    totals, _ = rows(client, "STP1400R02")                        # no customer named: everyone
-    want = conn.execute("select customer_id, symbol, qty, book_cost from customer_positions_v").fetchall()
-    assert sorted((t["customer_id"], t["symbol"], t["qty"], t["book_cost"]) for t in totals) == sorted(want)
-    both = [t for t in totals if t["customer_id"] == "C0001" and t["accounts"] == 2]
-    for t in both:                                                # held in both accounts of one customer: added up
+    totals, _ = rows(client, "STP1400R02")                        # no company named: everyone
+    want = conn.execute("select company_id, symbol, qty, book_cost from company_positions_v").fetchall()
+    assert sorted((t["company_id"], t["symbol"], t["qty"], t["book_cost"]) for t in totals) == sorted(want)
+    both = [t for t in totals if t["company_id"] == "C0001" and t["accounts"] == 2]
+    for t in both:                                                # held in both accounts of one company: added up
         parts = conn.execute("select sum(qty) from positions_v where account_id in ('A0001', 'A0002') and symbol = %s",
                              (t["symbol"],)).fetchone()[0]
         assert t["qty"] == parts

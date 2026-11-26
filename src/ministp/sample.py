@@ -5,8 +5,8 @@ place_order, daily_close, resolve_break) against a simulated paper account, so
 the sample is shaped exactly like the owner's real database without containing
 any of it. The run is deterministic for a given seed.
 
-`accounts=3` adds a second account of the default customer and one account of a
-second customer (다계좌, 스펙 D7). They trade the same market on the same days, each
+`accounts=3` adds a second account of the default company and one account of a
+second company (다계좌, 스펙 D7; 법인은 v2.14). They trade the same market on the same days, each
 against its own simulated brokerage account; the default account's own history is
 the same with or without them.
 """
@@ -22,7 +22,7 @@ from .calendar import BusinessCalendar
 from .fees import FeeSchedule
 from .instruments import AssetType, Instrument, Market
 from .ledger import Side
-from .accounts import add_account, add_customer, set_status
+from .accounts import add_account, add_company, set_status
 from .ops import (Books, add_instrument, clean_streak, close_books, daily_close, load_books, open_books, place_order,
                   resolve_break)
 from .recon import Cause, Status
@@ -43,7 +43,7 @@ INTEREST, INTEREST_TAX = 12_340, 1_890                    # and 예탁금 이용
 class SampleAccount:
     """An extra account of the sample. Day numbers are fractions of the run, so short runs have them too."""
     account_id: str
-    customer_id: str
+    company_id: str
     alias: str
     credential_ref: str                 # a name only; the sample has no keys and calls no broker
     cash: int
@@ -54,7 +54,7 @@ class SampleAccount:
     suspend_at: float | None = None     # suspended for two business days from here (R-39)
 
 
-SAMPLE_CUSTOMERS = {"C0002": "두 번째 고객"}
+SAMPLE_COMPANIES = {"C0002": ("계열사 B", "2000")}     # alias, ERP company code (made up)
 SAMPLE_ACCOUNTS = [
     SampleAccount("A0002", "C0001", "두 번째 계좌", "KIS_2", 30_000_000, opens_at=0.25, skew_at=0.6),
     SampleAccount("A0003", "C0002", "연습 계좌", "KIS_3", 50_000_000, holdings=(("005930", 100),),
@@ -287,9 +287,10 @@ class _Extra:
         if n < self.first:
             return
         if n == self.first:
-            if not conn.execute("select 1 from customers where customer_id = %s", (spec.customer_id,)).fetchone():
-                add_customer(conn, spec.customer_id, SAMPLE_CUSTOMERS[spec.customer_id])
-            add_account(conn, acct, spec.customer_id, spec.alias, credential_ref=spec.credential_ref, opened_on=day)
+            if not conn.execute("select 1 from companies where company_id = %s", (spec.company_id,)).fetchone():
+                alias, erp_code = SAMPLE_COMPANIES[spec.company_id]
+                add_company(conn, spec.company_id, alias, erp_code=erp_code, effective_from=day)
+            add_account(conn, acct, spec.company_id, spec.alias, credential_ref=spec.credential_ref, opened_on=day)
             self.broker = SimBroker(calendar, fees, instruments, spec.cash, prices, day)
             for sym, qty in spec.holdings:     # bought before MiniSTP: the books open with them (R-05)
                 self.broker.positions[sym] = [qty, qty * prices[sym]]
@@ -306,7 +307,7 @@ class _Extra:
         books = _books(conn, calendar, fees, acct)
         trades = self.rng.choice((0, 1, 1))
         if books.status != "OPEN" and n == self.suspend:
-            trades = 1                           # the customer tries once and is refused (ACCOUNT_NOT_OPEN)
+            trades = 1                           # the desk tries once and is refused (ACCOUNT_NOT_OPEN)
         for _ in range(trades):
             before = len(out.notes)
             _random_trade(books, self.broker, day, self.rng, out, partial=False, size=spec.order_size)

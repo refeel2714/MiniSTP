@@ -18,6 +18,11 @@ File name: `NNNN_slug.sql`, numbered from 0001 without gaps. Header comments:
     -- title: 다계좌: 고객·위탁계좌, 원장에 계좌ID
     -- erd: 2.0
     -- changes-data: some_table, other_table     (optional, rarely needed)
+    -- renames: old_table -> new_table, old_table.old_column -> new_column   (optional)
+
+A rename keeps the proof: the rows are fingerprinted again under their new names, so
+a renamed table or column must still hold exactly the rows it held. Column renames name
+the table as it was before the migration.
 
 A database without the `schema_migrations` table is at version 0 (ERD v1.1,
 the schema before migrations existed). The table is created by the first
@@ -33,7 +38,8 @@ from psycopg import sql
 
 TABLE = "schema_migrations"
 FILE_RE = re.compile(r"^(\d{4})_([a-z0-9_]+)\.sql$")
-HEADER_RE = re.compile(r"^--\s*(title|erd|changes-data)\s*:\s*(.*?)\s*$", re.M)
+HEADER_RE = re.compile(r"^--\s*(title|erd|changes-data|renames)\s*:\s*(.*?)\s*$", re.M)
+RENAME_RE = re.compile(r"^([a-z_][a-z0-9_]*)(?:\.([a-z_][a-z0-9_]*))?\s*->\s*([a-z_][a-z0-9_]*)$")
 
 CREATE_TABLE = f"""
 create table if not exists {TABLE} (
@@ -64,6 +70,15 @@ class Migration:
     title: str = ""
     erd_version: str | None = None
     changes_data: frozenset[str] = frozenset()
+    renamed_tables: tuple[tuple[str, str], ...] = ()             # (old, new)
+    renamed_columns: tuple[tuple[str, str, str], ...] = ()       # (old table, old column, new column)
+
+    def new_name(self, table: str) -> str:
+        return dict(self.renamed_tables).get(table, table)
+
+    def new_columns(self, table: str, columns: tuple[str, ...]) -> tuple[str, ...]:
+        moved = {c: n for t, c, n in self.renamed_columns if t == table}
+        return tuple(moved.get(c, c) for c in columns)
 
     @property
     def checksum(self) -> str:
@@ -80,7 +95,19 @@ def parse(file_name: str, text: str) -> Migration:
         raise MigrationError(f"마이그레이션 파일 이름은 NNNN_이름.sql 형식이에요: {file_name}")
     head = dict(HEADER_RE.findall(text))
     changes = frozenset(t.strip() for t in head.get("changes-data", "").split(",") if t.strip())
-    return Migration(int(m.group(1)), m.group(2), text, head.get("title", ""), head.get("erd") or None, changes)
+    tables, columns = [], []
+    for item in (r.strip() for r in head.get("renames", "").split(",")):
+        if not item:
+            continue
+        r = RENAME_RE.match(item)
+        if not r:
+            raise MigrationError(f"{file_name}: renames 항목은 '옛이름 -> 새이름' 또는 '테이블.옛컬럼 -> 새컬럼'이에요: {item}")
+        if r.group(2):
+            columns.append((r.group(1), r.group(2), r.group(3)))
+        else:
+            tables.append((r.group(1), r.group(3)))
+    return Migration(int(m.group(1)), m.group(2), text, head.get("title", ""), head.get("erd") or None, changes,
+                     tuple(tables), tuple(columns))
 
 
 def discover(directory=None) -> list[Migration]:
@@ -164,16 +191,20 @@ def _print_of(conn: psycopg.Connection, table: str, columns: tuple[str, ...]) ->
     return TablePrint(columns, n, digest)
 
 
-def fingerprint(conn: psycopg.Connection, like: dict[str, TablePrint] | None = None) -> dict[str, TablePrint]:
+def fingerprint(conn: psycopg.Connection, like: dict[str, TablePrint] | None = None,
+                mig: Migration | None = None) -> dict[str, TablePrint]:
     """Fingerprint of every table. With `like`, the same tables over the same columns as an earlier
-    fingerprint, so a column a migration added does not count as a change to the rows that were there."""
+    fingerprint, so a column a migration added does not count as a change to the rows that were there.
+    With `mig`, a table or column it renames is read under its new name and kept under the old one."""
     now = _tables(conn)
     if like is None:
         return {t: _print_of(conn, t, cols) for t, cols in now.items()}
     out = {}
     for t, before in like.items():
-        if t in now and set(before.columns) <= set(now[t]):
-            out[t] = _print_of(conn, t, before.columns)
+        table, columns = (mig.new_name(t), mig.new_columns(t, before.columns)) if mig else (t, before.columns)
+        if table in now and set(columns) <= set(now[table]):
+            p = _print_of(conn, table, columns)
+            out[t] = TablePrint(before.columns, p.rows, p.digest)
     return out
 
 
@@ -206,11 +237,16 @@ class Report:
 def _compare(mig: Migration, before: dict[str, TablePrint], after: dict[str, TablePrint],
              tables_after: dict[str, tuple[str, ...]]) -> list[TableReport]:
     out, broken = [], []
+    unknown = {t for t, _ in mig.renamed_tables} | {t for t, _, _ in mig.renamed_columns}
+    unknown -= set(before)
+    if unknown:
+        broken.append(f"renames에 적힌 테이블이 없어요: {', '.join(sorted(unknown))}")
     for t, b in before.items():
         a = after.get(t)
         same = a is not None and (a.rows, a.digest) == (b.rows, b.digest)
         declared = t in mig.changes_data
-        out.append(TableReport(t, b.rows, a.rows if a else None, same, declared))
+        label = t if mig.new_name(t) == t else f"{t} → {mig.new_name(t)}"
+        out.append(TableReport(label, b.rows, a.rows if a else None, same, declared))
         if not same and not declared:
             if a is None:
                 broken.append(f"{t}: 테이블이나 기존 컬럼이 없어졌어요")
@@ -218,8 +254,9 @@ def _compare(mig: Migration, before: dict[str, TablePrint], after: dict[str, Tab
                 broken.append(f"{t}: 행 수가 {b.rows:,} → {a.rows:,}로 바뀌었어요")
             else:
                 broken.append(f"{t}: 기존 행의 내용이 바뀌었어요")
+    targets = {new for _, new in mig.renamed_tables}
     for t in tables_after:
-        if t not in before:
+        if t not in before and t not in targets:
             out.append(TableReport(t, None, None, True, False))
     unknown = mig.changes_data - set(before)
     if unknown:
@@ -241,7 +278,7 @@ def apply_one(conn: psycopg.Connection, mig: Migration) -> Report:
             except psycopg.Error as e:
                 raise MigrationError(f"{mig.label}: SQL 오류로 되돌렸어요: "
                                      f"{e.diag.message_primary or type(e).__name__}") from e
-            rows = _compare(mig, before, fingerprint(conn, like=before), _tables(conn))
+            rows = _compare(mig, before, fingerprint(conn, like=before, mig=mig), _tables(conn))
             conn.execute(CREATE_TABLE)
             conn.execute(f"insert into {TABLE} (version, name, erd_version, checksum) values (%s, %s, %s, %s)",
                          (mig.version, mig.name, mig.erd_version, mig.checksum))

@@ -1,51 +1,64 @@
 id: STP-1400
-title: 고객별 보유
+title: 법인별 보유
 layout: split
-left: 40
-purpose: 왼쪽에서 고객을 고르면 오른쪽에 그 고객의 계좌를 모두 더한 종목별 보유와, 그 고객의 계좌 목록이 나와요. 한 고객이 계좌를 여러 개 가질 때 고객 단위로 얼마를 들고 있는지 보는 화면이에요. 계좌를 더블클릭하면 그 계좌의 계좌정보(STP-3400)로 가요. 고객 정보는 별칭뿐이고 실명 같은 개인정보는 DB에 없어요. 고객 등록은 고객 그리드 오른쪽 위 버튼으로 해요.
+left: 46
+purpose: 왼쪽에서 법인(장부를 가진 회사)을 고르면 오른쪽에 그 법인의 계좌를 모두 더한 종목별 보유와, 그 법인의 계좌 목록, ERP 회사코드 이력이 나와요. 한 법인이 계좌를 여러 개 가질 때 법인 단위로 얼마를 들고 있는지 보는 화면이에요. 계좌를 더블클릭하면 그 계좌의 계좌정보(STP-3400)로 가요. ERP 회사코드는 그 법인의 전표가 ERP의 어느 회사 장부로 가는지 정하고, 바꾸면 이력에 새 행으로 쌓여요. 법인 등록과 ERP 회사코드 지정은 법인 그리드 오른쪽 위 버튼으로 해요.
 grids:
-  - id: customers
-    title: 고객
+  - id: companies
+    title: 법인
     live: true
     tx: STP1400R01
     load: open
-    key: customer_id
+    key: company_id
     totals: [cash_d0, book_cost]
     columns:
-      - {name: customer_id, source: customers.customer_id, format: code}
-      - {name: alias, source: customers.alias}
+      - {name: company_id, source: companies.company_id, format: code}
+      - {name: alias, source: companies.alias}
+      - {name: erp_company_code, source: company_erp_codes.erp_company_code, format: code}
       - {name: accounts, label: 계좌 수, format: number}
       - {name: cash_d0, label: 예수금 합계, format: money}
       - {name: book_cost, label: 보유 장부금액 합계, format: money}
     actions:
       - id: add
-        label: 고객 등록
+        label: 법인 등록
         tx: STP1400U01
-        note: 별칭만 넣어요. 실명, 연락처 같은 개인정보는 넣지 않아요.
+        note: ERP 회사코드는 비워 두고 나중에 정해도 돼요. 정하면 오늘부터 적용돼요.
         fields:
-          - {name: customer_id, source: customers.customer_id}
-          - {name: alias, source: customers.alias}
+          - {name: company_id, source: companies.company_id}
+          - {name: alias, source: companies.alias}
+          - {name: erp_code, source: company_erp_codes.erp_company_code}
+      - id: erp_code
+        label: ERP 회사코드 지정
+        tx: STP1400U02
+        needs_row: true
+        shows: [company_id, alias, erp_company_code]
+        note: 고치지 않고 이력에 새 행으로 덧붙여요. 다른 법인이 쓰는 코드는 쓸 수 없어요.
+        fields:
+          - {name: company_id, source: companies.company_id, column: company_id, readonly: true}
+          - {name: erp_code, source: company_erp_codes.erp_company_code}
+          - {name: effective_from, source: company_erp_codes.effective_from, type: date, default: today}
+          - {name: reason, source: company_erp_codes.reason}
   - id: positions
-    title: 이 고객의 보유 합산 (계좌를 더한 값)
+    title: 이 법인의 보유 합산 (계좌를 더한 값)
     tx: STP1400R02
     load: master
-    master: customers
-    link: {customer_id: customer_id}
+    master: companies
+    link: {company_id: company_id}
     weight: 2
     totals: [book_cost]
     columns:
       - {name: instrument_name, source: instruments.name, display: badge, code: symbol, shape: asset_type}
-      - {name: symbol, source: customer_positions_v.symbol, format: code}
+      - {name: symbol, source: company_positions_v.symbol, format: code}
       - {name: asset_type, source: instruments.asset_type, format: code}
-      - {name: qty, source: customer_positions_v.qty, format: number}
-      - {name: book_cost, source: customer_positions_v.book_cost, format: money}
+      - {name: qty, source: company_positions_v.qty, format: number}
+      - {name: book_cost, source: company_positions_v.book_cost, format: money}
       - {name: accounts, label: 보유 계좌 수, format: number}
   - id: accounts
-    title: 이 고객의 계좌
+    title: 이 법인의 계좌
     tx: STP1400R03
     load: master
-    master: customers
-    link: {customer_id: customer_id}
+    master: companies
+    link: {company_id: company_id}
     totals: [cash_d0, book_cost]
     drill: {screen: STP-3400, account: account_id}
     columns:
@@ -54,3 +67,13 @@ grids:
       - {name: status, source: account_status_v.status, format: code, codes: ACCOUNT_STATUS, color: status}
       - {name: cash_d0, label: 예수금 D+0, format: money}
       - {name: book_cost, label: 보유 장부금액, format: money}
+  - id: erp_codes
+    title: 이 법인의 ERP 회사코드 이력
+    tx: STP1400R04
+    load: master
+    master: companies
+    link: {company_id: company_id}
+    columns:
+      - {name: erp_company_code, source: company_erp_codes.erp_company_code, format: code}
+      - {name: effective_from, source: company_erp_codes.effective_from, format: date}
+      - {name: reason, source: company_erp_codes.reason}

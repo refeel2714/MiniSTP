@@ -67,7 +67,8 @@ HEAD_SQL = """select (select coalesce(max(seq), 0) from ledger_events),
                      (select coalesce(max(snapshot_id), 0) from broker_snapshots),
                      (select coalesce(max(id), 0) from recon_results),
                      (select count(*) || ':' || coalesce(max(updated_at)::text, '') from common_codes),
-                     (select count(*) from account_status_history) + (select count(*) from customers)
+                     (select count(*) from account_status_history) + (select count(*) from companies)
+                     + (select count(*) from company_erp_codes)
                          + (select count(*) from code_groups)"""
 HEAD_NAMES = ("ledger_seq", "orders", "acks", "snapshot", "recon", "codes", "registry")
 
@@ -156,11 +157,11 @@ def create_app(dsn: str, *, calendar: BusinessCalendar, fees: FeeSchedule, today
     app.mount("/static", StaticFiles(directory=str(files("ministp.ui").joinpath("static"))), name="static")
 
     def accounts() -> list[dict]:
-        """For the account picker in the top bar: id, alias, customer, status and environment (PAPER/LIVE, for
+        """For the account picker in the top bar: id, alias, company, status and environment (PAPER/LIVE, for
         the 실전 테두리). Never a number or a key."""
         with connect_read_only(dsn, connect) as conn:
-            return [dict(zip(("account_id", "alias", "customer_id", "status", "env"), r)) for r in conn.execute(
-                "select s.account_id, s.alias, s.customer_id, s.status, t.env from account_status_v s"
+            return [dict(zip(("account_id", "alias", "company_id", "status", "env"), r)) for r in conn.execute(
+                "select s.account_id, s.alias, s.company_id, s.status, t.env from account_status_v s"
                 " join trading_accounts t using (account_id) order by s.account_id")]
 
     def code_names() -> dict[str, dict[str, str]]:

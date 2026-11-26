@@ -87,7 +87,7 @@
     el.addEventListener("change", () => { rememberAccount(el.value); location.reload(); });
     const me = ACCOUNTS.find(a => a.account_id === ACCOUNT) || {};
     return h("label", { class: "acct" + (me.status && me.status !== "OPEN" ? " warn" : ""), for: "acct",
-      title: `고객 ${me.customer_id || ""} · 모든 화면이 이 계좌를 보여줘요` }, h("span", { text: "계좌" }), el);
+      title: `법인 ${me.company_id || ""} · 모든 화면이 이 계좌를 보여줘요` }, h("span", { text: "계좌" }), el);
   }
 
   function h(tag, attrs, ...kids) {

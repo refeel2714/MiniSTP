@@ -45,7 +45,7 @@ class CodeGroup:
 # 0005 the dividend codes and two groups (v2.4), 0006 the cash movement codes (v2.5),
 # 0007 the adjustment codes and their reasons (v2.6), 0008 the market master groups and match results (v2.7),
 # 0009 the approval groups (v2.9), 0010 two status codes (v2.10), 0011 the ERP export groups and actions (v2.11),
-# 0012 the close check states (v2.12).
+# 0012 the close check states (v2.12), 0014 the company audit actions (v2.14).
 SEED: tuple[CodeGroup, ...] = (
     CodeGroup("ACCOUNT_STATUS", "계좌 상태", "위탁계좌의 상태. 정상 계좌만 주문을 받아요 (R-39).",
               "account_status_history.status", (
@@ -249,7 +249,7 @@ SEED: tuple[CodeGroup, ...] = (
         ("CLOSE", "장부 마감", "불일치를 판단한 날을 직접 마감"),
         ("RESOLVE", "불일치 원인 판단", ""),
         ("INSTRUMENT_ADD", "종목 등록", ""),
-        ("CUSTOMER_ADD", "고객 등록", ""),
+        ("CUSTOMER_ADD", "법인 등록 (v2.14 전 코드)", "ERD v2.14 전에 남은 기록에만 있어요. 지금은 COMPANY_ADD"),
         ("ACCOUNT_ADD", "계좌 등록", ""),
         ("ACCOUNT_STATUS", "계좌 상태 변경", ""),
         ("CODE_GROUP_ADD", "코드 그룹 추가", ""),
@@ -276,7 +276,9 @@ SEED: tuple[CodeGroup, ...] = (
         ("ORDER_CONFIRM", "주문 결과 확인", "답이 없던 주문을 사람이 증권사 주문내역과 맞춰 확인함"),
         ("ERP_EXPORT", "ERP 전표 내보내기", "일반전표 업로드 파일과 통제 파일을 만들고 전송 이력을 남김"),
         ("ERP_EXPORT_VOID", "ERP 전송 무효", "ERP가 받지 않은 파일을 무효로 해서 그 전표를 다시 낼 수 있게 함"),
-        ("CLOSE_STEP_SET", "마감 점검 단계 변경", "단계 이름·순서·사용·필수·화면·자산 유형을 바꿈"))),
+        ("CLOSE_STEP_SET", "마감 점검 단계 변경", "단계 이름·순서·사용·필수·화면·자산 유형을 바꿈"),
+        ("COMPANY_ADD", "법인 등록", "장부를 가진 법인(회사)을 별칭으로 등록"),
+        ("COMPANY_ERP_CODE", "ERP 회사코드 지정", "법인의 ERP 회사코드를 적용시작일과 함께 기록"))),
 )
 
 

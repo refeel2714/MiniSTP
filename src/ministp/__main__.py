@@ -45,7 +45,7 @@ from .fees import FeeSchedule
 from .instruments import AssetType, Instrument, Market
 from .ledger import Side
 from .oms import OrderStatus
-from .accounts import STATUSES, add_account, add_customer, list_accounts, set_status
+from .accounts import STATUSES, add_account, add_company, erp_code_on, list_accounts, set_erp_code, set_status
 from .ops import (GATE_DAYS, IntradayRunner, OpsError, acquire_writer, add_instrument, cancel_order, clean_streak, confirm_order, close_books, daily_close, load_books, open_books,
                   require_current_schema, resolve_break)
 from .recon import Cause, Status
@@ -117,10 +117,13 @@ def audited(args, today: dt.date):
         return cmd.upper(), args.account, (args.date or today).isoformat(), None
     if cmd == "resolve":
         return "RESOLVE", None, str(args.result_id), {"cause": args.cause, "note": args.note}
-    if cmd == "customer":
-        return "CUSTOMER_ADD", None, args.customer_id, {"alias": args.alias}
+    if cmd == "company" and what == "add":
+        return "COMPANY_ADD", None, args.company_id, {"alias": args.alias, "erp_code": args.erp_code}
+    if cmd == "company" and what == "erp-code":
+        return "COMPANY_ERP_CODE", None, args.company_id, {"erp_code": args.erp_code, "reason": args.reason,
+                                                          "effective_from": args.effective_from}
     if cmd == "account" and what == "add":
-        return "ACCOUNT_ADD", args.account_id, args.account_id, {"customer_id": args.customer_id, "alias": args.alias,
+        return "ACCOUNT_ADD", args.account_id, args.account_id, {"company_id": args.company_id, "alias": args.alias,
                                                                 "credential_ref": args.credential}
     if cmd == "account" and what == "status":
         return "ACCOUNT_STATUS", args.account_id, args.account_id, {"to": args.status, "reason": args.reason,
@@ -501,15 +504,21 @@ def _run(argv, *, environ=os.environ, client_factory=KisClient, connect=psycopg.
     q.add_argument("--asset-type", help="이 자산 유형을 거래·보유한 계좌에만 (빈 값이면 모든 계좌)")
     q.add_argument("--description", help="설명")
     sub.add_parser("status", parents=[by_account])
-    p = sub.add_parser("customer", help="고객 등록 (별칭만, 개인정보는 넣지 않아요)")
+    p = sub.add_parser("company", help="법인 목록·등록, ERP 회사코드 지정 (장부를 가진 회사)")
     what = p.add_subparsers(dest="what", required=True)
+    what.add_parser("list")
     q = what.add_parser("add")
-    q.add_argument("customer_id", metavar="고객ID"), q.add_argument("alias", metavar="별칭")
+    q.add_argument("company_id", metavar="법인ID"), q.add_argument("alias", metavar="별칭")
+    q.add_argument("--erp-code", metavar="코드", help="ERP 회사코드 (나중에 company erp-code로 정해도 돼요)")
+    q = what.add_parser("erp-code")
+    q.add_argument("company_id", metavar="법인ID"), q.add_argument("erp_code", metavar="ERP회사코드")
+    q.add_argument("reason", metavar="사유")
+    q.add_argument("--from", dest="effective_from", type=dt.date.fromisoformat, help="적용 시작일 (기본 오늘)")
     p = sub.add_parser("account", help="위탁계좌 목록·등록·상태 변경 (계좌번호와 키는 DB에 넣지 않아요)")
     what = p.add_subparsers(dest="what", required=True)
     what.add_parser("list")
     q = what.add_parser("add")
-    q.add_argument("account_id", metavar="계좌ID"), q.add_argument("customer_id", metavar="고객ID")
+    q.add_argument("account_id", metavar="계좌ID"), q.add_argument("company_id", metavar="법인ID")
     q.add_argument("alias", metavar="별칭")
     q.add_argument("--credential", required=True, metavar="이름",
                    help="이 계좌의 환경변수 이름 머리말. KIS_2면 MINISTP_KIS_2_APP_KEY 등을 읽어요")
@@ -746,9 +755,9 @@ def _run(argv, *, environ=os.environ, client_factory=KisClient, connect=psycopg.
                 require_current_schema(conn)    # 결재는 원장에 쓰지 않아요: run이 떠 있어도 돼요
                 return _approval(conn, args, today, order_day(calendar, started))
 
-            if args.cmd in ("open", "order", "cancel", "confirm", "daily", "close", "run", "resolve", "customer") or (
+            if args.cmd in ("open", "order", "cancel", "confirm", "daily", "close", "run", "resolve") or (
                     args.cmd in ("dividend", "cash", "adjust") and args.what != "list") or (
-                    args.cmd == "account" and args.what != "list") or (
+                    args.cmd in ("account", "company") and args.what != "list") or (
                     args.cmd == "code" and args.what not in ("list", "check")) or (
                     args.cmd == "close-step" and args.what == "set"):
                 acquire_writer(conn)
@@ -761,7 +770,7 @@ def _run(argv, *, environ=os.environ, client_factory=KisClient, connect=psycopg.
                 require_current_schema(conn)
                 return _codes(conn, args)
 
-            if args.cmd in ("customer", "account"):
+            if args.cmd in ("company", "account"):
                 require_current_schema(conn)
                 return _accounts(conn, args, today)
 
@@ -778,7 +787,7 @@ def _run(argv, *, environ=os.environ, client_factory=KisClient, connect=psycopg.
             accounts = list_accounts(conn)
             acct = next(a for a in accounts if a.account_id == args.account)
             if len(accounts) > 1:   # say whose books these are whenever there is a choice
-                print(f"계좌 {acct.account_id} {acct.alias} (고객 {acct.customer_id}, {acct.status})")
+                print(f"계좌 {acct.account_id} {acct.alias} (법인 {acct.company_id}, {acct.status})")
 
             if args.cmd == "close-check":
                 return _close_check(conn, calendar, fees, today, args.date or today, args.account, "close-check")
@@ -1013,15 +1022,13 @@ def _sample_db(url: str, environ, connect, calendar, days: int, accounts: int = 
 
 
 def _accounts(conn, args, today: dt.date) -> int:
-    """`customer add`, `account list | add | status`."""
-    if args.cmd == "customer":
-        add_customer(conn, args.customer_id, args.alias)
-        print(f"고객 등록: {args.customer_id} {args.alias}")
-        return 0
+    """`company list | add | erp-code`, `account list | add | status`."""
+    if args.cmd == "company":
+        return _companies(conn, args, today)
     if args.what == "add":
-        a = add_account(conn, args.account_id, args.customer_id, args.alias,
+        a = add_account(conn, args.account_id, args.company_id, args.alias,
                         credential_ref=args.credential, opened_on=today)
-        print(f"계좌 등록: {a.account_id} {a.alias} (고객 {a.customer_id}, 모의투자, 개설일 {a.opened_on})")
+        print(f"계좌 등록: {a.account_id} {a.alias} (법인 {a.company_id}, 모의투자, 개설일 {a.opened_on})")
         print(f"이 계좌의 키는 환경변수 {a.env_prefix}_APP_KEY, {a.env_prefix}_APP_SECRET, {a.env_prefix}_ACCOUNT에서 읽어요. "
               "없으면 실행할 때 물어보고 저장하지 않아요.")
         print(f"다음: 종목이 등록돼 있으면 open --account {a.account_id} 로 증권사 잔고를 원장 시작값으로 기록해요.")
@@ -1034,8 +1041,28 @@ def _accounts(conn, args, today: dt.date) -> int:
         n, cash = conn.execute(
             "select (select count(*) from ledger_events where account_id = %(a)s),"
             " (select balance from cash_balance_v where account_id = %(a)s)", {"a": a.account_id}).fetchone()
-        print(f"{a.account_id} {a.alias}: 고객 {a.customer_id}, {a.broker} {a.env}, {a.status} ({a.status_from}부터), "
+        print(f"{a.account_id} {a.alias}: 법인 {a.company_id}, {a.broker} {a.env}, {a.status} ({a.status_from}부터), "
               f"이벤트 {n:,}건, 예수금 {int(cash):,}원, 환경변수 {a.env_prefix}_*")
+    return 0
+
+
+def _companies(conn, args, today: dt.date) -> int:
+    if args.what == "add":
+        add_company(conn, args.company_id, args.alias, erp_code=args.erp_code, effective_from=today)
+        print(f"법인 등록: {args.company_id} {args.alias}"
+              + (f" (ERP 회사코드 {args.erp_code}, {today}부터)" if args.erp_code else
+                 ". ERP로 전표를 보낼 법인이면 company erp-code로 회사코드를 정해 주세요."))
+        return 0
+    if args.what == "erp-code":
+        day = args.effective_from or today
+        set_erp_code(conn, args.company_id, args.erp_code, day, args.reason)
+        print(f"법인 {args.company_id} ERP 회사코드: {args.erp_code} ({day}부터). 이전 코드는 이력에 남아 있어요.")
+        return 0
+    for cid, alias, n in conn.execute(
+            "select c.company_id, c.alias, count(t.account_id) from companies c"
+            " left join trading_accounts t using (company_id) group by 1, 2 order by 1"):
+        code = erp_code_on(conn, cid, today)
+        print(f"{cid} {alias}: 계좌 {n}개, ERP 회사코드 {code or '없음'}")
     return 0
 
 

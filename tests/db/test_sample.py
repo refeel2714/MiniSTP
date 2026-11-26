@@ -37,7 +37,7 @@ def test_same_seed_same_sample(conn):
     assert conn.execute("select event_type, payload from ledger_events order by seq").fetchall() == first
 
 
-# ---------- 다계좌 샘플: 고객 2명, 계좌 3개 ----------
+# ---------- 다계좌 샘플: 법인 2개, 계좌 3개 ----------
 
 def _events(conn, account_id):
     return conn.execute("select event_type, payload from ledger_events where account_id = %s order by seq",
@@ -56,13 +56,13 @@ def test_extra_accounts_do_not_change_the_default_accounts_history(conn):
         build_sample(conn, CAL, FEES, days=3, accounts=4)
 
 
-def test_three_account_sample_is_two_customers_trading_one_market(conn):
+def test_three_account_sample_is_two_companies_trading_one_market(conn):
     from ministp.ops import load_instruments
     from ministp.store.integrity import integrity_report
     s = build_sample(conn, CAL, FEES, days=12, seed=3, accounts=3)
     second, third = s.others
 
-    assert conn.execute("select account_id, customer_id, credential_ref, opened_on from trading_accounts"
+    assert conn.execute("select account_id, company_id, credential_ref, opened_on from trading_accounts"
                         " order by 1").fetchall() == [
         ("A0001", "C0001", "KIS", s.first_day), ("A0002", "C0001", "KIS_2", second.opened_on),
         ("A0003", "C0002", "KIS_3", s.first_day)]

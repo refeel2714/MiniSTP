@@ -38,7 +38,7 @@ ACTIONS = {
     "CLOSE": "장부 마감",
     "RESOLVE": "불일치 원인 판단",
     "INSTRUMENT_ADD": "종목 등록",
-    "CUSTOMER_ADD": "고객 등록",
+    "CUSTOMER_ADD": "법인 등록 (v2.14 전 코드)",
     "ACCOUNT_ADD": "계좌 등록",
     "ACCOUNT_STATUS": "계좌 상태 변경",
     "CODE_GROUP_ADD": "코드 그룹 추가",
@@ -66,6 +66,8 @@ ACTIONS = {
     "ERP_EXPORT": "ERP 전표 내보내기",
     "ERP_EXPORT_VOID": "ERP 전송 무효",
     "CLOSE_STEP_SET": "마감 점검 단계 변경",
+    "COMPANY_ADD": "법인 등록",
+    "COMPANY_ERP_CODE": "ERP 회사코드 지정",
 }
 MESSAGE_MAX = 500
 

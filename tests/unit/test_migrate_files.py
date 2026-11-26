@@ -40,3 +40,12 @@ def test_shipped_migrations_end_at_the_schema_version():
     assert all(m.title and m.erd_version for m in shipped)
     assert shipped[-1].erd_version == erd.schema_version(erd.schema_sql())
     assert shipped[0].name == "multi_account" and not shipped[0].changes_data
+
+
+def test_renames_are_parsed_and_mapped():
+    m = mg.parse("0001_x.sql", "-- renames: a -> b, a.c1 -> d1, other.x -> y\nselect 1;")
+    assert m.renamed_tables == (("a", "b"),) and m.renamed_columns == (("a", "c1", "d1"), ("other", "x", "y"))
+    assert m.new_name("a") == "b" and m.new_name("z") == "z"
+    assert m.new_columns("a", ("c1", "c2")) == ("d1", "c2") and m.new_columns("other", ("x",)) == ("y",)
+    with pytest.raises(mg.MigrationError, match="renames 항목은"):
+        mg.parse("0001_x.sql", "-- renames: a to b\nselect 1;")
