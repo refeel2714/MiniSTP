@@ -1,6 +1,6 @@
 id: STP-6100
 title: 수익률
-purpose: 기준가로 잰 수익률이에요. 입금과 출금은 그 전 기준가로 좌수를 늘리거나 줄이기 때문에 순자산은 움직여도 기준가는 움직이지 않아요. 그래서 기준가의 변화가 곧 투자한 돈의 수익률(시간가중수익률)이에요. 위쪽에 설정 이후, 연초 이후, 최근 1개월 수익률이 마지막 기준일까지로 나오고, 왼쪽은 월별 수익률(그 달 마지막 기준가를 전월 말 기준가와 비교), 누적, 그 달의 손익(순자산 변화에서 입출금을 뺀 원화 금액)이에요. 월을 고르면 오른쪽에 그 달의 기준가 그래프와 날짜별 수익률이 나와요. 기간은 30일·60일·90일·1년·전체 가운데 고르고(처음은 1년), 시작일을 넣으면 그 날부터예요. 기간 안의 날만 세고, 누적이 기간 직전 기준가부터라서 맨 위 달의 누적이 곧 기간 수익률이에요. 벤치마크(지수) 비교는 지수 시세를 저장하게 되면 붙여요.
+purpose: 입출금을 뺀 투자 성과(시간가중수익률)예요. 입금과 출금은 순자산을 움직이지만 수익률에는 섞이지 않아요. 위쪽에 설정 이후, 연초 이후, 최근 1개월 수익률이 마지막 기준일까지로 나오고, 왼쪽은 월별 수익률(그 달 말을 전월 말과 비교), 누적, 그 달의 손익(순자산 변화에서 입출금을 뺀 원화 금액)이에요. 월을 고르면 오른쪽에 그 달의 월초 이후 수익률 그래프와 날짜별 수익률이 나와요. 기간은 30일·60일·90일·1년·전체 가운데 고르고(처음은 1년), 시작일을 넣으면 그 날부터예요. 기간 안의 날만 세고, 누적이 기간 직전부터라서 맨 위 달의 누적이 곧 기간 수익률이에요. 벤치마크(지수) 비교는 지수 시세를 저장하게 되면 붙여요.
 layout: split
 left: 54
 conditions:
@@ -20,7 +20,7 @@ grids:
       - {name: month_return, label: 월 수익률(%), format: rate, color: sign}
       - {name: cum_return, label: 누적(%), format: rate, color: sign}
       - {name: profit, label: 손익, format: money, color: sign}
-      - {name: trend, label: 기준가 추이, format: series, display: spark}
+      - {name: trend, label: 수익률 추이, format: series, display: spark}
       - {name: flows, label: 입출금, format: money, hidden: true}
       - {name: end_nav, label: 월말 기준가, format: rate, hidden: true}
       - {name: base_nav, label: 전월 말 기준가, format: rate, hidden: true}
@@ -36,10 +36,10 @@ grids:
     load: master
     master: months
     link: {month: month, date_from: date_from, date_to: date_to}
-    chart: {x: date, y: nav_per_1000}
+    chart: {x: date, y: month_to_date}
     columns:
       - {name: date, label: 기준일, format: date}
-      - {name: nav_per_1000, label: 기준가, format: rate}
+      - {name: nav_per_1000, label: 기준가, format: rate, hidden: true}
       - {name: day_return, label: 일 수익률(%), format: rate, color: sign}
       - {name: month_to_date, label: 월초 이후(%), format: rate, color: sign}
       - {name: profit, label: 손익, format: money, color: sign}
