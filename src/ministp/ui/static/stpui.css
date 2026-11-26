@@ -284,6 +284,25 @@ button.day:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--panel), 0 
 .tsum { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 22px; padding-top: 9px; border-top: 1px solid var(--line); }
 .tsum b { margin-left: 6px; }
 .tsum .pill { margin-left: auto; }
+/* 전표 보기: ERP 전표처럼 차변(계정·과목·금액)과 대변(계정·과목·금액)을 나란히. 전표 사이는 점선 */
+.vwrap { padding: 10px 14px 14px; overflow-x: auto; }
+.vtable { width: 100%; min-width: 560px; border-collapse: collapse; font-size: 13px; }
+.vtable th { padding: 6px 8px; text-align: left; font-size: 12px; font-weight: 600; color: var(--muted); background: var(--head);
+  border-top: 1px solid var(--line-strong); border-bottom: 1px solid var(--line-strong); white-space: nowrap; }
+.vtable td { padding: 6px 8px; border-bottom: 1px solid var(--line); }
+.vtable .num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.vtable .vcode { width: 4.5em; font: 12px ui-monospace, "Cascadia Mono", Consolas, monospace; color: var(--muted); }
+.vtable .vsplit { border-left: 1px solid var(--line-strong); }
+.vtable tbody + tbody tr:first-child td { border-top: 2px dotted var(--sel-line); }
+.vtable .vname { white-space: nowrap; }
+.vtable .vfacts { width: 12.5em; min-width: 12.5em; vertical-align: top; border-right: 1px solid var(--line-strong); background: var(--head); font-size: 12px; }
+.vtable td.vfacts { padding: 7px 10px; }
+.vtable .vno { color: var(--muted); margin-bottom: 4px; } .vtable .vno b { margin-left: 6px; color: var(--ink); font-size: 13px; }
+.vtable .vfacts dl { display: grid; grid-template-columns: auto 1fr; gap: 2px 8px; margin: 0; }
+.vtable .vfacts dt { color: var(--muted); min-width: 4.8em; max-width: 4.8em; line-height: 1.25; word-break: keep-all; } .vtable .vfacts dd { margin: 0; color: var(--ink); white-space: nowrap; }
+.vtable .vfacts .pill { display: inline-block; margin-top: 6px; }
+.vtable tfoot td { font-weight: 650; background: var(--head); border-top: 1px solid var(--line-strong); border-bottom: 1px solid var(--line-strong); }
+.vtable tfoot .pill { margin-left: 10px; font-weight: 600; }
 
 /* 구성 지도: 타일 하나가 행 하나. 면적은 크기 열, 색은 부호 열(이익 빨강, 손실 파랑, 짙을수록 큼) */
 .tmapbox { padding: 10px 12px 10px; }

@@ -98,13 +98,22 @@ def _balanced(journal: Dataset) -> bool:
     return all(v == 0 for v in sums.values())
 
 
+# 전표 유형 코드 -> 화면에 적는 이름. 없는 코드는 코드 그대로 보여요.
+JOURNAL_KIND_NAMES = {
+    "DEPOSIT": "입금", "OPENING": "기초 잔고", "EXECUTION": "체결", "LATE_EXECUTION": "지연 체결", "SETTLEMENT": "결제",
+    "VALUATION": "평가", "VALUATION_REVERSAL": "평가 역분개", "DIVIDEND_ACCRUAL": "배당 미수", "DIVIDEND": "배당 입금",
+    "DIVIDEND_CANCEL": "배당 취소", "ADJUSTMENT": "수동 조정", "ADJUSTMENT_CANCEL": "조정 취소",
+}
+
+
 def _journal_of(conn: psycopg.Connection, seq: int) -> Dataset:
     return _q(conn, """
-        select j.entry_id, j.date, j.kind, j.source_id, j.reverses_entry_id,
+        select j.entry_id, j.date, j.kind, coalesce(%s::jsonb ->> j.kind, j.kind) as kind_name,
+               j.source_id, j.reverses_entry_id,
                l.line_id, l.account_code, a.name as account_name, l.debit, l.credit
           from journal_entries j join journal_lines l using (entry_id)
           join accounts_chart a on a.code = l.account_code
-         where j.event_seq = %s order by j.entry_id, l.line_id""", (seq,))
+         where j.event_seq = %s order by j.entry_id, l.line_id""", (json.dumps(JOURNAL_KIND_NAMES), seq))
 
 
 def event_journal(conn: psycopg.Connection, seq: int) -> tuple[Dataset, bool]:

@@ -32,7 +32,7 @@ STEP_STATES = {"done", "now", "stop", "wait"}
 MAX_STEPS = 6
 PILL_COLORS = {"status", "side", "verdict"}
 # 그리드 보기: grid 표 · cards 한 행 요약 카드 · calendar 달력(하루가 한 칸, 칸 색은 상태 열의 색 규칙)
-#            · taccount T계정(분개 한 줄이 계정의 차변은 왼쪽, 대변은 오른쪽에. 표로 바꿔 볼 수 있음)
+#            · taccount 분개(처음엔 전표 보기: ERP 전표처럼 차변 계정·과목·금액과 대변 계정·과목·금액을 나란히. T계정과 표로 바꿔 볼 수 있음)
 #            · map 구성 지도(행 하나가 타일 하나, 면적은 크기 열, 색은 부호 열. 표 보기의 그리드에 map만 적으면 바꿔 보는 보기로 붙음)
 VIEWS = {"grid", "cards", "calendar", "taccount", "map"}
 VIEW_NAMES = {"cards": "카드", "calendar": "달력", "taccount": "T계정", "map": "구성 지도"}
