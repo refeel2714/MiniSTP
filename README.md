@@ -195,6 +195,7 @@ MINISTP_TEST_DATABASE_URL=postgresql://postgres:postgres@localhost:5432/ministp_
 | `basket` | 바스켓 주문 시뮬레이션: 배분 비율로 총 주문금액을 종목별 수량으로 나누고 검사(화면 STP-1310과 같은 계산), 읽기 전용 | D9, R-97 |
 | `precheck` | 묶음 검증: 여러 주문 줄을 계좌 단위로 보내는 순서대로 쌓아 검사(혼자 통과·같이 실패, 비중 한도, 묶음 단위), 읽기 전용 | D9, R-98 |
 | `broker.kis_ws` | 실시간 체결통보 수신(접속키, 구독, AES 복호화, PINGPONG, 재연결) | D6 |
+| `audit` | 감사 로그: 요청마다 한 줄(처리·거부·실패), 경로와 실행 계정, DB가 채우는 번호·시각·해시 사슬 | R-85~87 |
 | `store` | PostgreSQL 이벤트 저장, 재생 복원, DB 수준 append-only·차대변 통제 | 03 데이터 모델, R-04, R-50 |
 | `queries` | 조회 서비스 계층: 화면이 호출할 조회 트랜잭션(원장 목록·추적, 시산표, 대사 이력, 주문 블로터, 기준가 추이). DB 읽기만 하고 DB 컬럼명 그대로 Dataset으로 반환 | 화면 기획서 |
 | `ui` | 업무화면 플랫폼 STP-UI: 화면 정의(YAML)와 DB 스키마 대조 검증, 조회 트랜잭션(ID별), FastAPI 서버(조회는 읽기 전용 세션), 화면 런타임(JS), 처리 버튼(처리 트랜잭션)과 찾기 팝업, 화면정의서 생성 | 화면 기획서 |
@@ -259,6 +260,15 @@ MINISTP_TEST_DATABASE_URL=postgresql://postgres:postgres@localhost:5432/ministp_
 .venv\Scripts\python -m ministp code rename RECON_CAUSE TIMING "조회 시점 차이"
 .venv\Scripts\python -m ministp code check                   :: 스키마 제약, 프로그램, 저장된 값과 대조
 ```
+
+감사 로그 (ERD v2.3부터):
+
+```bat
+.venv\Scripts\python -m ministp audit                        :: 최근 30줄: 누가, 언제, 무엇을, 어떻게 끝났는지
+.venv\Scripts\python -m ministp audit --outcome REFUSED      :: 거부된 요청만 (--action ORDER, --account A0002, --limit 100)
+```
+
+주문, 일일 마감, 장부 마감, 불일치 판단, 계좌와 코드 변경은 명령으로 하든 화면 버튼으로 하든 한 줄씩 남습니다. 처리된 것뿐 아니라 규칙이 거부한 요청과 실패한 요청도 남습니다(R-85). 주문 전 검증에서 거부된 주문은 주문 테이블에 없어서, 이 줄이 유일한 기록입니다. 줄은 고치거나 지울 수 없고, 각 줄이 앞 줄의 해시를 이어 받아 가운데를 건드리면 `verify`가 그 줄을 찾아냅니다(R-87). 인증키와 계좌번호는 들어가지 않습니다.
 
 `--account`를 붙이지 않으면 기본 계좌 `A0001`입니다. 계좌마다 자기 환경변수만 읽습니다. `--credential KIS_2`로 등록한 계좌는 `MINISTP_KIS_2_APP_KEY`, `MINISTP_KIS_2_APP_SECRET`, `MINISTP_KIS_2_ACCOUNT`를 읽고, 없으면 실행할 때 물어본 뒤 저장하지 않습니다. DB에는 그 이름(`KIS_2`)만 있고 계좌번호와 키는 없습니다. 정지한 계좌는 주문을 받지 않지만 결제, 마감, 대사는 계속합니다. 마감과 대사, 무오류 연속 영업일은 계좌별로 셉니다.
 

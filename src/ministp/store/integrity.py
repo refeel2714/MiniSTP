@@ -18,6 +18,7 @@ from dataclasses import dataclass, replace
 
 import psycopg
 
+from .. import audit
 from ..accounting import Account
 from ..ledger import Ledger
 from ..ledger import DayClosedEvent
@@ -27,10 +28,11 @@ from .postgres import DEFAULT_ACCOUNT, cash_rows, close_row, from_payload, posit
 # tests/unit/test_integrity_tables.py keeps the two in step.
 APPEND_ONLY_TABLES = ("ledger_events", "journal_entries", "journal_lines", "position_ledger", "cash_ledger",
                       "instruments", "oms_orders", "oms_order_acks", "broker_snapshots", "recon_results",
-                      "customers", "trading_accounts", "account_status_history", "day_closes")
+                      "customers", "trading_accounts", "account_status_history", "day_closes", "audit_log")
 BALANCE_TRIGGERS = ("journal_entries_balanced", "journal_lines_balanced")
 # R-78 in the database: no entry, cash row or close dated inside a closed day (ERD v2.2).
 CLOSED_DAY_TRIGGERS = ("journal_entries_closed_day", "cash_ledger_closed_day", "day_closes_closed_day")
+AUDIT_CHAIN_TRIGGER = "audit_log_chain"   # numbers, stamps and links each audit row (ERD v2.3)
 SHOWN = 3   # how many differing items a detail line names
 
 
@@ -69,12 +71,12 @@ def check_guards(conn: psycopg.Connection) -> Check:
         " join pg_namespace n on n.oid = c.relnamespace"
         " where n.nspname = current_schema() and not t.tgisinternal") if enabled in ("O", "A")}
     want = [f"{t}_{kind}" for t in APPEND_ONLY_TABLES for kind in ("append_only", "no_truncate")]
-    want += BALANCE_TRIGGERS + CLOSED_DAY_TRIGGERS
+    want += BALANCE_TRIGGERS + CLOSED_DAY_TRIGGERS + (AUDIT_CHAIN_TRIGGER,)
     off = [w for w in want if w not in live]
     if off:
         return Check("guards", "수정·삭제 방지", False, f"꺼져 있거나 없는 트리거: {_some(off)}")
     return Check("guards", "수정·삭제 방지", True,
-                 f"{len(APPEND_ONLY_TABLES)}개 테이블의 수정·삭제·비우기 금지, 분개 대차 검사, 마감일 잠금이 켜져 있음")
+                 f"{len(APPEND_ONLY_TABLES)}개 테이블의 수정·삭제·비우기 금지, 분개 대차 검사, 마감일 잠금, 감사 로그 사슬이 켜져 있음")
 
 
 def check_balanced(conn: psycopg.Connection) -> Check:
@@ -90,6 +92,17 @@ def check_balanced(conn: psycopg.Connection) -> Check:
             " or count(l.line_id) = 0 order by e.entry_id limit %s", (SHOWN + 1,))]
         return Check("balanced", "분개 대차", False, f"대차가 맞지 않는 분개 {bad:,}건 (분개번호 {_some(ids)})")
     return Check("balanced", "분개 대차", True, f"분개 {n:,}건 모두 차변 = 대변 (합계 {int(dr):,})")
+
+
+def check_audit(conn: psycopg.Connection) -> Check:
+    """R-87: the audit rows are numbered 1..n and each carries the hash of its content and of the row before."""
+    n, last, bad = audit.chain_problems(conn, SHOWN + 1)
+    if bad:
+        return Check("audit", "감사 로그", False,
+                     f"사슬이 이어지지 않는 줄: {_some(bad)}번 (고쳤거나, 지웠거나, 끼워 넣은 흔적)")
+    if n == 0:
+        return Check("audit", "감사 로그", True, "기록이 아직 없어요")
+    return Check("audit", "감사 로그", True, f"{n:,}줄의 번호와 해시 사슬이 이어짐 (마지막 줄 {n:,}번, 해시 {last[:12]})")
 
 
 # ---------- stored rows against a replay of the events ----------
@@ -204,7 +217,7 @@ def integrity_report(conn: psycopg.Connection, calendar, fees, instruments) -> l
         if top:   # one snapshot, so a write in another session cannot split the picture
             conn.execute("set transaction isolation level repeatable read read only")
         stream = check_event_stream(conn)
-        checks = [stream, check_guards(conn), check_balanced(conn)]
+        checks = [stream, check_guards(conn), check_balanced(conn), check_audit(conn)]
         if not stream.ok:
             return checks + [Check("replay", "이벤트 재생", False, "순번에 빈 곳이 있어 재생하지 않았어요")]
         for (account_id,) in conn.execute("select account_id from trading_accounts order by account_id").fetchall():

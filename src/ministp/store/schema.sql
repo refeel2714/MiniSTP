@@ -1,5 +1,5 @@
 -- MiniSTP ledger schema (spec 03).
--- ERD version: 2.2  (bump on every schema change, then run scripts/gen_erd.py) Append-only tables are enforced in the DB,
+-- ERD version: 2.3  (bump on every schema change, then run scripts/gen_erd.py) Append-only tables are enforced in the DB,
 -- not just in application code.
 
 create table if not exists accounts_chart (
@@ -111,6 +111,25 @@ create table if not exists day_closes (
     constraint day_closes_event_account_fkey
         foreign key (event_seq, account_id) references ledger_events (seq, account_id)
 );
+
+-- v2.3 감사 로그: 누가, 언제, 어디로, 무엇을 했고 어떻게 끝났는지. 거부된 요청도 한 줄이 남는다.
+-- 번호, 시각, 앞 행의 해시와 자기 해시는 DB가 채운다 (아래 ministp_audit_chain). 인증키와 계좌번호는 넣지 않는다.
+create table if not exists audit_log (
+    id         bigint primary key check (id > 0),
+    at         timestamptz not null,
+    channel    text not null check (channel in ('CLI', 'UI', 'SYSTEM')),
+    actor      text not null check (actor <> ''),
+    action     text not null check (action <> ''),
+    outcome    text not null check (outcome in ('DONE', 'REFUSED', 'FAILED')),
+    account_id text references trading_accounts (account_id),
+    target     text,
+    detail     jsonb not null default '{}',
+    message    text,
+    prev_hash  text not null,
+    hash       text not null,
+    constraint audit_log_hash_key unique (hash)
+);
+create index if not exists audit_log_account_idx on audit_log (account_id, id);
 
 -- Operations (Phase 2): instruments, orders, broker snapshots, reconciliation.
 create table if not exists instruments (
@@ -226,7 +245,8 @@ begin
     foreach t in array array['ledger_events', 'journal_entries', 'journal_lines',
                              'position_ledger', 'cash_ledger', 'instruments', 'oms_orders',
                              'oms_order_acks', 'broker_snapshots', 'recon_results',
-                             'customers', 'trading_accounts', 'account_status_history', 'day_closes'] loop
+                             'customers', 'trading_accounts', 'account_status_history', 'day_closes',
+                             'audit_log'] loop
         if not exists (select 1 from pg_trigger where tgname = t || '_append_only') then
             execute format('create trigger %I before update or delete on %I
                             for each row execute function ministp_forbid_change()',
@@ -265,6 +285,35 @@ begin
                             for each row execute function ministp_forbid_closed_day()', t || '_closed_day', t);
         end if;
     end loop;
+end $$;
+
+-- 감사 로그의 해시 사슬. 한 행의 해시는 앞 행의 해시와 자기 내용 전체로 계산한다.
+-- 가운데 행을 고치거나 지우면 그 뒤의 사슬이 맞지 않게 된다 (verify가 확인).
+create or replace function ministp_audit_hash(prev text, r audit_log) returns text language sql stable as $$
+    select encode(sha256(convert_to(jsonb_build_array(
+        prev, r.id, to_char(r.at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US'), r.channel, r.actor,
+        r.action, r.outcome, r.account_id, r.target, r.detail, r.message)::text, 'UTF8')), 'hex')
+$$;
+
+create or replace function ministp_audit_chain() returns trigger language plpgsql as $$
+declare
+    last_id bigint; last_hash text;
+begin
+    perform pg_advisory_xact_lock(7412002);   -- one row at a time: the chain has one end
+    select id, hash into last_id, last_hash from audit_log order by id desc limit 1;
+    new.id := coalesce(last_id, 0) + 1;
+    new.at := clock_timestamp();
+    new.prev_hash := coalesce(last_hash, repeat('0', 64));
+    new.hash := ministp_audit_hash(new.prev_hash, new);
+    return new;
+end $$;
+
+do $$
+begin
+    if not exists (select 1 from pg_trigger where tgname = 'audit_log_chain') then
+        create trigger audit_log_chain before insert on audit_log
+            for each row execute function ministp_audit_chain();
+    end if;
 end $$;
 
 -- A code is renamed or switched off, never removed: old rows still carry it.
@@ -544,6 +593,20 @@ comment on column unclosed_events_v.account_id is '계좌 ID';
 comment on column unclosed_events_v.seq is '이벤트 순번';
 comment on column unclosed_events_v.event_type is '이벤트 유형';
 comment on column unclosed_events_v.recorded_at is '기록 시각';
+
+comment on table audit_log is '감사 로그 (누가 언제 무엇을 했고 어떻게 끝났는지, 수정·삭제 불가)';
+comment on column audit_log.id is '행 번호 (1부터 빈 번호 없이)';
+comment on column audit_log.at is '기록 시각';
+comment on column audit_log.channel is '경로 (CLI 명령 / UI 화면 / SYSTEM 시스템)';
+comment on column audit_log.actor is '실행한 PC 계정';
+comment on column audit_log.action is '행위 코드';
+comment on column audit_log.outcome is '결과 (DONE 처리 / REFUSED 거부 / FAILED 실패)';
+comment on column audit_log.account_id is '계좌 ID (계좌와 무관한 행위는 비움)';
+comment on column audit_log.target is '대상 (주문번호, 대사 행 번호, 코드 등)';
+comment on column audit_log.detail is '입력 내용 (인증키·계좌번호 제외)';
+comment on column audit_log.message is '결과 메시지 (거부·실패 사유)';
+comment on column audit_log.prev_hash is '앞 행의 해시';
+comment on column audit_log.hash is '이 행의 해시 (앞 행 해시 + 이 행 내용)';
 
 -- 마이그레이션 적용 기록. 새 DB는 이 스키마로 만들어지면서 그때까지의 마이그레이션이 적용된 것으로 기록된다.
 create table if not exists schema_migrations (

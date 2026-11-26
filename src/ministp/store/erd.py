@@ -173,6 +173,8 @@ GROUPS = [
     ("증권사 응답과 대사", "증권사 응답 원본과 그 실행에서 나온 대사 결과.", ["broker_snapshots", "recon_results"]),
     ("공통코드", "코드와 코드명. 다른 테이블의 코드 컬럼은 여기를 FK로 묶지 않고, 점검(code check)이 어긋남을 찾아요.",
      ["code_groups", "common_codes"]),
+    ("감사 로그", "밖에서 시스템에 한 일과 그 결과. 처리된 것, 규칙이 거부한 것, 실패한 것이 모두 남고, 줄마다 앞 줄의 해시를 이어 받아요.",
+     ["audit_log"]),
 ]
 
 
@@ -189,7 +191,7 @@ LAYOUT = [
                      ["journal_lines"], ["accounts_chart"]]),
     ("주문", [["instruments"], ["oms_orders"], ["oms_order_acks"], []]),
     ("증권사 응답과 대사", [["broker_snapshots"], ["recon_results"], [], []]),
-    ("공통코드", [["code_groups"], ["common_codes"], [], []]),
+    ("공통코드 · 감사 로그", [["code_groups"], ["common_codes"], ["audit_log"], []]),
 ]
 BOX_W, COL_GAP, MARGIN = 232, 84, 28
 HEAD_H, ROW_H, MORE_H, BOX_GAP, BAND_TOP, BAND_PAD = 54, 40, 28, 28, 44, 22

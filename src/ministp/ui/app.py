@@ -32,7 +32,8 @@ from ..fees import FeeSchedule
 from ..ops import OpsError, acquire_writer, require_current_schema
 from ..accounts import ACCOUNT_ID_RE
 from ..store import DEFAULT_ACCOUNT, erd
-from .actions import ActionContext, ActionError, run_action
+from .. import audit
+from .actions import ACTIONS, ActionContext, ActionError, run_action
 from .definitions import (DefinitionError, jump_targets, load_lookups, load_menu, load_screens,
                           lookup_problems, menu_path, menu_problems, menu_tree, resolve, validate)
 from .spec import screen_markdown
@@ -248,8 +249,13 @@ def create_app(dsn: str, *, calendar: BusinessCalendar, fees: FeeSchedule, today
         if not isinstance(account, str) or not ACCOUNT_ID_RE.match(account):
             return JSONResponse({"error": "계좌 ID 형식이 올바르지 않아요"}, status_code=400)
         started = time.perf_counter()
+        known = ACTIONS.get(tx_id)
         try:
-            with connect(write_dsn, autocommit=True) as conn:
+            # R-86: the audit rows of this request say it came from a screen, and through which 처리 transaction.
+            # One that is refused or fails changes nothing else, so its row is written here, after the rollback.
+            with connect(write_dsn, autocommit=True) as conn, audit.acting_as("UI", tx=tx_id), audit.refusals(
+                    conn, lambda: known.named(body.get("params", {})) if known else None,
+                    refused=(ActionError, TxError, OpsError), failed=(CalendarNotLoadedError, psycopg.Error)):
                 acquire_writer(conn)          # one writer at a time: waits its turn behind run, daily, ...
                 require_current_schema(conn)  # like every CLI command: never write a ledger of another shape
                 with conn.transaction():      # all of it or none of it

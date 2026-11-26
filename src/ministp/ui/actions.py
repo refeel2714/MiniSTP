@@ -44,6 +44,16 @@ class Action:
     params: dict[str, str]        # name -> date | text | int | bool
     run: object                   # (ActionContext, params) -> the sentence shown when it is done
     optional: tuple[str, ...] = ()  # parameters that may be left empty; the rest are required
+    audit: str = ""               # the action code of its audit row (audit.ACTIONS)
+    target: tuple[str, ...] = ()  # the parameters that name what it acts on, joined with a dot
+    account: str | None = None    # the parameter that is an account id, when the action is about one account
+
+    def named(self, raw: dict):
+        """This request as the audit log names it, from what the screen sent: (action, account, target, detail).
+        For the row of a request that was refused; one that goes through is recorded by the command function."""
+        said = {k: str(v)[:200] for k, v in raw.items() if k in self.params and v not in (None, "")}
+        target = ".".join(said[k] for k in self.target if k in said) or None
+        return self.audit, said.get(self.account) if self.account else None, target, said
 
     def required(self, name: str) -> bool:
         return name not in self.optional
@@ -111,19 +121,24 @@ def _code_use(c: ActionContext, p) -> str:
 
 
 ACTIONS: dict[str, Action] = {a.tx_id: a for a in [
-    Action("STP2100U01", "불일치 원인 판단", {"result_id": "int", "cause": "text", "note": "text"}, _resolve),
+    Action("STP2100U01", "불일치 원인 판단", {"result_id": "int", "cause": "text", "note": "text"}, _resolve,
+           audit="RESOLVE", target=("result_id",)),
     Action("STP4400U01", "계좌 등록", {"account_id": "text", "customer_id": "text", "alias": "text",
-                                    "credential_ref": "text"}, _account_add),
+                                    "credential_ref": "text"}, _account_add,
+           audit="ACCOUNT_ADD", target=("account_id",), account="account_id"),
     Action("STP4400U02", "계좌 상태 변경", {"account_id": "text", "status": "text", "effective_from": "date",
-                                       "reason": "text"}, _account_status, optional=("effective_from",)),
-    Action("STP1400U01", "고객 등록", {"customer_id": "text", "alias": "text"}, _customer_add),
+                                       "reason": "text"}, _account_status, optional=("effective_from",),
+           audit="ACCOUNT_STATUS", target=("account_id",), account="account_id"),
+    Action("STP1400U01", "고객 등록", {"customer_id": "text", "alias": "text"}, _customer_add,
+           audit="CUSTOMER_ADD", target=("customer_id",)),
     Action("STP4600U01", "코드 그룹 추가", {"group_id": "text", "name": "text", "description": "text"}, _group_add,
-           optional=("description",)),
+           optional=("description",), audit="CODE_GROUP_ADD", target=("group_id",)),
     Action("STP4600U02", "코드 추가", {"group_id": "text", "code": "text", "name": "text", "description": "text"},
-           _code_add, optional=("description",)),
+           _code_add, optional=("description",), audit="CODE_ADD", target=("group_id", "code")),
     Action("STP4600U03", "코드명 변경", {"group_id": "text", "code": "text", "name": "text", "description": "text"},
-           _code_rename, optional=("description",)),
-    Action("STP4600U04", "코드 사용 여부 변경", {"group_id": "text", "code": "text", "in_use": "text"}, _code_use),
+           _code_rename, optional=("description",), audit="CODE_RENAME", target=("group_id", "code")),
+    Action("STP4600U04", "코드 사용 여부 변경", {"group_id": "text", "code": "text", "in_use": "text"}, _code_use,
+           audit="CODE_USE", target=("group_id", "code")),
 ]}
 
 

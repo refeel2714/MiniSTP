@@ -135,6 +135,19 @@ def test_risk_rejects_before_reaching_broker(session):
     assert session.anomalies[-1].detail == "risk: INSUFFICIENT_CASH"
 
 
+def test_a_refused_order_is_handed_to_whoever_keeps_it(session):
+    kept, stored = [], []
+    session.on_refused = lambda *a: kept.append(a)
+    session.on_submit = lambda *a: stored.append(a)
+    assert session.submit(DAY, "A", Side.SELL, 1) is None
+    assert kept == [(DAY, "A", Side.SELL, 1, None, "risk: SHORT_SELL")] and stored == []   # R-85
+    session.oms.halted = True
+    assert session.submit(DAY, "A", Side.BUY, 1, 50_000) is None
+    assert kept[-1] == (DAY, "A", Side.BUY, 1, 50_000, "kill switch engaged")
+    session.oms.halted = False
+    assert session.submit(DAY, "A", Side.BUY, 1) and len(kept) == 2 and len(stored) == 1     # an accepted order is not a refusal
+
+
 def test_off_tick_limit_price_never_reaches_the_broker(session):
     assert session.submit(DAY, "A", Side.BUY, 1, limit_price=50_050) is None   # 50,000원부터 100원 단위
     assert session.broker.placed == []

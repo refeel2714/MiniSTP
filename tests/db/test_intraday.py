@@ -96,6 +96,9 @@ def test_console_commands(opened):
     conn, broker = opened
     r = runner(conn, broker, Clock(), out := [])
     assert r.on_command("buy 999999 1") is True and "종목 등록" in out[-1]
+    kept = conn.execute("select action, outcome, account_id, detail ->> 'symbol', message from audit_log"
+                        " order by id desc limit 1").fetchone()
+    assert kept == ("ORDER", "REFUSED", "A0001", "999999", "종목 등록이 필요해요: 999999")   # R-85
     assert r.on_command("hello") is True and "명령:" in out[-1]
     assert r.on_command("buy 069500 x") is True and "오류" in out[-1]
     assert r.on_command("quit") is False
@@ -202,6 +205,8 @@ def test_cancel_in_the_runner(opened):
     assert r.on_command("cancel 1") is True and "CANCELED 상태라 취소할 수 없어요" in out[-1]
     kind, = conn.execute("select count(*) from broker_snapshots where kind = 'CANCEL_REQUEST'").fetchone()
     assert kind == 1
+    logged = conn.execute("select outcome, target from audit_log where action = 'ORDER_CANCEL'").fetchall()
+    assert logged == [("DONE", cid)]                                     # R-85: the request is in the audit log
 
 
 def test_a_cancel_refused_by_the_broker_changes_nothing(opened):

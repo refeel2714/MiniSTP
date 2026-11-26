@@ -17,7 +17,7 @@ import psycopg
 
 from ..accounting import Account
 from ..ledger import DayClosedEvent, Ledger
-from .integrity import APPEND_ONLY_TABLES, BALANCE_TRIGGERS
+from .integrity import APPEND_ONLY_TABLES, AUDIT_CHAIN_TRIGGER, BALANCE_TRIGGERS, CLOSED_DAY_TRIGGERS
 from .postgres import DEFAULT_ACCOUNT, cash_rows, close_row, from_payload, position_row
 
 REPLAY = "이벤트를 처음부터 다시 계산한 값"
@@ -71,7 +71,11 @@ def compare_guards(conn: psycopg.Connection) -> list[Compared]:
     rows = [Compared(t, sum(f"{t}_{kind}" in live for kind in ("append_only", "no_truncate")), 2,
                      "수정·삭제 금지와 비우기 금지 트리거 2개") for t in APPEND_ONLY_TABLES]
     return rows + [Compared("분개 대차 검사", sum(t in live for t in BALANCE_TRIGGERS), len(BALANCE_TRIGGERS),
-                            "전표와 분개 줄의 대차 검사 트리거")]
+                            "전표와 분개 줄의 대차 검사 트리거"),
+                   Compared("마감일 잠금", sum(t in live for t in CLOSED_DAY_TRIGGERS), len(CLOSED_DAY_TRIGGERS),
+                            "마감한 날에 행을 더하지 못하게 하는 트리거"),
+                   Compared("감사 로그 사슬", int(AUDIT_CHAIN_TRIGGER in live), 1,
+                            "감사 로그 줄에 번호와 해시를 매기는 트리거")]
 
 
 def compare_balanced(conn: psycopg.Connection) -> list[Compared]:
@@ -81,6 +85,15 @@ def compare_balanced(conn: psycopg.Connection) -> list[Compared]:
         "  from journal_entries e left join journal_lines l using (entry_id) group by e.entry_id) x").fetchone()
     return [Compared("차변 합계", int(dr), int(cr), "대변 합계"),
             Compared("대차가 맞지 않는 분개 수", bad, 0, "하나도 없어야 함")]
+
+
+def compare_audit(conn: psycopg.Connection) -> list[Compared]:
+    """R-87: the audit rows are numbered 1..n and each carries the hash of its content and of the row before."""
+    from .. import audit
+    n, _, bad = audit.chain_problems(conn, 1_000_000)
+    hi = conn.execute("select coalesce(max(id), 0) from audit_log").fetchone()[0]
+    return [Compared("감사 로그 줄 수", n, hi, "마지막 번호 (빈 번호가 없으면 줄 수와 같음)"),
+            Compared("해시 사슬이 이어지지 않는 줄 수", len(bad), 0, "하나도 없어야 함")]
 
 
 # ---------- stored rows against a replay of the events ----------
@@ -158,7 +171,7 @@ def compare_closes(conn: psycopg.Connection, ledger: Ledger, account_id: str = D
     return rows
 
 
-PLAIN = {"events": compare_events, "guards": compare_guards, "balanced": compare_balanced}
+PLAIN = {"events": compare_events, "guards": compare_guards, "balanced": compare_balanced, "audit": compare_audit}
 REPLAYED = {"journal": compare_journal, "accounts": compare_accounts, "positions": compare_positions,
             "cash": compare_cash, "closes": compare_closes}
 

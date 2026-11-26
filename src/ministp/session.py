@@ -58,6 +58,7 @@ class TradingSession:
     last_balance: BrokerBalance | None = None
     on_submit: object = None  # callable(cid, day, symbol, side, qty, limit) before the broker call
     on_ack: object = None     # callable(cid, ack | None, detail) after it
+    on_refused: object = None  # callable(day, symbol, side, qty, limit, detail): refused before anything was stored
     account_open: bool = True  # R-39: a suspended or closed account takes no new orders
     id_prefix: str = "S"       # client order ids are unique in the database; other accounts add their id
     on_cancel: object = None  # callable(cid, ack) after the broker took a cancel request
@@ -98,14 +99,19 @@ class TradingSession:
         """Returns the client order id, or None if risk or the broker refused it."""
         self._seq += 1
         cid = f"{self.id_prefix}{day:%Y%m%d}-{self._seq:04d}"
+        def refuse(detail: str) -> None:
+            # Nothing of this attempt is stored (its id is used again by the next order), so the
+            # anomaly lives only as long as this process. `on_refused` is where it is kept.
+            self.anomalies.append(Anomaly(day, "SUBMIT_FAILED", cid, detail))
+            if self.on_refused:
+                self.on_refused(day, symbol, side, qty, limit_price, detail)
+
         if self.oms.halted:
-            self.anomalies.append(Anomaly(day, "SUBMIT_FAILED", cid, "kill switch engaged"))
-            return None
+            return refuse("kill switch engaged")
         try:
             ref = limit_price or self.broker.get_price(symbol)
         except Exception as exc:
-            self.anomalies.append(Anomaly(day, "SUBMIT_FAILED", cid, f"price: {exc}"))
-            return None
+            return refuse(f"price: {exc}")
         inst = self.ledger.instruments.get(symbol)
         decision = check(self.capacity(symbol, ref), side, qty, self.limits, self.oms.halted,
                          limit_price=limit_price, asset_type=inst.asset_type if inst else None,
@@ -114,8 +120,7 @@ class TradingSession:
         self.oms.create(cid, symbol=symbol, side=side, qty=qty, limit_price=limit_price or 0)
         if not decision.ok:
             self.oms.on_rejected(cid)
-            self.anomalies.append(Anomaly(day, "SUBMIT_FAILED", cid, f"risk: {decision.reason}"))
-            return None
+            return refuse(f"risk: {decision.reason}")
         if self.on_submit:
             self.on_submit(cid, day, symbol, side, qty, limit_price)  # durable intent first
         try:
