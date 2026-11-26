@@ -1267,6 +1267,32 @@ def market_instrument(conn: psycopg.Connection, symbol: str, day: dt.date | None
     return Dataset(("item", "value", "since"), tuple(out))
 
 
+# 종목정보 양식(STP-4100): 주요 항목을 먼저, 상태 표시 다섯 개(상장 여부·거래정지·정리매매·관리종목·시장경고)는 한 줄로
+FORM_FIRST = ("종목명", "시장", "증권그룹 구분", "거래 상태", "상장일", "표준코드", "매매수량단위", "액면가", "상장주수",
+              "우선주 구분", "스팩")
+_STATE_ITEMS = ("상장 여부", "거래정지", "정리매매", "관리종목", "시장경고")
+
+
+def market_instrument_form(conn: psycopg.Connection, symbol: str, day: dt.date | None = None) -> Dataset:
+    """STP-4100: the attributes of `market_instrument` as a two-column form, two attributes a row, the main ones
+    first. Each value has the day it took that value under it; `load_id` is the load that last changed the code
+    (the row opens that load in STP-4101). KeyError if unknown."""
+    attrs = {r[0]: (r[1], r[2]) for r in market_instrument(conn, symbol, day).rows}
+    rows = _master_rows(conn, symbol, _as_of(conn, day))
+    if not attrs:
+        return Dataset(("item_l", "value_l", "since_l", "item_r", "value_r", "since_r", "load_id"), ())
+    flags = [i for i in _STATE_ITEMS[1:] if attrs[i][0] not in ("아니오",) and not attrs[i][0].startswith("없음")]
+    listed = attrs["상장 여부"][0] == "상장"
+    state = ", ".join(([] if listed else ["상장폐지"]) + [attrs[i][0].split(" (")[0] if i == "시장경고" else i
+                                                          for i in flags]) or "정상"
+    attrs["거래 상태"] = (state, max(attrs[i][1] for i in _STATE_ITEMS))
+    items = [(i, *attrs[i]) for i in FORM_FIRST]
+    last_load = rows[-1]["load_id"]
+    pairs = [items[k:k + 2] for k in range(0, len(items), 2)]
+    return Dataset(("item_l", "value_l", "since_l", "item_r", "value_r", "since_r", "load_id"),
+                   tuple((*a, *(b[0] if b else (None, None, None)), last_load) for a, *b in pairs))
+
+
 def market_instrument_history(conn: psycopg.Connection, symbol: str, day: dt.date | None = None) -> Dataset:
     """STP-4100: what changed in one code and when, newest first. The first row of a code is its first load."""
     from .codes import names
