@@ -281,7 +281,7 @@ def test_live_endpoint_is_an_event_stream(client):
     assert "GET" in route.methods
 
 
-# ---------- STP-4100 종목정보·STP-4300 거래 기준, STP-3400 계좌정보 ----------
+# ---------- STP-4100 종목정보·STP-4300 거래 기준, STP-3400 예수금·결제 현황 ----------
 
 def _rows(client, tx, params=None, dataset="main"):
     body = client.post(f"/api/tx/{tx}", json={"params": params or {}}).json()
@@ -344,7 +344,7 @@ def test_reference_data_is_read_from_what_the_ledger_uses(client):
 # ---------- 셀 표시 유형 (실시간 잔고) ----------
 
 def test_holdings_are_valued_at_the_last_close_when_run_has_no_quotes(client, conn, sample):
-    """R-68: `run`이 오늘 현재가를 남기지 않았으면 원장의 최근 종가로 평가해요. 계좌정보의 평가금액과 같은 값이에요."""
+    """R-68: `run`이 오늘 현재가를 남기지 않았으면 원장의 최근 종가로 평가해요. 예수금·결제 현황의 평가금액과 같은 값이에요."""
     from ministp.ledger import Ledger
     from ministp.ops import load_books
     from ministp.queries import Dataset, holdings_view, last_closes
@@ -418,7 +418,9 @@ def test_holdings_screen_draws_the_badge_meter_and_the_lines_under_prices(client
     shown = [c["name"] for c in grid["columns"] if not c["inside"] and not c["hidden"]]
     assert shown == ["instrument_name", "qty", "price", "market_value", "unrealized_pnl", "book_cost", "weight", "today_qty"]
     assert grid["meta"] == {"basis": "평가 기준"} and grid["totals"] == ["market_value", "unrealized_pnl", "book_cost"]
-    assert grid["map"] == {"label": "instrument_name", "size": "book_cost", "tone": "unrealized_pnl"}
+    assert grid["map"] is None      # 구성 지도는 뺐어요(11/26): 자산 유형별 줄과 비중 막대로 봐요
+    mix = next(g for g in screen["grids"] if g["id"] == "mix")
+    assert [c["name"] for c in mix["columns"]] == ["asset_type_name", "count", "market_value", "weight", "unrealized_pnl"]
     spec = client.get("/spec/STP-1100").text
     assert "배지 안에 표시" in spec and "칸 아래에 작게 표시" in spec
 
@@ -431,9 +433,9 @@ def test_recon_calendar_opens_on_the_latest_day_and_counts_the_gate(client, samp
     assert days[0]["date"] == last
     assert meta == {"clean_streak": sample.streak, "gate_left": 20 - sample.streak, "selected": last}
     states = {r["state"] for r in days}
-    assert "판단 완료" in states and states <= {"일치", "판단 완료", "휴장"}   # 샘플은 불일치를 모두 판단해 둬요
+    assert "불일치(판단함)" in states and states <= {"일치", "불일치(판단함)", "휴장"}   # 샘플은 불일치를 모두 판단해 둬요
     # 오른쪽 상세는 달력의 한 칸이 가리키는 그날의 대사 결과
-    judged = next(r for r in days if r["state"] == "판단 완료")
+    judged = next(r for r in days if r["state"] == "불일치(판단함)")
     detail, _ = _rows(client, "STP2100R01", {"date_from": judged["date"], "date_to": judged["date"], "kind": judged["kind"]})
     assert len(detail) == judged["items"] and sum(r["status"] == "BREAK" for r in detail) == judged["breaks"]
     assert all(r["resolved_cause"] for r in detail if r["status"] == "BREAK") and judged["open_breaks"] == 0
@@ -462,7 +464,7 @@ def test_blotter_shows_where_each_order_stands_and_its_settlements(client, conn,
     orders, order, fills = screen["grids"]
     cols = {c["name"]: c for c in orders["columns"]}
     assert screen["layout"] == "split" and (order["view"], order["dataset"], fills["dataset"]) == ("cards", "order", "fills")
-    assert cols["progress"]["steps"] == ["의도", "접수", "체결", "결제"] and cols["qty"]["inside"] == "filled_qty"
+    assert cols["progress"]["steps"] == ["전송", "접수", "체결", "결제"] and cols["qty"]["inside"] == "filled_qty"
     assert cols["client_id"]["hidden"] and orders["key"] == "client_id"
     # 그림을 더한 만큼 열을 줄여요: 열네 열이던 주문 목록이 여섯 열로 보여요
     assert len([c for c in orders["columns"] if not c["inside"] and not c["hidden"]]) == 6
@@ -479,7 +481,7 @@ def test_blotter_shows_where_each_order_stands_and_its_settlements(client, conn,
     r = client.post("/api/tx/STP1200R02", json={"params": {"client_id": "S-없는주문"}})
     assert r.status_code == 400 and "없는 주문" in r.json()["error"]
     spec = client.get("/spec/STP-1200").text
-    assert "진행 단계(의도 → 접수 → 체결 → 결제" in spec and "`filled_qty` 막대 안에 표시" in spec and "숨김" in spec
+    assert "진행 단계(전송 → 접수 → 체결 → 결제" in spec and "`filled_qty` 막대 안에 표시" in spec and "숨김" in spec
 
 
 def test_returns_screen_reads_the_nav_month_by_month(client):

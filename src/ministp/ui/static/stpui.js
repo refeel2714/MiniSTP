@@ -16,6 +16,7 @@
   const DATA = JSON.parse(document.getElementById("stpui-data").textContent);
   const app = document.getElementById("app");
   const NUMERIC = new Set(["number", "money", "rate"]);
+  const LEVELS = new Set(["class", "total"]);   // emphasis: rows drawn as 분류 합계 and 총합계
   const nf = new Intl.NumberFormat("ko-KR");
   const rf = new Intl.NumberFormat("ko-KR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   const pf = new Intl.NumberFormat("ko-KR", { style: "percent", minimumFractionDigits: 1, maximumFractionDigits: 1 });
@@ -27,7 +28,7 @@
     MATCH: "ok", ACCEPTED: "ok", FILLED: "ok", true: "ok",
     BREAK: "bad", REJECTED: "bad", false: "bad",
     RESOLVED: "warn", UNKNOWN: "warn", CANCELED: "warn", PENDING: "warn", "적용 중": "ok", "예정": "warn",
-    "일치": "ok", "판단 완료": "warn", "불일치": "bad", "대사 없음": "miss",   // miss: something owed is not there
+    "일치": "ok", "불일치(판단함)": "warn", "불일치": "bad", "대사 없음": "miss",   // miss: something owed is not there
     "결제 완료": "ok", "결제 대기": "info", "체결 대기": "info", "부분 체결": "warn",   // info: on its way, nothing to do
     "접수 거부": "bad", "결제 지연": "bad", "접수 기록 없음": "miss",
     "정상": "ok", "주의": "warn", "확인 필요": "bad", "평가 전": "info",
@@ -1197,8 +1198,10 @@
       const r = rows[0];
       if (!r) return body.replaceChildren(h("div", { class: "empty", text: "조회된 내역이 없어요" }));
       const old = previous.get("card");
-      const values = g.columns.map(c => h("div", { class: ["cv", tone(r[c.name], c.color, r)].join(" ").trim(),
-        text: fmt(r[c.name], c.format) || "-" }));
+      const values = g.columns.map(c => h("div", { class: ["cv", c.format === "datetime" ? "dt" : "", tone(r[c.name], c.color, r)].filter(Boolean).join(" "),
+        // a card has room for the minute, not the second: the full time is in the tooltip
+        text: (c.format === "datetime" ? fmt(r[c.name], c.format).slice(0, 16) : fmt(r[c.name], c.format)) || "-",
+        title: fmt(r[c.name], c.format) || null }));
       body.replaceChildren(h("div", { class: "cards" }, g.columns.map((c, i) =>
         h("div", { class: values[i].textContent.length > 18 ? "card long" : "card" }, h("div", { class: "cl", text: c.label }), values[i]))));
       if (old) g.columns.forEach((c, i) => {
@@ -1275,13 +1278,16 @@
       const scaled = c => c.display === "bar" || (c.display === "meter" && !c.of);
       const peak = Object.fromEntries(cols.filter(scaled).map(c =>
         [c.name, Math.max(0, ...rows.map(r => Math.abs(Number(r[c.name]) || 0)))]));
-      const head = h("tr", {}, h("th", { class: "rn", scope: "col", text: "#" }), cols.map(c => {
+      const edges = new Set();   // 묶음 머리: a line down the table where each band after the first starts
+      g.bands.reduce((at, b) => { if (at) edges.add(at); return at + b.span; }, 0);
+      const head = h("tr", {}, h("th", { class: "rn", scope: "col", text: "#" }), cols.map((c, ci) => {
         const on = sortCol === c.name;
-        const th = h("th", { scope: "col", class: c.align === "right" ? "r" : null,
+        const th = h("th", { scope: "col", class: [c.align === "right" ? "r" : "", edges.has(ci) ? "edge" : ""].join(" ").trim() || null,
           "aria-sort": on ? (sortDir > 0 ? "ascending" : "descending") : null,
           title: (c.source || "화면 계산 값") + (c.display === "meter" && !c.of && peak[c.name] ? ` · 막대 끝은 이 목록에서 가장 큰 값(${pf.format(peak[c.name])})` : "") },
           c.display === "spark" ? c.label   // a run of numbers has no order to sort by
             : c.display === "steps" ? h("div", { class: "steps head" }, c.steps.map(n => h("span", { text: n })))   // each name over its dot
+            : g.bands.length ? c.label   // a banded table (시산표) is read in its own order
             : h("button", { type: "button", onclick: () => sortBy(c.name) }, c.label, on ? (sortDir > 0 ? " ▲" : " ▼") : ""));
         if (c.width) th.style.width = c.width + "px";
         return th;
@@ -1289,16 +1295,17 @@
       const rolls = [];
       const tbody = h("tbody", {}, view.map((r, i) => h("tr", {
         "data-k": rowKey(r),
-        class: [i === sel ? "sel" : "", changed.get(rowKey(r))?.has("*") ? "new" : ""].join(" ").trim() || null,
+        class: [i === sel ? "sel" : "", changed.get(rowKey(r))?.has("*") ? "new" : "",
+          g.emphasis && LEVELS.has(r[g.emphasis]) ? "lv-" + r[g.emphasis] : ""].join(" ").trim() || null,
         "aria-selected": i === sel ? "true" : "false",
         onclick: () => select(i), ondblclick: () => onDrill(view[i]),
-      }, h("td", { class: "rn", text: i + 1 }), cols.map(c => {
+      }, h("td", { class: "rn", text: i + 1 }), cols.map((c, ci) => {
         if (ed && c.name === ed.column) return h("td", { class: "r ecell" }, editCell(r));
         const v = r[c.name];
         const text = fmt(v, c.format);
         const drawn = c.display && c.display !== "bar";   // the cell holds an element, not just text
         const td = h("td", { class: [c.align === "right" ? "r" : "", drawn ? "" : tone(v, c.color, r), c.format === "json" ? "js" : "",
-          c.display ? "d-" + c.display : "", flashed(r, c.name) ? "flash" : ""].filter(Boolean).join(" ") || null,
+          c.display ? "d-" + c.display : "", flashed(r, c.name) ? "flash" : "", edges.has(ci) ? "edge" : ""].filter(Boolean).join(" ") || null,
           title: c.format === "json" ? text : null, text: drawn ? null : text });
         if (c.sub) {   // a second, smaller line under the value: its time, its rate
           const sc = g.columns.find(x => x.name === c.sub), sv = fmt(r[c.sub], sc ? sc.format : "text");
@@ -1323,8 +1330,10 @@
           ? (sum => h("td", { class: ("r " + (c.color === "sign" ? tone(sum, "sign") : "")).trim(), text: fmt(sum, c.format) }))(
               (q ? view : rows).reduce((s, r) => s + (Number(r[c.name]) || 0), 0))
           : h("td", {})))) : null;
-      const table = h("table", { class: "grid", tabindex: "0", role: "grid", "aria-rowcount": rows.length,
-        onkeydown: key }, h("thead", {}, head), tbody, foot);
+      const table = h("table", { tabindex: "0", role: "grid", "aria-rowcount": rows.length,
+        onkeydown: key, class: g.bands.length ? "grid banded" : "grid" },
+        h("thead", {}, g.bands.length ? h("tr", { class: "band" }, h("th", { class: "rn", "aria-hidden": "true" }),
+          g.bands.map(b => h("th", { scope: "colgroup", colspan: b.span, text: b.label }))) : null, head), tbody, foot);
       body.replaceChildren(table, h("div", { class: "selbar", "aria-hidden": "true" }));
       showEditTotal();
       rolls.forEach(a => roll(...a));

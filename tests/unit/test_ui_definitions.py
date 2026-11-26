@@ -339,7 +339,7 @@ def test_a_table_can_offer_a_map_of_its_rows():
         assert validate(s, CATALOG) == []
         assert resolve(s["STP-1100"], CATALOG)["grids"][0]["map"]["size"] == "cost"
     shipped = next(g for g in load_screens()["STP-1100"].grids if g.id == "holdings")
-    assert shipped.view == "grid" and shipped.map == {"label": "instrument_name", "size": "book_cost", "tone": "unrealized_pnl"}
+    assert shipped.view == "grid" and shipped.map is None   # 11/26 실시간 잔고에서 지도를 뺐어요. 보기 자체는 남겨 둬요
 
 
 @pytest.mark.parametrize("s, problem", [
@@ -393,11 +393,11 @@ def test_a_quantity_meter_draws_its_whole_inside_and_a_hidden_column_stays_in_th
     s = screen([Column("symbol", "instruments.symbol", format="code", hidden=True),
                 Column("filled", label="체결 / 주문", format="number", display="meter", of="qty"),
                 Column("qty", "positions_v.qty", format="number"),
-                Column("progress", label="진행 단계", format="steps", display="steps", steps=["의도", "접수", "체결", "결제"])])
+                Column("progress", label="진행 단계", format="steps", display="steps", steps=["전송", "접수", "체결", "결제"])])
     assert validate(s, CATALOG) == []
     cols = {c["name"]: c for c in resolve(s["STP-1100"], CATALOG)["grids"][0]["columns"]}
     assert cols["qty"]["inside"] == "filled" and cols["filled"]["align"] == "left"
-    assert cols["symbol"]["hidden"] and cols["progress"]["steps"] == ["의도", "접수", "체결", "결제"]
+    assert cols["symbol"]["hidden"] and cols["progress"]["steps"] == ["전송", "접수", "체결", "결제"]
     assert usages(s)["instruments.symbol"] == ["STP-1100 g"]     # 숨겨도 영향도 분석에는 남아요
 
 
@@ -529,3 +529,29 @@ def test_a_group_can_put_its_screens_in_working_order():
     assert menu_problems(menu, screens) == []
     bad = [MenuArea("1", "주문", "", (MenuGroup("12", "주문·체결", ("STP-1300",)),))]
     assert any("first에 적은 STP-1300" in e for e in menu_problems(bad, screens))
+
+
+BAND_COLUMNS = [Column("dr", label="차변", format="money"), Column("symbol", "instruments.symbol", format="code"),
+                Column("cr", label="대변", format="money"), Column("level", label="줄 종류", hidden=True)]
+
+
+def test_a_table_can_group_its_headers_under_bands():
+    """묶음 머리: 시산표처럼 열 머리 위에 차변 | 계정과목 | 대변을 한 줄 더 얹고, 분류·총합계 줄은 굵게."""
+    bands = [{"label": "차변", "span": 1}, {"label": "계정", "span": 1}, {"label": "대변", "span": 1}]
+    s = screen(BAND_COLUMNS, bands=bands, emphasis="level")
+    assert validate(s, CATALOG) == []
+    g = resolve(s["STP-1100"], CATALOG)["grids"][0]
+    assert g["bands"] == bands and g["emphasis"] == "level"
+    shipped = load_screens()["STP-3300"].grids[0]
+    assert [b["label"] for b in shipped.bands] == ["차변", "계정과목", "대변"] and shipped.emphasis == "level"
+
+
+@pytest.mark.parametrize("grid, problem", [
+    ({"bands": [{"label": "차변", "span": 2}]}, "보이는 열 수(3)와 달라요"),
+    ({"bands": [{"label": "차변"}]}, "span은 1 이상 정수"),
+    ({"bands": [{"label": "차변", "span": 3}], "view": "cards"}, "표 보기에만"),
+    ({"emphasis": "nope"}, "강조 기준 열 nope가"),
+])
+def test_band_problems(grid, problem):
+    errs = validate(screen(BAND_COLUMNS, **grid), CATALOG)
+    assert any(problem in e for e in errs), errs

@@ -18,7 +18,7 @@
 | **3 원장·회계**<br>기록된 이벤트와 그 분개, 거기서 나온 계좌 현황 (ABOR) | 31 원장 | [STP-3100](STP-3100.md) 원장 조회 |
 |  | 32 분개 | [STP-3200](STP-3200.md) 분개 조회 |
 |  | 33 시산표 | [STP-3300](STP-3300.md) 시산표 |
-|  | 34 계좌 현황 | [STP-3400](STP-3400.md) 계좌정보 |
+|  | 34 계좌 현황 | [STP-3400](STP-3400.md) 예수금·결제 현황 |
 | **4 기준정보**<br>위 세 단계가 함께 쓰는, 계좌와 무관한 종목과 거래 기준 | 41 종목 | [STP-4100](STP-4100.md) 종목정보 |
 |  | 43 거래 기준 | [STP-4300](STP-4300.md) 거래 기준 |
 | **6 성과**<br>원장과 기준가에서 나온 결과. 입출금은 좌수로 들어가서 기준가 수익률에 섞이지 않아요 | 61 수익률 | [STP-6100](STP-6100.md) 수익률 |
@@ -27,7 +27,7 @@
 
 | 화면번호 | 화면명 | 그리드 | 트랜잭션 |
 |---|---|---|---|
-| [STP-1100](STP-1100.md) | 실시간 잔고 | 2 | `STP1100R02`, `STP1100R01` |
+| [STP-1100](STP-1100.md) | 실시간 잔고 | 3 | `STP1100R02`, `STP1100R01` |
 | [STP-1200](STP-1200.md) | 주문·체결 블로터 | 3 | `STP1200R01`, `STP1200R02` |
 | [STP-1300](STP-1300.md) | 주문가능 조회 | 2 | `STP1300R02`, `STP1300R01` |
 | [STP-1310](STP-1310.md) | 바스켓 주문 시뮬레이션 | 3 | `STP1310R01`, `STP1310R02` |
@@ -40,7 +40,7 @@
 | [STP-3100](STP-3100.md) | 원장 조회 | 3 | `STP3100R01`, `STP3100R02` |
 | [STP-3200](STP-3200.md) | 분개 조회 | 2 | `STP3200R01`, `STP3200R02` |
 | [STP-3300](STP-3300.md) | 시산표 | 1 | `STP3300R01` |
-| [STP-3400](STP-3400.md) | 계좌정보 | 3 | `STP3400R01`, `STP3400R02`, `STP3400R03` |
+| [STP-3400](STP-3400.md) | 예수금·결제 현황 | 3 | `STP3400R01`, `STP3400R02`, `STP3400R03` |
 | [STP-4100](STP-4100.md) | 종목정보 | 2 | `STP4100R01`, `STP4100R02` |
 | [STP-4300](STP-4300.md) | 거래 기준 | 5 | `STP4300R01`, `STP4300R02`, `STP4300R03`, `STP4300R04`, `STP4300R05` |
 | [STP-6100](STP-6100.md) | 수익률 | 2 | `STP6100R01`, `STP6100R02` |
@@ -60,10 +60,8 @@
 
 | DB 컬럼 | 한글명 | 쓰는 화면·그리드 |
 |---|---|---|
-| `account_balances_v.balance` | 잔액 | STP-3300 trial |
 | `accounts_chart.code` | 계정코드 | STP-2210 bridge, STP-3300 trial |
 | `accounts_chart.name` | 계정명 | STP-2210 bridge, STP-3200 journal, STP-3300 trial |
-| `accounts_chart.normal_side` | 정상잔액 방향 | STP-3300 trial |
 | `broker_snapshots.kind` | 유형 | STP-2100 days, STP-2100 조회조건 |
 | `broker_snapshots.taken_at` | 수신 시각 | STP-2100 results |
 | `cash_ledger.amount` | 금액 | STP-3100 cash |
