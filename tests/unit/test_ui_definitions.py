@@ -393,11 +393,11 @@ def test_a_quantity_meter_draws_its_whole_inside_and_a_hidden_column_stays_in_th
     s = screen([Column("symbol", "instruments.symbol", format="code", hidden=True),
                 Column("filled", label="체결 / 주문", format="number", display="meter", of="qty"),
                 Column("qty", "positions_v.qty", format="number"),
-                Column("progress", label="진행 단계", format="steps", display="steps", steps=["의도", "접수", "체결", "결제"])])
+                Column("progress", label="진행 단계", format="steps", display="steps", steps=["전송", "접수", "체결", "결제"])])
     assert validate(s, CATALOG) == []
     cols = {c["name"]: c for c in resolve(s["STP-1100"], CATALOG)["grids"][0]["columns"]}
     assert cols["qty"]["inside"] == "filled" and cols["filled"]["align"] == "left"
-    assert cols["symbol"]["hidden"] and cols["progress"]["steps"] == ["의도", "접수", "체결", "결제"]
+    assert cols["symbol"]["hidden"] and cols["progress"]["steps"] == ["전송", "접수", "체결", "결제"]
     assert usages(s)["instruments.symbol"] == ["STP-1100 g"]     # 숨겨도 영향도 분석에는 남아요
 
 

@@ -462,7 +462,7 @@ def test_blotter_shows_where_each_order_stands_and_its_settlements(client, conn,
     orders, order, fills = screen["grids"]
     cols = {c["name"]: c for c in orders["columns"]}
     assert screen["layout"] == "split" and (order["view"], order["dataset"], fills["dataset"]) == ("cards", "order", "fills")
-    assert cols["progress"]["steps"] == ["의도", "접수", "체결", "결제"] and cols["qty"]["inside"] == "filled_qty"
+    assert cols["progress"]["steps"] == ["전송", "접수", "체결", "결제"] and cols["qty"]["inside"] == "filled_qty"
     assert cols["client_id"]["hidden"] and orders["key"] == "client_id"
     # 그림을 더한 만큼 열을 줄여요: 열네 열이던 주문 목록이 여섯 열로 보여요
     assert len([c for c in orders["columns"] if not c["inside"] and not c["hidden"]]) == 6
@@ -479,7 +479,7 @@ def test_blotter_shows_where_each_order_stands_and_its_settlements(client, conn,
     r = client.post("/api/tx/STP1200R02", json={"params": {"client_id": "S-없는주문"}})
     assert r.status_code == 400 and "없는 주문" in r.json()["error"]
     spec = client.get("/spec/STP-1200").text
-    assert "진행 단계(의도 → 접수 → 체결 → 결제" in spec and "`filled_qty` 막대 안에 표시" in spec and "숨김" in spec
+    assert "진행 단계(전송 → 접수 → 체결 → 결제" in spec and "`filled_qty` 막대 안에 표시" in spec and "숨김" in spec
 
 
 def test_returns_screen_reads_the_nav_month_by_month(client):
