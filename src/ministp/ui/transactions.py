@@ -58,7 +58,8 @@ def _holdings(c: TxContext, p) -> TxResult:
     base = q.holdings(c.conn, p.get("day") or c.today, c.account_id)
     view = q.holdings_view(base, c.books.ledger, quotes, now)
     symbols = [r[view.columns.index("symbol")] for r in view.rows]
-    return TxResult({"main": view}, {"basis": q.valuation_basis(c.books.ledger, symbols, quotes, now)})
+    return TxResult({"main": view, "mix": q.holdings_mix(view)},
+                    {"basis": q.valuation_basis(c.books.ledger, symbols, quotes, now)})
 
 
 def _cash(c: TxContext, p) -> TxResult:
@@ -173,9 +174,22 @@ def _nav_bridge(c: TxContext, p) -> TxResult:
         raise TxError(e.args[0]) from e
 
 
+PERIOD_DAYS = {"30일": 30, "60일": 60, "90일": 90, "1년": 365}
+
+
+def _span(c: TxContext, p) -> tuple[dt.date | None, dt.date | None]:
+    """조회 기간: 시작일을 넣으면 그대로, 비워 두면 '기간'(30일·60일·90일·1년)만큼 종료일(없으면 오늘)에서 거슬러 가요.
+    '전체'는 원장을 시작한 날부터예요."""
+    days = PERIOD_DAYS.get(p.get("period") or "")
+    if p.get("date_from") or not days:
+        return p.get("date_from"), p.get("date_to")
+    to = p.get("date_to") or c.today
+    return to - dt.timedelta(days=days - 1), to
+
+
 def _price_symbols(c: TxContext, p) -> TxResult:
     from ..pricecheck import BAD, WARN, PriceRules
-    ds = q.price_trend_symbols(c.books.ledger, p.get("date_from"), p.get("date_to"))
+    ds = q.price_trend_symbols(c.books.ledger, *_span(c, p))
     rules = PriceRules()
     meta = {"warn_change": q._pct(rules.warn_change), "limit_change": q._pct(rules.limit_change),
             "warn_exec_gap": q._pct(rules.warn_exec_gap)}
@@ -199,7 +213,7 @@ def _price_rows(c: TxContext, p) -> TxResult:
 
 
 def _returns(c: TxContext, p) -> TxResult:
-    ds = q.return_months(c.books.ledger, p.get("date_from"), p.get("date_to"))
+    ds = q.return_months(c.books.ledger, *_span(c, p))
     periods = q.return_periods(c.books.ledger)
     meta = {k: f"{v:+.2f}%" for k, v in periods.items() if k != "last_date" and v is not None}
     if periods:
@@ -263,8 +277,22 @@ def _journal(c: TxContext, p) -> TxResult:
 
 
 def _trial(c: TxContext, p) -> TxResult:
-    ds, balanced = q.trial_balance(c.conn, c.account_id)
-    return TxResult({"main": ds}, {"balanced": balanced})
+    ds, meta = q.trial_balance(c.conn, p.get("day") or c.today, c.account_id)
+    return TxResult({"main": ds}, meta)
+
+
+def _journal_templates(c: TxContext, p) -> TxResult:
+    return TxResult({"main": q.journal_templates()})
+
+
+def _journal_template_lines(c: TxContext, p) -> TxResult:
+    if not p.get("code"):
+        raise TxError("분개 모형 코드가 필요해요")
+    try:
+        lines, meta = q.journal_template_lines(p["code"])
+    except KeyError as e:
+        raise TxError(e.args[0]) from e
+    return TxResult({"main": lines}, meta)
 
 
 def _instruments(c: TxContext, p) -> TxResult:
@@ -416,8 +444,8 @@ TRANSACTIONS: dict[str, Tx] = {t.tx_id: t for t in [
     Tx("STP1300R01", "종목별 주문가능", {}, _capacities),
     Tx("STP1300R02", "주문가능 판단", {"symbol": "text", "side": "text", "qty": "int", "limit_price": "int"},
        _order_check),
-    Tx("STP1500R01", "바스켓 (현재 편입비)", {}, _basket_current),
-    Tx("STP1500R02", "종목별 주문안", {"amount": "int", "side": "text", "basis": "text", "limit": "int",
+    Tx("STP1310R01", "바스켓 (현재 편입비)", {}, _basket_current),
+    Tx("STP1310R02", "종목별 주문안", {"amount": "int", "side": "text", "basis": "text", "limit": "int",
                                    "basket": "text"}, _basket_plan),
     Tx("STP1200R01", "주문·체결 블로터", {"day": "date"}, _blotter),
     Tx("STP1200R02", "주문의 접수와 체결별 결제", {"client_id": "text"}, _order),
@@ -429,11 +457,11 @@ TRANSACTIONS: dict[str, Tx] = {t.tx_id: t for t in [
     Tx("STP2200R01", "기준가 추이", {"date_from": "date", "date_to": "date"}, _nav),
     Tx("STP2210R01", "기준가 이력", {"date_from": "date", "date_to": "date"}, _nav_changes),
     Tx("STP2210R02", "기준일의 변동 상세", {"date": "date"}, _nav_bridge),
-    Tx("STP2300R01", "종목별 기간 시세", {"date_from": "date", "date_to": "date"}, _price_symbols),
+    Tx("STP2300R01", "종목별 기간 시세", {"date_from": "date", "date_to": "date", "period": "text"}, _price_symbols),
     Tx("STP2300R02", "종목의 기간별 종가", {"symbol": "text", "date_from": "date", "date_to": "date"}, _price_rows),
     Tx("STP2400R01", "영업일별 마감 점검 요약", {"date_from": "date", "date_to": "date"}, _close_days),
     Tx("STP2400R02", "영업일의 작업 단계별 상태", {"date": "date"}, _close_steps),
-    Tx("STP6100R01", "월별 수익률", {"date_from": "date", "date_to": "date"}, _returns),
+    Tx("STP6100R01", "월별 수익률", {"date_from": "date", "date_to": "date", "period": "text"}, _returns),
     Tx("STP6100R02", "월의 일별 수익률", {"month": "text", "date_from": "date", "date_to": "date"}, _return_days),
     Tx("STP3100R01", "원장 이벤트 목록", {"date_from": "date", "date_to": "date", "event_type": "text",
                                        "symbol": "text", "seq": "int"}, _events),
@@ -441,7 +469,9 @@ TRANSACTIONS: dict[str, Tx] = {t.tx_id: t for t in [
     Tx("STP3200R01", "분개를 만든 이벤트 목록", {"date_from": "date", "date_to": "date", "event_type": "text",
                                             "symbol": "text", "seq": "int"}, _journal_events),
     Tx("STP3200R02", "이벤트의 분개", {"seq": "int"}, _journal),
-    Tx("STP3300R01", "시산표", {}, _trial),
+    Tx("STP3300R01", "시산표", {"day": "date"}, _trial),
+    Tx("STP4500R01", "분개 모형", {}, _journal_templates),
+    Tx("STP4500R02", "분개 모형의 줄", {"code": "text"}, _journal_template_lines),
     Tx("STP3400R01", "계좌 요약", {}, _account),
     Tx("STP3400R02", "예수금 D+n", {}, _ladder),
     Tx("STP3400R03", "결제 예정", {}, _settlements),
