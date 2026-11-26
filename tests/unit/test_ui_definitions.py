@@ -518,3 +518,14 @@ def test_basket_text_from_the_screen():
     assert parse_basket("069500:") == [Target("069500", Decimal(0))]
     with pytest.raises(TxError, match="숫자가 아니에요"):
         parse_basket("069500:abc")
+
+
+def test_a_group_can_put_its_screens_in_working_order():
+    """중분류 안에서도 업무 순서로: first에 적은 화면이 먼저, 나머지는 번호 순서. 없는 화면은 오류."""
+    from ministp.ui.definitions import MenuArea, MenuGroup, menu_problems, menu_tree
+    screens = {sid: Screen(sid, sid, "", [], []) for sid in ("STP-1200", "STP-1210", "STP-1220")}
+    menu = [MenuArea("1", "주문", "", (MenuGroup("12", "주문·체결", ("STP-1210",)),))]
+    assert [s["id"] for s in menu_tree(menu, screens)[0]["groups"][0]["screens"]] == ["STP-1210", "STP-1200", "STP-1220"]
+    assert menu_problems(menu, screens) == []
+    bad = [MenuArea("1", "주문", "", (MenuGroup("12", "주문·체결", ("STP-1300",)),))]
+    assert any("first에 적은 STP-1300" in e for e in menu_problems(bad, screens))
