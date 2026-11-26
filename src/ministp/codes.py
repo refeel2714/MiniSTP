@@ -43,7 +43,8 @@ class CodeGroup:
 # The codes a new database gets (`init_schema`). An existing one gets the same rows from the migrations:
 # 0002 inserted the codes of ERD v2.1, 0003 the three of the day close (v2.2), 0004 the three audit groups (v2.3),
 # 0005 the dividend codes and two groups (v2.4), 0006 the cash movement codes (v2.5),
-# 0007 the adjustment codes and their reasons (v2.6), 0008 the market master groups and match results (v2.7).
+# 0007 the adjustment codes and their reasons (v2.6), 0008 the market master groups and match results (v2.7),
+# 0009 the approval groups (v2.9), 0010 two status codes (v2.10), 0011 the ERP export groups and actions (v2.11).
 SEED: tuple[CodeGroup, ...] = (
     CodeGroup("ACCOUNT_STATUS", "계좌 상태", "위탁계좌의 상태. 정상 계좌만 주문을 받아요 (R-39).",
               "account_status_history.status", (
@@ -214,6 +215,12 @@ SEED: tuple[CodeGroup, ...] = (
               "order_sends.outcome", (
                   ("SENT", "전송", "주문 경로로 보냄. 주문 ID가 붙어요"),
                   ("FAILED", "전송 실패", "보내기 직전 검증에 걸리거나 주문 경로가 거부함"))),
+    CodeGroup("ERP_EXPORT_UNIT", "ERP 전표 단위", "ERP로 내보낸 전표의 모양 (R-96).", "erp_exports.unit", (
+        ("ENTRY", "건별", "분개 1건이 전표 1건"),
+        ("DAY", "일별 합계", "계좌·날마다 전표 1건, 계정별 순액"))),
+    CodeGroup("ERP_EXPORT_STATUS", "ERP 전송 상태", "내보낸 파일을 ERP가 받았는지 (R-104).", "erp_exports_v.status", (
+        ("EXPORTED", "내보냄", "파일과 통제 파일을 만듦. 그 전표는 다시 내지 않아요"),
+        ("VOIDED", "무효", "ERP가 받지 않음. 그 전표를 다시 낼 수 있어요"))),
     CodeGroup("AUDIT_CHANNEL", "감사 로그 경로", "어디로 들어온 요청인지.", "audit_log.channel", (
         ("CLI", "명령", "PC의 명령 창에서 실행"),
         ("UI", "화면", "업무화면의 처리 버튼"),
@@ -254,7 +261,9 @@ SEED: tuple[CodeGroup, ...] = (
         ("ORDER_APPROVE", "주문 승인", "셀프 승인 포함"),
         ("ORDER_REJECT", "주문 반려", ""),
         ("ORDER_REQUEST_CANCEL", "주문 요청 취소", "작성자가 전송 전에 거둠"),
-        ("ORDER_CONFIRM", "주문 결과 확인", "답이 없던 주문을 사람이 증권사 주문내역과 맞춰 확인함"))),
+        ("ORDER_CONFIRM", "주문 결과 확인", "답이 없던 주문을 사람이 증권사 주문내역과 맞춰 확인함"),
+        ("ERP_EXPORT", "ERP 전표 내보내기", "일반전표 업로드 파일과 통제 파일을 만들고 전송 이력을 남김"),
+        ("ERP_EXPORT_VOID", "ERP 전송 무효", "ERP가 받지 않은 파일을 무효로 해서 그 전표를 다시 낼 수 있게 함"))),
 )
 
 
@@ -300,6 +309,7 @@ def program_codes() -> dict[str, set[str]]:
     from .accounts import STATUSES
     from .instruments import AssetType, Market
     from .ledger import ADJUSTMENT_ACCOUNTS, DIVIDEND_STATUSES, Side
+    from . import erp
     from .master_db import MATCH_STATUSES
     from .rights import ACTION_TYPES
     from .oms import OrderStatus
@@ -329,6 +339,8 @@ def program_codes() -> dict[str, set[str]]:
         "REQUEST_STATUS": set(approval.STATUSES),
         "ORDER_TYPE": set(approval.ORDER_TYPES),
         "SEND_OUTCOME": set(approval.SEND_OUTCOMES),
+        "ERP_EXPORT_UNIT": set(erp.UNITS.values()),
+        "ERP_EXPORT_STATUS": set(erp.EXPORT_STATUSES),
     }
 
 

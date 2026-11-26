@@ -1,12 +1,14 @@
 """ERP 일반전표 내보내기 (R-96): the journal, read as upload documents. Nothing is written to the DB."""
 import csv
+import hashlib
 import pathlib
 
+import psycopg
 import pytest
 
 from db.test_ops import CAL, FEES, URL, D, books, broker, conn  # noqa: F401
 from ministp import __main__ as cli
-from ministp import erp, rights
+from ministp import audit, erp, rights
 from ministp.ledger import Side
 from ministp.ops import daily_close, open_books, place_order
 from ministp.sample import build_sample
@@ -225,3 +227,117 @@ def test_command_takes_the_account_and_names_it_in_the_file(conn, tmp_path, caps
     rows = list(csv.DictReader(out.read_text(encoding="utf-8-sig").splitlines()))
     assert rows and {r["계좌"] for r in rows} == {"A0002"}
     assert erp.default_out(first, first, "entry", None).name.startswith("전표_전체계좌_")
+
+
+# ---------- 전송 이력, 중복 차단, 통제 파일 (R-104, ERD v2.11) ----------
+
+def _sent(conn):
+    return conn.execute("select export_id, unit, documents, status from erp_exports_v order by export_id").fetchall()
+
+
+def test_an_export_leaves_the_file_its_control_file_and_the_history(conn, broker, tmp_path):
+    _a_day(conn, broker)
+    r = erp.export(conn, erp.load_mapping(EXAMPLE), DAY, DAY)
+    done = erp.deliver(conn, r, tmp_path / "e.csv", DAY, DAY)
+    assert done.csv.exists() and done.control == tmp_path / "e.ctl" and not list(tmp_path.glob("*.tmp"))
+    data = done.csv.read_bytes()
+    ctl = dict(line.split("=", 1) for line in done.control.read_text(encoding="utf-8").splitlines())
+    assert ctl["file"] == "e.csv" and ctl["sha256"] == hashlib.sha256(data).hexdigest() == done.sha256
+    assert (int(ctl["bytes"]), int(ctl["documents"]), int(ctl["lines"]), int(ctl["debit"]), int(ctl["credit"])) == (
+        len(data), r.documents, len(r.lines), r.debit, r.credit)
+    assert (ctl["export_id"], ctl["account"], ctl["unit"], ctl["company"]) == (str(done.export_id), "A0001", "ENTRY", "1000")
+    row = conn.execute("select account_id, unit, documents, lines, debit_total, file_name, file_sha256, mapping_sha256,"
+                       " created_by from erp_exports").fetchone()
+    assert row[:7] == ("A0001", "ENTRY", r.documents, len(r.lines), r.debit, "e.csv", done.sha256)
+    assert row[7] == hashlib.sha256(EXAMPLE.read_bytes()).hexdigest() and row[8]
+    docs = conn.execute("select doc_no from erp_export_docs order by doc_no").fetchall()
+    assert sorted(d for (d,) in docs) == sorted({ln.doc_no for ln in r.lines})
+    last = audit.rows(conn, limit=1)[0]
+    assert (last.action, last.target, last.detail["sha256"]) == ("ERP_EXPORT", f"ERP-{done.export_id}", done.sha256)
+    with pytest.raises(psycopg.errors.InsufficientPrivilege):
+        conn.execute("delete from erp_export_docs")
+
+
+def test_a_document_goes_out_once_until_its_export_is_voided(conn, broker, tmp_path):
+    _a_day(conn, broker)
+    first = erp.deliver(conn, erp.export(conn, None, DAY, DAY), tmp_path / "a.csv", DAY, DAY)
+    with pytest.raises(erp.ErpError, match=r"이미 내보낸 전표 \d+건.*--new-only"):
+        erp.deliver(conn, erp.export(conn, None, DAY, DAY), tmp_path / "b.csv", DAY, DAY)   # another name: still refused
+    assert not (tmp_path / "b.csv").exists() and len(_sent(conn)) == 1
+    with pytest.raises(erp.ErpError, match="새로 낼 전표가 없어요"):
+        erp.deliver(conn, erp.export(conn, None, DAY, DAY), tmp_path / "b.csv", DAY, DAY, new_only=True)
+    nxt = CAL.add_business_days(DAY, 1)                                 # the next day adds entries of its own
+    broker.set_day(nxt)
+    broker.orders[nxt] = {}
+    daily_close(books(conn), broker, nxt)
+    again = erp.deliver(conn, erp.export(conn, None, DAY, nxt), tmp_path / "b.csv", DAY, nxt, new_only=True)
+    assert again.skipped == first.result.documents and {ln.date for ln in again.result.lines} == {nxt}
+    with pytest.raises(erp.ErpError, match=r"다른 단위.*erp void"):     # 건별 already out: the day total would double it
+        erp.deliver(conn, erp.export(conn, None, DAY, DAY, by="day"), tmp_path / "d.csv", DAY, DAY)
+    erp.void(conn, first.export_id, "ERP 업로드 오류로 받지 않음")
+    day = erp.deliver(conn, erp.export(conn, None, DAY, DAY, by="day"), tmp_path / "d.csv", DAY, DAY)
+    assert _sent(conn) == [(first.export_id, "ENTRY", first.result.documents, "VOIDED"),
+                           (again.export_id, "ENTRY", again.result.documents, "EXPORTED"), (day.export_id, "DAY", 1, "EXPORTED")]
+    assert erp.problems(conn) == []
+
+
+def test_the_database_refuses_a_second_copy_whatever_writes_it(conn, broker, tmp_path):
+    _a_day(conn, broker)
+    done = erp.deliver(conn, erp.export(conn, None, DAY, DAY), tmp_path / "a.csv", DAY, DAY)
+    doc = conn.execute("select doc_no, account_id, doc_date from erp_export_docs limit 1").fetchone()
+    other = conn.execute(
+        "insert into erp_exports (account_id, date_from, date_to, unit, company_code, document_type, documents, lines,"
+        " debit_total, credit_total, file_name, file_sha256, created_by) select account_id, date_from, date_to, unit,"
+        " company_code, document_type, 1, 1, 1, 1, 'x.csv', file_sha256, 'test' from erp_exports returning export_id"
+    ).fetchone()[0]
+    with pytest.raises(psycopg.errors.UniqueViolation, match="already exported"):
+        conn.execute("insert into erp_export_docs values (%s, %s, %s, %s)", (other, *doc))
+    conn.execute("insert into erp_export_voids (export_id, reason, voided_by) values (%s, 'x', 'test')", (done.export_id,))
+    with pytest.raises(psycopg.errors.CheckViolation, match="already void"):
+        conn.execute("insert into erp_export_docs values (%s, 'MSTP-999-1', %s, %s)", (done.export_id, doc[1], doc[2]))
+
+
+def test_a_file_that_cannot_be_written_leaves_no_history(conn, broker, tmp_path, monkeypatch):
+    _a_day(conn, broker)
+    r = erp.export(conn, None, DAY, DAY)
+    (tmp_path / "a.ctl").write_text("x")
+    with pytest.raises(erp.ErpError, match="a.ctl이 이미 있어요"):
+        erp.deliver(conn, r, tmp_path / "a.csv", DAY, DAY)
+    real = erp._publish
+    monkeypatch.setattr(erp, "_publish", lambda p, data: real(p, data) if p.suffix == ".csv" else (_ for _ in ()).throw(OSError("disk full")))
+    with pytest.raises(OSError):
+        erp.deliver(conn, r, tmp_path / "b.csv", DAY, DAY)
+    assert not (tmp_path / "b.csv").exists() and _sent(conn) == []
+    assert conn.execute("select count(*) from erp_export_docs").fetchone()[0] == 0
+
+
+def test_void_needs_a_reason_and_happens_once(conn, broker, tmp_path):
+    _a_day(conn, broker)
+    done = erp.deliver(conn, erp.export(conn, None, DAY, DAY), tmp_path / "a.csv", DAY, DAY)
+    for export_id, reason, problem in [(done.export_id, " ", "사유"), (999, "x", "999번이 없어요")]:
+        with pytest.raises(erp.ErpError, match=problem):
+            erp.void(conn, export_id, reason)
+    erp.void(conn, done.export_id, "ERP 반려")
+    with pytest.raises(erp.ErpError, match="이미 무효"):
+        erp.void(conn, done.export_id, "또")
+    assert audit.rows(conn, limit=1)[0].action == "ERP_EXPORT_VOID"
+
+
+def test_history_void_and_preview_commands(conn, broker, tmp_path, capsys):
+    _a_day(conn, broker)
+    env = {"MINISTP_DATABASE_URL": URL}
+    out = tmp_path / "e.csv"
+    assert cli.run(["erp", "export", "--from", DAY.isoformat(), "--preview"], environ=env) == 0
+    assert "미리 보기" in capsys.readouterr().out and _sent(conn) == []
+    assert cli.run(["erp", "export", "--from", DAY.isoformat(), "--out", str(out)], environ=env) == 0
+    text = capsys.readouterr().out
+    assert "통제 파일" in text and "ERP-1" in text and out.with_suffix(".ctl").exists()
+    assert cli.run(["erp", "export", "--from", DAY.isoformat(), "--preview"], environ=env) == 0
+    assert "겹쳐요" in capsys.readouterr().out
+    assert cli.run(["erp", "history"], environ=env) == 0
+    assert "ERP-1" in (h := capsys.readouterr().out) and "내보냄" in h
+    assert cli.run(["erp", "void", "1"], environ=env) == 1 and "사유" in capsys.readouterr().out
+    assert cli.run(["erp", "void", "1", "--reason", "ERP 반려"], environ=env) == 0
+    capsys.readouterr()
+    assert cli.run(["erp", "history"], environ=env) == 0 and "무효 (ERP 반려)" in capsys.readouterr().out
+    assert cli.run(["verify"], environ=env) == 0 and "ERP 전송 이력" in capsys.readouterr().out

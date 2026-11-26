@@ -234,6 +234,22 @@ Phase 2 구현(v1.4)은 위 설계를 단순화했다. 주문 생성 정보는 `
 2. **이중 전송 방지**: 전송 행은 주문 의도(`oms_orders`)와 같은 트랜잭션에 증권사 호출 전에 들어간다. 줄 하나에 전송 행 하나, 주문 ID 하나에 전송 행 하나, 승인 다음에만 전송(트리거).
 3. **v2.8 → v2.9 (11/24)**: 운영 적용 전에 요청 키를 `Q날짜-순번` 글자에서 주문일 + 요청 번호로, 바스켓을 종목마다 요청에서 요청 한 건 + 줄 여러 개로 바꿨다. 마이그레이션은 `0009_order_approval` 하나다.
 4. **v2.10 (11/24, 초안)**: 주문 결과 미확인(R-103). 테이블은 그대로이고 두 뷰와 공통코드(REQUEST_STATUS SEND_UNKNOWN, AUDIT_ACTION ORDER_CONFIRM)만 바뀐다. 마이그레이션 `0010_send_unknown`.
+## ERP 전송 이력 (v1.43, ERD v2.11, 초안)
+
+| 테이블 | 주요 컬럼 | 비고 |
+|---|---|---|
+| erp_exports | export_id, account_id, date_from, date_to, unit, company_code, document_type, mapping_sha256, documents, lines, debit_total, credit_total, file_name, file_sha256, created_by, created_at | ERP 전송 이력(R-104): `erp export`가 만든 파일마다 한 행. 계좌가 비면 모든 계좌, 단위 ENTRY 건별 / DAY 일별 합계, 차변 합계 = 대변 합계 |
+| erp_export_docs | **export_id, doc_no**, account_id, doc_date | 파일에 든 전표(증빙번호)마다 한 행. 무효가 아닌 내보내기에 같은 증빙번호, 또는 같은 계좌·날의 다른 단위가 있으면 거부(트리거 `ministp_erp_doc_once`) |
+| erp_export_voids | **export_id**, reason, voided_by, voided_at | ERP가 받지 않은 파일. 그 전표를 다시 낼 수 있음. 내보내기 하나에 한 번 |
+
+| 뷰 | 주요 컬럼 | 비고 |
+|---|---|---|
+| erp_exports_v | erp_exports의 컬럼, status, void_reason, voided_by, voided_at | 내보내기마다 상태 EXPORTED 내보냄 / VOIDED 무효 |
+
+1. **셋 다 추가만 한다**: 잘못 낸 파일은 지우지 않고 무효 행을 더한다.
+2. **파일과 이력은 함께**: 이력 행과 파일은 한 트랜잭션 안에서 만들고, 파일을 쓰지 못하면 이력도 남지 않는다. 파일은 `.tmp`로 쓴 뒤 이름을 바꾸고(덮어쓰지 않음), 그다음 통제 파일(`.ctl`)을 쓴다.
+3. **적용 전에 손으로 올린 전표는 모른다**: 적용 직후 이력은 비어 있다. 첫 내보내기는 아직 ERP에 없는 날부터 한다.
+
 ## 원장 무결성 점검 (v1.11)
 
 `python -m ministp verify`는 저장된 원장이 이벤트를 처음부터 다시 계산한 결과와 같은지 읽기 전용으로 확인한다. 쓰기 잠금을 잡지 않으므로 `run`이 떠 있어도 실행할 수 있다. 하나라도 어긋나면 종료 코드 1을 돌려준다.

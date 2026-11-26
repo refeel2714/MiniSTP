@@ -274,9 +274,9 @@ def test_applying_a_migration_is_the_first_row_of_a_migrated_database(capsys):
     assert cli.run(["db-migrate", "--apply"], environ=env) == 0
     capsys.readouterr()
     with psycopg.connect(URL, autocommit=True) as c:
-        assert list(mg.applied(c)) == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
-        assert log(c) == [("DB_MIGRATE", "DONE", None, "ERD v2.10")]
-        assert len(last(c).detail["applied"]) == 10 and last(c).channel == "CLI"
+        assert list(mg.applied(c)) == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+        assert log(c) == [("DB_MIGRATE", "DONE", None, "ERD v2.11")]
+        assert len(last(c).detail["applied"]) == 11 and last(c).channel == "CLI"
         assert codes.check(c) == [] and audit.chain_problems(c)[2] == []
 
 

@@ -19,7 +19,7 @@
     python -m ministp master fetch                # 시장 전체 종목정보(KIS 마스터 파일) 받아 두기, 키 필요 없음
     python -m ministp master check                # 받은 종목정보 점검: 전일 대비, 등록 종목, 기준가 대조 (읽기 전용)
     python -m ministp master load                 # 받은 종목정보를 DB 이력에 넣기: 바뀐 종목만 (ERD v2.7)
-    python -m ministp erp export --from 2026-11-18  # 분개를 ERP 일반전표 업로드 CSV로 (읽기 전용)
+    python -m ministp erp export --from 2026-11-18  # 분개를 ERP 일반전표 업로드 CSV와 통제 파일로 (전송 이력)
     python -m ministp basket simulate --amount 10000000  # 바스켓 주문 시뮬레이션 (계산만, 주문 안 함)
 
 Paper (모의투자) only until Phase 4. Keys are asked for and never saved.
@@ -300,6 +300,30 @@ def _not_now(conn, args, today: dt.date, message: str) -> int:
 
 def _erp_export(url: str, connect, args, today: dt.date) -> int:
     from . import erp
+    if args.action == "history":
+        with connect(url) as conn:
+            rows = erp.history(conn, args.limit)
+        if not rows:
+            print("ERP로 내보낸 파일이 아직 없어요.")
+        for no, acct, f, t, unit, docs, debit, name, status, by, at, why in rows:
+            state = "무효" + (f" ({why})" if why else "") if status == "VOIDED" else "내보냄"
+            span = f"{f}" if f == t else f"{f}~{t}"
+            print(f"{erp.export_ref(no):8} {acct or '모든 계좌':8} {span:23} {'건별' if unit == 'ENTRY' else '일별 합계':5}"
+                  f" 전표 {docs:>4}건 차변 {debit:>15,}  {name}  {by} {at:%Y-%m-%d %H:%M}  {state}")
+        return 0
+    if args.action == "void":
+        if args.export_id is None:
+            print("무효로 할 내보내기 번호를 주세요: erp void 3 --reason \"ERP 업로드 오류\"")
+            return 2
+        try:
+            with connect(url) as conn:
+                erp.void(conn, args.export_id, args.reason or "")
+        except erp.ErpError as e:
+            print(f"무효로 하지 않았어요: {e}")
+            return 1
+        print(f"{erp.export_ref(args.export_id)}을 무효로 했어요. 그 파일의 전표는 다시 내보낼 수 있어요. "
+              "ERP 업로드 폴더에 파일이 남아 있으면 직접 치워 주세요.")
+        return 0
     date_from = args.date_from or today
     date_to = args.date_to or date_from
     try:
@@ -308,16 +332,30 @@ def _erp_export(url: str, connect, args, today: dt.date) -> int:
             account_id = None if args.all_accounts else args.account
             result = erp.export(conn, mapping, date_from, date_to, args.by, account_id)
             conn.rollback()
-        if not result.lines:
-            print(f"{date_from}~{date_to}에 {account_id or '모든 계좌'}의 내보낼 분개가 없어요.")
-            return 0
-        path = erp.write_csv(result, args.out or erp.default_out(date_from, date_to, args.by, account_id))
+            if not result.lines:
+                print(f"{date_from}~{date_to}에 {account_id or '모든 계좌'}의 내보낼 분개가 없어요.")
+                return 0
+            if args.preview:
+                path = None
+                found = erp.clashes(conn, result)
+                conn.rollback()
+            else:
+                done = erp.deliver(conn, result, args.out or erp.default_out(date_from, date_to, args.by, account_id),
+                                   date_from, date_to, new_only=args.new_only)
+                result, path = done.result, done.csv
     except erp.ErpError as e:
         print(f"내보내지 않았어요: {e}")
         return 1
     kind = "건별" if args.by == "entry" else "일별 합계"
-    print(f"{path} ({kind}, {account_id or '모든 계좌'}): 전표 {result.documents}건, 줄 {len(result.lines)}개, "
+    head = "미리 보기, 파일과 이력은 만들지 않았어요" if path is None else str(path)
+    print(f"{head} ({kind}, {account_id or '모든 계좌'}): 전표 {result.documents}건, 줄 {len(result.lines)}개, "
           f"차변 {result.debit:,} = 대변 {result.credit:,}")
+    if path is None:
+        if found:
+            print(f"이미 내보낸 전표와 겹쳐요 {len(found)}건 (내보내면 거부돼요, 새 전표만이면 --new-only).")
+    else:
+        print(f"통제 파일 {done.control} (SHA-256 {done.sha256[:12]}), 전송 이력 {erp.export_ref(done.export_id)}"
+              + (f", 이미 낸 전표 {done.skipped}건은 뺐어요" if done.skipped else ""))
     print("계정별 합계 (ERP 총계정원장과 맞춰 볼 값):")
     for code, name, dr, cr in result.by_account():
         print(f"  {code:10} {name:24} 차변 {dr:>15,}  대변 {cr:>15,}")
@@ -538,8 +576,15 @@ def _run(argv, *, environ=os.environ, client_factory=KisClient, connect=psycopg.
     p.add_argument("--csv", action="store_true", help="엑셀로 열 수 있게 받은 폴더에 master.csv도 만들기")
     p.add_argument("--no-db", action="store_true", help="check: 등록 종목·기준가 대조 없이 파일만 점검")
     p = sub.add_parser("erp", parents=[by_account],
-                       help="분개를 ERP 일반전표 업로드 파일(CSV)로 내보내기. 계좌 하나씩(--account), DB에 쓰지 않아요 (R-96)")
-    p.add_argument("action", choices=["export"])
+                       help="분개를 ERP 일반전표 업로드 파일(CSV)과 통제 파일로 내보내기. 계좌 하나씩(--account), "
+                            "낸 전표는 전송 이력에 남고 다시 내지 않아요 (R-96, R-104)")
+    p.add_argument("action", choices=["export", "history", "void"],
+                   help="export: 파일 만들기, history: 전송 이력, void: ERP가 받지 않은 파일을 무효로")
+    p.add_argument("export_id", nargs="?", type=int, help="void: 무효로 할 내보내기 번호 (history의 ERP-번호)")
+    p.add_argument("--reason", help="void: 무효 사유")
+    p.add_argument("--new-only", action="store_true", help="export: 이미 내보낸 전표는 빼고 새 전표만")
+    p.add_argument("--preview", action="store_true", help="export: 합계와 겹치는 전표만 보기 (파일·이력 없음)")
+    p.add_argument("--limit", type=int, default=20, help="history: 보여 줄 건수")
     p.add_argument("--all-accounts", action="store_true", help="모든 계좌를 한 파일로 (줄마다 계좌 열로 나눠요)")
     p.add_argument("--from", dest="date_from", type=dt.date.fromisoformat, help="시작일 (기본은 오늘)")
     p.add_argument("--to", dest="date_to", type=dt.date.fromisoformat, help="종료일 (기본은 시작일)")

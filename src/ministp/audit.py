@@ -63,6 +63,8 @@ ACTIONS = {
     "ORDER_REJECT": "주문 반려",
     "ORDER_REQUEST_CANCEL": "주문 요청 취소",
     "ORDER_CONFIRM": "주문 결과 확인",
+    "ERP_EXPORT": "ERP 전표 내보내기",
+    "ERP_EXPORT_VOID": "ERP 전송 무효",
 }
 MESSAGE_MAX = 500
 
