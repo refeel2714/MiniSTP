@@ -177,7 +177,7 @@ def test_close_and_status_commands(conn, broker, capsys):
         assert cli.run(["resolve", str(i), "FEE_DIFF", "수수료 확인"], now=at(16, 6), **kw) == 0
     assert cli.run(["close", "--date", "2026-11-20"], now=at(16, 10), **kw) == 0
     out = capsys.readouterr().out
-    assert "[2026-11-20] 장부 마감: 순자산" in out and "마감 점검 [2026-11-20] 점검 완료" in out
+    assert "[2026-11-20] 장부 마감: 순자산" in out and "마감 점검 [2026-11-20] 필수 완료" in out
     assert conn.execute("select command, day_state from close_checks order by check_id").fetchall() == [
         ("daily", "ATTENTION"), ("close", "DONE")]
     assert cli.run(["status"], now=at(16, 15), **kw) == 0

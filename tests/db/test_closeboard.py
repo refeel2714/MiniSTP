@@ -44,7 +44,10 @@ def test_every_day_of_the_sample_is_finished_and_each_step_agrees_with_its_own_s
     res = tx(conn, sample.last_day, "STP2400R01")
     days = res.datasets["main"].records()
     assert len(days) == 8 and days[0]["date"] == sample.last_day and res.meta == {"attention_days": 0}
-    assert all((r["done"], r["steps"], r["attention"], r["state"]) == (8, 8, 0, "점검 완료") for r in days)
+    assert all((r["done"], r["steps"], r["attention"], r["state"]) == (8, 8, 0, "필수 완료") for r in days)
+    # 선택 단계(ERP 전송)는 필수 완료와 따로: 샘플은 내보낸 적이 없어서 남아 있어요
+    assert {r["optional"] for r in days} == {"ERP 전송 대기", "ERP 전송 누락"} or \
+        {r["optional"] for r in days} <= {"ERP 전송 대기", "ERP 전송 누락", "모두 끝남"}
     recon = {r["date"]: r for r in q.recon_calendar(conn, CAL, sample.last_day, sample.first_day).records()}
     nav = {r["date"]: r["net_assets"] for r in tx(conn, sample.last_day, "STP2200R01").datasets["main"].records()}
     for r in days:
@@ -63,7 +66,7 @@ def test_the_next_business_day_is_in_progress_until_daily_runs(conn, sample):
     tomorrow = CAL.add_business_days(sample.last_day, 1)
     days = tx(conn, tomorrow, "STP2400R01").datasets["main"].records()
     assert (days[0]["date"], days[0]["state"], days[0]["attention"]) == (tomorrow, "진행 중", 0)
-    assert days[1]["state"] == "점검 완료"
+    assert days[1]["state"] == "필수 완료"
     steps = {s["step"]: s["state"] for s in tx(conn, tomorrow, "STP2400R02", date=tomorrow).datasets["main"].records()}
     assert [steps[n] for n in ("시세", "기준가", "증권사 대사", "일 마감", "원장 내부 대사")] == ["대기"] * 4 + ["완료"]
     # two days on, the day nobody closed is missing and the list says how many days need a look
@@ -156,7 +159,7 @@ def test_a_check_is_kept_with_what_each_step_found_at_the_time(conn, sample, cap
     assert cli.run(["close-check", "--date", sample.last_day.isoformat()], environ=env,
                    now=lambda: dt.datetime.combine(sample.last_day, dt.time(18))) == 0
     out = capsys.readouterr().out
-    assert "점검 완료: 필수 단계 8개 중 8개 끝남" in out and "ERP 전송 (선택): 대기" in out
+    assert "필수 완료: 필수 단계 8개 중 8개 끝남" in out and "ERP 전송 (선택): 대기" in out
     check = conn.execute("select check_id, account_id, check_date, day_state, done, steps, command from close_checks"
                          " order by check_id desc limit 1").fetchone()
     assert check[1:] == ("A0001", sample.last_day, "DONE", 8, 8, "close-check")

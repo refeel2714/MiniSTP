@@ -255,7 +255,7 @@ Phase 2 구현(v1.4)은 위 설계를 단순화했다. 주문 생성 정보는 `
 | 테이블 | 주요 컬럼 | 비고 |
 |---|---|---|
 | close_steps | **step_code**, name, sort_order, in_use, required, screen, asset_type, description, updated_at | 마감 점검 단계 기준(R-105). 고칠 수 있지만 지우거나 코드를 바꾸지 못함(트리거 `ministp_guard_close_steps`). 코드마다 프로그램의 점검 로직이 짝 |
-| close_checks | check_id, account_id, check_date, day_state, done, steps, command, checked_by, checked_at | 점검 결과: 점검할 때마다 계좌·영업일마다 한 행. 그날 상태 DONE 점검 완료 / OPEN 진행 중 / ATTENTION 확인 필요, 필수 단계 기준 |
+| close_checks | check_id, account_id, check_date, day_state, done, steps, command, checked_by, checked_at | 점검 결과: 점검할 때마다 계좌·영업일마다 한 행. 그날 상태 DONE 필수 완료 / OPEN 진행 중 / ATTENTION 확인 필요, 필수 단계 기준 |
 | close_check_steps | **check_id, step_no**, step_code, name, required, state, detail | 그 점검의 단계마다 한 행. 그때의 이름·필수 여부를 함께 남김. 상태 DONE / NONE / WAIT / WARN / BAD / MISSING |
 
 | 뷰 | 주요 컬럼 | 비고 |
