@@ -526,6 +526,13 @@ def test_market_master_screens_show_the_history_the_sample_loaded(client, sample
         ("시장경고", "없음 (00)", "투자주의 (01)"), ("상장주수", "18,000천 주", "19,500천 주"),
         ("관리종목", "아니오", "예"), ("(첫 적재)", None, "전 항목")]
     assert client.post("/api/tx/STP4100R02", json={"params": {"symbol": "999999"}}).status_code == 400
+    # 화면은 두 줄 양식: 주요 항목 먼저, 상태 표시 다섯 개는 '거래 상태' 한 줄
+    form, _ = _rows(client, "STP4100R06", {"symbol": "900010"})
+    assert [(r["item_l"], r["item_r"]) for r in form[:2]] == [("종목명", "시장"), ("증권그룹 구분", "거래 상태")]
+    assert form[1]["value_r"] == "관리종목, 투자주의" and form[1]["since_r"] == sample.last_day.isoformat()
+    assert form[-1]["item_r"] is None and len({r["load_id"] for r in form}) == 1
+    calm, _ = _rows(client, "STP4100R06", {"symbol": "005930"})
+    assert calm[1]["value_r"] == "정상"
     # a code the books do not hold still has the rules it would trade under, if it is a 주권 or an ETF
     unbooked, _ = _rows(client, "STP4100R04", {"symbol": "900010"})
     assert {r["item"]: r["value"] for r in unbooked}["증권거래세율"] == "0.2%"          # 코스닥 주권: 거래세만
