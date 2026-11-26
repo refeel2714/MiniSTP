@@ -414,19 +414,22 @@ def order_detail(conn: psycopg.Connection, ledger: Ledger, client_id: str, today
                                        "settled_on", "settle_state"), tuple(rows)))
 
 
-# ---------- STP-2200 기준가 ----------
+# ---------- STP-2200 순자산 ----------
 
 def nav_series(ledger: Ledger, date_from: dt.date | None = None, date_to: dt.date | None = None) -> Dataset:
-    """기준가 추이. NAV is derived, so it comes from the replayed ledger, not a table."""
-    rows = tuple((r.date, r.cash, r.receivables, r.payables, r.market_value, r.net_assets, r.units,
-                  r.nav_per_1000)
+    """순자산 추이. NAV is derived, so it comes from the replayed ledger, not a table.
+    `since_start` is the return since the books started (%), the NAV against 1,000.00: 좌수 and 기준가 are
+    how that return is measured, so they ride along for the calculation but the screen does not show them."""
+    from .ledger import INITIAL_NAV
+    rows = tuple((r.date, r.cash, r.receivables, r.payables, r.market_value, r.net_assets,
+                  _rate_pct(r.nav_per_1000 / INITIAL_NAV - 1), r.units, r.nav_per_1000)
                  for r in ledger.nav_history()
                  if (date_from is None or r.date >= date_from) and (date_to is None or r.date <= date_to))
-    return Dataset(("date", "cash", "receivables", "payables", "market_value", "net_assets", "units",
-                    "nav_per_1000"), rows)
+    return Dataset(("date", "cash", "receivables", "payables", "market_value", "net_assets", "since_start",
+                    "units", "nav_per_1000"), rows)
 
 
-# ---------- STP-2210 기준가 이력 (날짜별 기준가와 변동 상세) ----------
+# ---------- STP-2210 순자산 이력 (날짜별 순자산과 변동 상세) ----------
 
 # What an account's movement does to net assets: equity put in or taken out, income, expense.
 # Assets and liabilities are what net assets is made of, so they explain nothing here.
