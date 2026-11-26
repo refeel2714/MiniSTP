@@ -106,7 +106,7 @@ def test_every_page_carries_the_menu_tree_and_a_screen_its_place_in_it(client, c
                                     client.get(path).text, re.S).group(1))
     home, page = data("/"), data("/screen/STP-3200")
     assert home["tree"] == page["tree"] and home["path"] == [] and page["path"] == ["원장·회계", "분개"]
-    assert [s["id"] for a in home["tree"] for g in a["groups"] for s in g["screens"]] == sorted(
+    assert sorted(s["id"] for a in home["tree"] for g in a["groups"] for s in g["screens"]) == sorted(
         i for i in load_screens() if i.endswith("0"))                    # a 딸린 화면 hangs from its parent instead
     sub = data("/screen/STP-4101")
     assert sub["parent"] == {"id": "STP-4100", "title": "종목정보"} and page["parent"] is None
@@ -287,7 +287,7 @@ def test_live_endpoint_is_an_event_stream(client):
     assert "GET" in route.methods
 
 
-# ---------- STP-4100 종목정보·STP-4300 거래 기준, STP-3400 계좌정보 ----------
+# ---------- STP-4100 종목정보·STP-4300 거래 기준, STP-3400 예수금·결제 현황 ----------
 
 def _rows(client, tx, params=None, dataset="main"):
     body = client.post(f"/api/tx/{tx}", json={"params": params or {}}).json()
@@ -350,10 +350,24 @@ def test_reference_data_is_read_from_what_the_ledger_uses(client):
                           {"asset_type": "ETF", "price_from": 2_000, "price_below": None, "tick": 5}]
 
 
+
+def test_journal_templates_show_each_event_types_entry_and_its_lines(client):
+    templates, _ = _rows(client, "STP4500R01")
+    assert [t["code"] for t in templates][:3] == ["JT-01", "JT-02", "JT-03"]
+    buy = next(t for t in templates if t["case"] == "매수 체결")
+    assert buy["event_type"] == "ExecutionEvent" and buy["kind_name"] == "체결" and buy["line_count"] == 3
+    lines, meta = _rows(client, "STP4500R02", {"code": buy["code"]})
+    assert meta["case"] == "매수 체결" and "JT-06" in meta["note"]
+    assert [(r["side_name"], r["account_code"]) for r in lines] == [("차변", "1100"), ("차변", "5030"), ("대변", "2010")]
+    assert lines[2]["rule"] == "R-51"
+    body = client.post("/api/tx/STP4500R02", json={"params": {"code": "JT-99"}})
+    assert "없는 분개 모형" in body.text
+
+
 # ---------- 셀 표시 유형 (실시간 잔고) ----------
 
 def test_holdings_are_valued_at_the_last_close_when_run_has_no_quotes(client, conn, sample):
-    """R-68: `run`이 오늘 현재가를 남기지 않았으면 원장의 최근 종가로 평가해요. 계좌정보의 평가금액과 같은 값이에요."""
+    """R-68: `run`이 오늘 현재가를 남기지 않았으면 원장의 최근 종가로 평가해요. 예수금·결제 현황의 평가금액과 같은 값이에요."""
     from ministp.ledger import Ledger
     from ministp.ops import load_books
     from ministp.queries import Dataset, holdings_view, last_closes
@@ -427,7 +441,9 @@ def test_holdings_screen_draws_the_badge_meter_and_the_lines_under_prices(client
     shown = [c["name"] for c in grid["columns"] if not c["inside"] and not c["hidden"]]
     assert shown == ["instrument_name", "qty", "price", "market_value", "unrealized_pnl", "book_cost", "weight", "today_qty"]
     assert grid["meta"] == {"basis": "평가 기준"} and grid["totals"] == ["market_value", "unrealized_pnl", "book_cost"]
-    assert grid["map"] == {"label": "instrument_name", "size": "book_cost", "tone": "unrealized_pnl"}
+    assert grid["map"] is None      # 구성 지도는 뺐어요(11/26): 자산 유형별 줄과 비중 막대로 봐요
+    mix = next(g for g in screen["grids"] if g["id"] == "mix")
+    assert [c["name"] for c in mix["columns"]] == ["asset_type_name", "count", "market_value", "weight", "unrealized_pnl"]
     spec = client.get("/spec/STP-1100").text
     assert "배지 안에 표시" in spec and "칸 아래에 작게 표시" in spec
 
@@ -440,9 +456,9 @@ def test_recon_calendar_opens_on_the_latest_day_and_counts_the_gate(client, samp
     assert days[0]["date"] == last
     assert meta == {"clean_streak": sample.streak, "gate_left": 20 - sample.streak, "selected": last}
     states = {r["state"] for r in days}
-    assert "판단 완료" in states and states <= {"일치", "판단 완료", "휴장"}   # 샘플은 불일치를 모두 판단해 둬요
+    assert "불일치(판단함)" in states and states <= {"일치", "불일치(판단함)", "휴장"}   # 샘플은 불일치를 모두 판단해 둬요
     # 오른쪽 상세는 달력의 한 칸이 가리키는 그날의 대사 결과
-    judged = next(r for r in days if r["state"] == "판단 완료")
+    judged = next(r for r in days if r["state"] == "불일치(판단함)")
     detail, _ = _rows(client, "STP2100R01", {"date_from": judged["date"], "date_to": judged["date"], "kind": judged["kind"]})
     assert len(detail) == judged["items"] and sum(r["status"] == "BREAK" for r in detail) == judged["breaks"]
     assert all(r["resolved_cause"] for r in detail if r["status"] == "BREAK") and judged["open_breaks"] == 0
@@ -471,7 +487,7 @@ def test_blotter_shows_where_each_order_stands_and_its_settlements(client, conn,
     orders, order, fills, lines = screen["grids"]
     cols = {c["name"]: c for c in orders["columns"]}
     assert screen["layout"] == "split" and (order["view"], order["dataset"], fills["dataset"]) == ("cards", "order", "fills")
-    assert cols["progress"]["steps"] == ["의도", "접수", "체결", "결제"] and cols["qty"]["inside"] == "filled_qty"
+    assert cols["progress"]["steps"] == ["전송", "접수", "체결", "결제"] and cols["qty"]["inside"] == "filled_qty"
     assert cols["client_id"]["hidden"] and orders["key"] == "client_id"
     # 그림을 더한 만큼 열을 줄여요: 열네 열이던 주문 목록이 일곱 열로 보여요 (요청 번호가 더해짐, C-21)
     assert len([c for c in orders["columns"] if not c["inside"] and not c["hidden"]]) == 7
@@ -489,7 +505,7 @@ def test_blotter_shows_where_each_order_stands_and_its_settlements(client, conn,
     r = client.post("/api/tx/STP1200R02", json={"params": {"client_id": "S-없는주문"}})
     assert r.status_code == 400 and "없는 주문" in r.json()["error"]
     spec = client.get("/spec/STP-1200").text
-    assert "진행 단계(의도 → 접수 → 체결 → 결제" in spec and "`filled_qty` 막대 안에 표시" in spec and "숨김" in spec
+    assert "진행 단계(전송 → 접수 → 체결 → 결제" in spec and "`filled_qty` 막대 안에 표시" in spec and "숨김" in spec
 
 
 def test_returns_screen_reads_the_nav_month_by_month(client):
@@ -549,20 +565,20 @@ def test_market_master_screens_show_the_history_the_sample_loaded(client, sample
 
 def test_basket_screen_starts_from_current_weights_and_recomputes_what_is_typed(client, conn):
     before = conn.execute("select (select count(*) from ledger_events), (select count(*) from broker_snapshots)").fetchone()
-    first = client.post("/api/tx/STP1500R01", json={"params": {}}).json()["datasets"]["main"]
+    first = client.post("/api/tx/STP1310R01", json={"params": {}}).json()["datasets"]["main"]
     rows = [dict(zip(first["columns"], r)) for r in first["rows"]]
     assert rows and round(sum(r["current_weight"] for r in rows), 2) == 100
     assert all(r["target_weight"] == r["current_weight"] for r in rows)
-    plan = client.post("/api/tx/STP1500R02", json={"params": {"amount": 10_000_000}}).json()
+    plan = client.post("/api/tx/STP1310R02", json={"params": {"amount": 10_000_000}}).json()
     assert len(plan["datasets"]["main"]["rows"]) == len(rows) and plan["meta"]["limit"] == "30%"
     typed = ",".join(f"{r['symbol']}:{100 if i == 0 else 0}" for i, r in enumerate(rows))
-    one = client.post("/api/tx/STP1500R02", json={"params": {"amount": 1_000_000, "basket": typed, "limit": 100,
+    one = client.post("/api/tx/STP1310R02", json={"params": {"amount": 1_000_000, "basket": typed, "limit": 100,
                                                              "basis": "현재가 +1호가"}}).json()
     lines = [dict(zip(one["datasets"]["main"]["columns"], r)) for r in one["datasets"]["main"]["rows"]]
     assert lines[0]["amount"] > 0 and all(ln["qty"] == 0 for ln in lines[1:])
     summary = dict(zip(one["datasets"]["summary"]["columns"], one["datasets"]["summary"]["rows"][0]))
     assert summary["allocated"] + summary["leftover"] == 1_000_000 and summary["ok"] is True
-    bad = client.post("/api/tx/STP1500R02", json={"params": {"amount": 1_000_000, "basket": f"{rows[0]['symbol']}:50"}})
+    bad = client.post("/api/tx/STP1310R02", json={"params": {"amount": 1_000_000, "basket": f"{rows[0]['symbol']}:50"}})
     assert "100%가 아니에요" in bad.json()["error"]
     after = conn.execute("select (select count(*) from ledger_events), (select count(*) from broker_snapshots)").fetchone()
     assert before == after   # 계산만, DB에는 아무것도 쓰지 않아요
