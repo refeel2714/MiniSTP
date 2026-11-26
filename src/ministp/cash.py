@@ -109,15 +109,15 @@ def withdraw(books: Books, day: dt.date, amount: int, memo: str = "", today: dt.
 
 def transfer(src: Books, dst: Books, day: dt.date, amount: int, memo: str = "",
              today: dt.date | None = None) -> tuple[Transfer, CashMovement, CashMovement]:
-    """`cash transfer`: money moved between two accounts of one customer (R-65). The sender books a
+    """`cash transfer`: money moved between two accounts of one company (R-65). The sender books a
     withdrawal and the receiver a deposit, both under one transfer number, in one transaction."""
     conn = src.conn
     if src.account_id == dst.account_id:
         raise OpsError("보내는 계좌와 받는 계좌가 같아요.")
     a, b = get_account(conn, src.account_id), get_account(conn, dst.account_id)
-    if a.customer_id != b.customer_id:
-        raise OpsError(f"대체는 같은 고객의 계좌 사이에서만 기록해요 ({a.account_id} 고객 {a.customer_id}, "
-                       f"{b.account_id} 고객 {b.customer_id}). 다른 고객에게 보낸 돈은 출금과 입금으로 따로 기록해 주세요.")
+    if a.company_id != b.company_id:
+        raise OpsError(f"대체는 같은 법인의 계좌 사이에서만 기록해요 ({a.account_id} 법인 {a.company_id}, "
+                       f"{b.account_id} 법인 {b.company_id}). 다른 법인에 보낸 돈은 출금과 입금으로 따로 기록해 주세요.")
     _ready(src, day, amount, today, out=True)
     _ready(dst, day, amount, today, out=False)
     with conn.transaction():   # both halves and the audit row, or nothing

@@ -1,4 +1,4 @@
-"""관리 화면의 처리 버튼: 코드 관리(STP-4600), 계좌 관리(STP-4400), 고객 등록(STP-1400).
+"""관리 화면의 처리 버튼: 코드 관리(STP-4600), 계좌 관리(STP-4400), 법인 등록(STP-1400).
 
 Each button is the CLI command of the same name, so the rules are tested once in
 test_codes.py and test_accounts.py. Here: the screen reaches them, says their
@@ -90,12 +90,12 @@ def test_code_buttons_refuse_what_the_command_refuses_and_write_nothing(press, c
     assert conn.execute("select count(*) from code_groups").fetchone()[0] == 35
 
 
-def test_account_buttons_are_the_customer_and_account_commands(press, conn):
-    assert press("STP1400U01", customer_id="C0002", alias="두 번째 고객") == (200, "고객을 등록했어요: C0002 두 번째 고객")
-    status, said = press("STP4400U01", account_id="A0002", customer_id="C0002", alias="연금 계좌", credential_ref="KIS_2")
+def test_account_buttons_are_the_company_and_account_commands(press, conn):
+    assert press("STP1400U01", company_id="C0002", alias="두 번째 법인") == (200, "법인을 등록했어요: C0002 두 번째 법인")
+    status, said = press("STP4400U01", account_id="A0002", company_id="C0002", alias="연금 계좌", credential_ref="KIS_2")
     assert status == 200 and "환경변수 MINISTP_KIS_2_*" in said and "개설일 2026-11-20" in said   # opened on the screen's day
     a = accounts.get_account(conn, "A0002")
-    assert (a.customer_id, a.alias, a.env, a.status, a.opened_on) == ("C0002", "연금 계좌", "PAPER", "OPEN", TODAY)
+    assert (a.company_id, a.alias, a.env, a.status, a.opened_on) == ("C0002", "연금 계좌", "PAPER", "OPEN", TODAY)
     assert [x["account_id"] for x in page_data(press.client)["accounts"]] == ["A0001", "A0002"]   # the top bar picks it up
 
     status, said = press("STP4400U02", account_id="A0002", status="SUSPENDED", reason="고객 요청")   # no date: today
@@ -109,19 +109,19 @@ def test_account_buttons_are_the_customer_and_account_commands(press, conn):
 
 def test_account_buttons_refuse_what_the_commands_refuse_and_write_nothing(press, conn):
     def rows():
-        return conn.execute("select (select count(*) from customers), (select count(*) from trading_accounts),"
+        return conn.execute("select (select count(*) from companies), (select count(*) from trading_accounts),"
                             " (select count(*) from account_status_history)").fetchone()
     before = rows()
     kis = conn.execute("select credential_ref from trading_accounts where account_id = 'A0001'").fetchone()[0]
     for tx, params, problem in [
-        ("STP1400U01", dict(customer_id="C0001", alias="또"), "이미 있는 고객"),
-        ("STP1400U01", dict(customer_id="고객2", alias="별칭"), "고객 ID는"),
-        ("STP4400U01", dict(account_id="A0002", customer_id="C0009", alias="계좌", credential_ref="KIS_2"),
-         "등록되지 않은 고객"),
-        ("STP4400U01", dict(account_id="A0002", customer_id="C0001", alias="계좌", credential_ref=kis), "쓰고 있어요"),
-        ("STP4400U01", dict(account_id="A0002", customer_id="C0001", alias="계좌", credential_ref="12345678-01"),
+        ("STP1400U01", dict(company_id="C0001", alias="또"), "이미 있는 법인"),
+        ("STP1400U01", dict(company_id="법인2", alias="별칭"), "법인 ID는"),
+        ("STP4400U01", dict(account_id="A0002", company_id="C0009", alias="계좌", credential_ref="KIS_2"),
+         "등록되지 않은 법인"),
+        ("STP4400U01", dict(account_id="A0002", company_id="C0001", alias="계좌", credential_ref=kis), "쓰고 있어요"),
+        ("STP4400U01", dict(account_id="A0002", company_id="C0001", alias="계좌", credential_ref="12345678-01"),
          "계좌번호나 키를 넣는 자리가 아니에요"),
-        ("STP4400U01", dict(account_id="A0002", customer_id="C0001", alias="계좌"), "credential_ref 값을 넣어"),
+        ("STP4400U01", dict(account_id="A0002", company_id="C0001", alias="계좌"), "credential_ref 값을 넣어"),
         ("STP4400U02", dict(account_id="A0001", status="FROZEN", reason="동결"), "상태는"),
         ("STP4400U02", dict(account_id="A0001", status="OPEN", reason="다시"), "이미 OPEN"),
         ("STP4400U02", dict(account_id="A0009", status="SUSPENDED", reason="없는 계좌"), "등록되지 않은 계좌"),
@@ -144,12 +144,12 @@ def test_management_screens_put_their_buttons_on_the_grid_they_act_on(conn):
         "groups": [("그룹 추가", "STP4600U01", False)],
         "codes": [("코드 추가", "STP4600U02", False), ("코드명 변경", "STP4600U03", True), ("사용 여부", "STP4600U04", True)]}
     assert buttons("STP-4400") == {"accounts": [("계좌 등록", "STP4400U01", False), ("상태 변경", "STP4400U02", True)]}
-    assert buttons("STP-1400") == {"customers": [("고객 등록", "STP1400U01", False)]}
+    assert buttons("STP-1400") == {"companies": [("법인 등록", "STP1400U01", False), ("ERP 회사코드 지정", "STP1400U02", True)]}
 
     r = resolve(screens["STP-4400"], catalog, lookups)
     status = next(f for b in r["grids"][0]["actions"] if b["id"] == "status" for f in b["fields"] if f["name"] == "status")
     assert (status["label"], status["lookup"], status["lookup_params"]) == ("상태", "code", {"group_id": "ACCOUNT_STATUS"})
-    assert set(r["lookups"]) == {"code", "customer"} and r["lookups"]["code"]["shows"] == "name"
+    assert set(r["lookups"]) == {"code", "company"} and r["lookups"]["code"]["shows"] == "name"
     results = next(g for g in resolve(screens["STP-2100"], catalog, lookups)["grids"] if g["id"] == "results")
     cause = results["actions"][0]["fields"][1]
     assert (cause["lookup"], cause["lookup_params"]) == ("code", {"group_id": "RECON_CAUSE"})   # 공통코드 팝업

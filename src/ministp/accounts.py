@@ -1,4 +1,7 @@
-"""고객과 위탁계좌 (스펙 D7, ERD v2.0): registering them and changing an account's status.
+"""법인과 위탁계좌 (스펙 D7, ERD v2.0; 법인은 v2.14): registering them and changing an account's status.
+
+A company (법인) keeps its own books; its accounts add up to them, and its ERP company code says which
+books of the ERP its journal goes to. The code can change: each change is a new row in `company_erp_codes`.
 
 The database holds an alias, the broker, the environment and a *name* for the
 credentials (`credential_ref`). The account number and the keys themselves stay
@@ -15,7 +18,8 @@ from . import audit
 from .ops import OpsError
 
 STATUSES = ("OPEN", "SUSPENDED", "CLOSED")
-CUSTOMER_ID_RE = re.compile(r"^C[0-9]{4}$")
+COMPANY_ID_RE = re.compile(r"^C[0-9]{4}$")
+ERP_CODE_RE = re.compile(r"^[A-Za-z0-9_-]{1,20}$")
 ACCOUNT_ID_RE = re.compile(r"^A[0-9]{4}$")
 CREDENTIAL_REF_RE = re.compile(r"^[A-Z][A-Z0-9_]{0,30}$")
 
@@ -23,7 +27,7 @@ CREDENTIAL_REF_RE = re.compile(r"^[A-Z][A-Z0-9_]{0,30}$")
 @dataclass(frozen=True)
 class AccountInfo:
     account_id: str
-    customer_id: str
+    company_id: str
     alias: str
     broker: str
     env: str               # PAPER / LIVE
@@ -43,13 +47,13 @@ def env_prefix(credential_ref: str) -> str:
     return f"MINISTP_{credential_ref}"
 
 
-_SELECT = ("select t.account_id, t.customer_id, t.alias, t.broker, t.env, t.account_type, t.credential_ref,"
+_SELECT = ("select t.account_id, t.company_id, t.alias, t.broker, t.env, t.account_type, t.credential_ref,"
            " t.opened_on, s.status, s.effective_from from trading_accounts t"
            " join account_status_v s using (account_id)")
 
 
 def list_accounts(conn: psycopg.Connection) -> list[AccountInfo]:
-    return [AccountInfo(*r) for r in conn.execute(_SELECT + " order by t.customer_id, t.account_id")]
+    return [AccountInfo(*r) for r in conn.execute(_SELECT + " order by t.company_id, t.account_id")]
 
 
 def get_account(conn: psycopg.Connection, account_id: str) -> AccountInfo:
@@ -59,20 +63,62 @@ def get_account(conn: psycopg.Connection, account_id: str) -> AccountInfo:
     return AccountInfo(*row)
 
 
-def add_customer(conn: psycopg.Connection, customer_id: str, alias: str) -> None:
-    """`alias` is a nickname for the screens. Real names and other personal data do not belong here."""
-    if not CUSTOMER_ID_RE.match(customer_id):
-        raise OpsError(f"고객 ID는 C와 숫자 4자리예요 (예: C0002). 받은 값: {customer_id}")
+def add_company(conn: psycopg.Connection, company_id: str, alias: str, *, erp_code: str | None = None,
+                effective_from: dt.date | None = None) -> None:
+    """`alias` is a short name for the screens. With `erp_code`, its ERP company code from `effective_from`
+    (today when not given) is registered in the same transaction."""
+    if not COMPANY_ID_RE.match(company_id):
+        raise OpsError(f"법인 ID는 C와 숫자 4자리예요 (예: C0002). 받은 값: {company_id}")
     if not alias.strip():
-        raise OpsError("고객 별칭을 넣어 주세요.")
-    if conn.execute("select 1 from customers where customer_id = %s", (customer_id,)).fetchone():
-        raise OpsError(f"이미 있는 고객이에요: {customer_id}")
+        raise OpsError("법인 별칭을 넣어 주세요.")
+    if conn.execute("select 1 from companies where company_id = %s", (company_id,)).fetchone():
+        raise OpsError(f"이미 있는 법인이에요: {company_id}")
     with conn.transaction():
-        conn.execute("insert into customers (customer_id, alias) values (%s, %s)", (customer_id, alias.strip()))
-        audit.record(conn, "CUSTOMER_ADD", target=customer_id, detail={"alias": alias.strip()})
+        conn.execute("insert into companies (company_id, alias) values (%s, %s)", (company_id, alias.strip()))
+        audit.record(conn, "COMPANY_ADD", target=company_id, detail={"alias": alias.strip()})
+        if erp_code:
+            set_erp_code(conn, company_id, erp_code, effective_from or dt.date.today(), "법인 등록")
 
 
-def add_account(conn: psycopg.Connection, account_id: str, customer_id: str, alias: str, *,
+def erp_code_on(conn: psycopg.Connection, company_id: str, day: dt.date) -> str | None:
+    """The company's ERP company code on `day`: the last row that started on or before it."""
+    row = conn.execute("select erp_company_code from company_erp_codes where company_id = %s and effective_from <= %s"
+                       " order by effective_from desc, id desc limit 1", (company_id, day)).fetchone()
+    return row[0] if row else None
+
+
+def set_erp_code(conn: psycopg.Connection, company_id: str, erp_code: str, effective_from: dt.date,
+                 reason: str) -> None:
+    """Add a row to the company's ERP code history. Two companies never share a code on the same day,
+    or one company's journal would land in the other's books."""
+    erp_code = erp_code.strip()
+    if not ERP_CODE_RE.match(erp_code):
+        raise OpsError(f"ERP 회사코드는 영문·숫자·밑줄·하이픈 20자 이내예요. 받은 값: {erp_code}")
+    if not reason.strip():
+        raise OpsError("ERP 회사코드를 정하는 사유를 적어 주세요.")
+    if conn.execute("select 1 from companies where company_id = %s", (company_id,)).fetchone() is None:
+        raise OpsError(f"등록되지 않은 법인이에요: {company_id}. company list로 확인해 주세요.")
+    last = conn.execute("select erp_company_code, effective_from from company_erp_codes where company_id = %s"
+                        " order by effective_from desc, id desc limit 1", (company_id,)).fetchone()
+    if last and last[0] == erp_code:
+        raise OpsError(f"법인 {company_id}의 ERP 회사코드는 이미 {erp_code}예요.")
+    if last and effective_from < last[1]:
+        raise OpsError(f"적용 시작일이 지금 코드의 시작일({last[1]})보다 빨라요.")
+    others = [c for (c,) in conn.execute("select company_id from companies where company_id <> %s order by 1",
+                                         (company_id,))
+              if erp_code in (erp_code_on(conn, c, effective_from), erp_code_on(conn, c, dt.date.max))]
+    if others:
+        raise OpsError(f"ERP 회사코드 {erp_code}는 법인 {others[0]}가 쓰고 있어요. 법인마다 다른 코드여야 "
+                       "한 법인의 전표가 다른 법인 장부로 가지 않아요.")
+    with conn.transaction():
+        conn.execute("insert into company_erp_codes (company_id, erp_company_code, effective_from, reason)"
+                     " values (%s, %s, %s, %s)", (company_id, erp_code, effective_from, reason.strip()))
+        audit.record(conn, "COMPANY_ERP_CODE", target=company_id,
+                     detail={"erp_code": erp_code, "from": last[0] if last else None,
+                             "effective_from": effective_from, "reason": reason.strip()})
+
+
+def add_account(conn: psycopg.Connection, account_id: str, company_id: str, alias: str, *,
                 credential_ref: str, opened_on: dt.date, env: str = "PAPER") -> AccountInfo:
     """Register an account and its first status row (OPEN) together."""
     if not ACCOUNT_ID_RE.match(account_id):
@@ -84,8 +130,8 @@ def add_account(conn: psycopg.Connection, account_id: str, customer_id: str, ali
                        "계좌번호나 키를 넣는 자리가 아니에요.")
     if env != "PAPER":
         raise OpsError("Phase 4 전까지는 모의투자(PAPER) 계좌만 등록해요.")
-    if conn.execute("select 1 from customers where customer_id = %s", (customer_id,)).fetchone() is None:
-        raise OpsError(f"등록되지 않은 고객이에요: {customer_id}. 먼저 customer add로 등록해 주세요.")
+    if conn.execute("select 1 from companies where company_id = %s", (company_id,)).fetchone() is None:
+        raise OpsError(f"등록되지 않은 법인이에요: {company_id}. 먼저 company add로 등록해 주세요.")
     if conn.execute("select 1 from trading_accounts where account_id = %s", (account_id,)).fetchone():
         raise OpsError(f"이미 있는 계좌예요: {account_id}")
     used = conn.execute("select account_id from trading_accounts where broker = 'KIS' and env = %s"
@@ -95,13 +141,13 @@ def add_account(conn: psycopg.Connection, account_id: str, customer_id: str, ali
                        "계좌마다 다른 이름을 써야 다른 계좌의 키로 주문이 나가지 않아요.")
     with conn.transaction():
         conn.execute(
-            "insert into trading_accounts (account_id, customer_id, alias, broker, env, account_type,"
+            "insert into trading_accounts (account_id, company_id, alias, broker, env, account_type,"
             " credential_ref, opened_on) values (%s, %s, %s, 'KIS', %s, 'GENERAL', %s, %s)",
-            (account_id, customer_id, alias.strip(), env, credential_ref, opened_on))
+            (account_id, company_id, alias.strip(), env, credential_ref, opened_on))
         conn.execute("insert into account_status_history (account_id, status, effective_from, reason)"
                      " values (%s, 'OPEN', %s, '계좌 등록')", (account_id, opened_on))
         audit.record(conn, "ACCOUNT_ADD", account_id=account_id, target=account_id,
-                     detail={"customer_id": customer_id, "alias": alias.strip(), "env": env,
+                     detail={"company_id": company_id, "alias": alias.strip(), "env": env,
                              "credential_ref": credential_ref, "opened_on": opened_on})
     return get_account(conn, account_id)
 

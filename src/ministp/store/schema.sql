@@ -1,5 +1,5 @@
 -- MiniSTP ledger schema (spec 03).
--- ERD version: 2.13  (bump on every schema change, then run scripts/gen_erd.py) Append-only tables are enforced in the DB,
+-- ERD version: 2.14  (bump on every schema change, then run scripts/gen_erd.py) Append-only tables are enforced in the DB,
 -- not just in application code.
 
 create table if not exists accounts_chart (
@@ -9,16 +9,16 @@ create table if not exists accounts_chart (
     in_use      boolean not null default true              -- v2.13: 사용 중지한 계정은 지난 전표만 가리킴
 );
 
--- v2.0 다계좌 (스펙 D7): 고객 -> 위탁계좌. 계좌번호와 인증키는 DB에 넣지 않는다.
-create table if not exists customers (
-    customer_id text primary key check (customer_id ~ '^C[0-9]{4}$'),
+-- v2.0 다계좌 (스펙 D7): 법인 -> 위탁계좌 (v2.14: 고객이 법인으로). 계좌번호와 인증키는 DB에 넣지 않는다.
+create table if not exists companies (
+    company_id  text primary key check (company_id ~ '^C[0-9]{4}$'),
     alias       text not null,
     created_at  timestamptz not null default now()
 );
 
 create table if not exists trading_accounts (
     account_id     text primary key check (account_id ~ '^A[0-9]{4}$'),
-    customer_id    text not null references customers (customer_id),
+    company_id     text not null references companies (company_id),
     alias          text not null,
     broker         text not null check (broker in ('KIS')),
     env            text not null check (env in ('PAPER', 'LIVE')),
@@ -37,6 +37,17 @@ create table if not exists account_status_history (
     reason         text,
     created_at     timestamptz not null default now()
 );
+
+-- v2.14: 법인의 ERP 회사코드. 바꿀 때는 새 행을 더하고, 날짜마다 그날 적용되는 코드를 쓴다.
+create table if not exists company_erp_codes (
+    id               bigserial primary key,
+    company_id       text not null references companies (company_id),
+    erp_company_code text not null check (erp_company_code ~ '^[A-Za-z0-9_-]{1,20}$'),
+    effective_from   date not null,
+    reason           text,
+    created_at       timestamptz not null default now()
+);
+create index if not exists company_erp_codes_company_idx on company_erp_codes (company_id, effective_from);
 
 -- 원장은 하나, 순번도 하나. 모든 이벤트와 그 파생 행은 계좌 하나에 속한다 (account_id).
 create table if not exists ledger_events (
@@ -472,11 +483,11 @@ begin
     foreach t in array array['ledger_events', 'journal_entries', 'journal_lines',
                              'position_ledger', 'cash_ledger', 'instruments', 'oms_orders',
                              'oms_order_acks', 'broker_snapshots', 'recon_results',
-                             'customers', 'trading_accounts', 'account_status_history', 'day_closes',
+                             'companies', 'trading_accounts', 'account_status_history', 'day_closes',
                              'audit_log', 'corporate_actions', 'master_loads', 'instrument_master',
                              'app_users', 'user_rights', 'order_requests', 'order_request_lines',
                              'order_approvals', 'order_sends', 'erp_exports', 'erp_export_docs',
-                             'erp_export_voids', 'close_checks', 'close_check_steps'] loop
+                             'erp_export_voids', 'close_checks', 'close_check_steps', 'company_erp_codes'] loop
         if not exists (select 1 from pg_trigger where tgname = t || '_append_only') then
             execute format('create trigger %I before update or delete on %I
                             for each row execute function ministp_forbid_change()',
@@ -760,15 +771,15 @@ select t.account_id, coalesce(sum(c.amount), 0) as balance
  group by t.account_id;
 
 create or replace view account_status_v as
-select t.account_id, t.customer_id, t.alias, s.status, s.effective_from
+select t.account_id, t.company_id, t.alias, s.status, s.effective_from
   from trading_accounts t
   join lateral (select h.status, h.effective_from from account_status_history h
                  where h.account_id = t.account_id order by h.effective_from desc, h.id desc limit 1) s on true;
 
-create or replace view customer_positions_v as
-select t.customer_id, p.symbol, sum(p.qty_delta) as qty, sum(p.cost_delta) as book_cost
+create or replace view company_positions_v as
+select t.company_id, p.symbol, sum(p.qty_delta) as qty, sum(p.cost_delta) as book_cost
   from position_ledger p join trading_accounts t on t.account_id = p.account_id
- group by t.customer_id, p.symbol having sum(p.qty_delta) <> 0;
+ group by t.company_id, p.symbol having sum(p.qty_delta) <> 0;
 
 -- ABOR (스펙 D6, R-79): 마지막 마감이 남긴 장부. 그 뒤에 쌓인 이벤트는 들어 있지 않다.
 create or replace view last_close_v as
@@ -1018,14 +1029,14 @@ comment on column recon_results.note is '판단 메모';
 comment on column recon_results.supersedes_id is '해결 대상 행 번호';
 comment on column recon_results.created_at is '기록 시각';
 
-comment on table customers is '고객 (별칭만 관리, 개인정보 없음)';
-comment on column customers.customer_id is '고객 ID';
-comment on column customers.alias is '고객 별칭';
-comment on column customers.created_at is '등록 시각';
+comment on table companies is '법인 (장부를 가진 회사, 별칭만 관리)';
+comment on column companies.company_id is '법인 ID';
+comment on column companies.alias is '법인 별칭';
+comment on column companies.created_at is '등록 시각';
 
 comment on table trading_accounts is '위탁계좌 (계좌번호·인증키는 DB에 없음)';
 comment on column trading_accounts.account_id is '계좌 ID';
-comment on column trading_accounts.customer_id is '고객 ID';
+comment on column trading_accounts.company_id is '법인 ID';
 comment on column trading_accounts.alias is '계좌 별칭';
 comment on column trading_accounts.broker is '증권사 (KIS)';
 comment on column trading_accounts.env is '환경 (PAPER 모의 / LIVE 실전)';
@@ -1041,6 +1052,14 @@ comment on column account_status_history.status is '상태 (OPEN 정상 / SUSPEN
 comment on column account_status_history.effective_from is '적용 시작일';
 comment on column account_status_history.reason is '사유';
 comment on column account_status_history.created_at is '기록 시각';
+
+comment on table company_erp_codes is '법인 ERP 회사코드 이력 (변경은 새 행으로 추가)';
+comment on column company_erp_codes.id is '행 번호';
+comment on column company_erp_codes.company_id is '법인 ID';
+comment on column company_erp_codes.erp_company_code is 'ERP 회사코드';
+comment on column company_erp_codes.effective_from is '적용 시작일';
+comment on column company_erp_codes.reason is '사유';
+comment on column company_erp_codes.created_at is '기록 시각';
 
 comment on column ledger_events.account_id is '계좌 ID';
 comment on column journal_entries.account_id is '계좌 ID';
@@ -1070,16 +1089,16 @@ comment on column cash_balance_v.balance is '잔액';
 
 comment on view account_status_v is '계좌별 현재 상태';
 comment on column account_status_v.account_id is '계좌 ID';
-comment on column account_status_v.customer_id is '고객 ID';
+comment on column account_status_v.company_id is '법인 ID';
 comment on column account_status_v.alias is '계좌 별칭';
 comment on column account_status_v.status is '현재 상태';
 comment on column account_status_v.effective_from is '상태 적용 시작일';
 
-comment on view customer_positions_v is '고객별·종목별 보유 합계 (여러 계좌 합산)';
-comment on column customer_positions_v.customer_id is '고객 ID';
-comment on column customer_positions_v.symbol is '종목코드';
-comment on column customer_positions_v.qty is '보유수량';
-comment on column customer_positions_v.book_cost is '장부금액 (매입금액)';
+comment on view company_positions_v is '법인별·종목별 보유 합계 (여러 계좌 합산)';
+comment on column company_positions_v.company_id is '법인 ID';
+comment on column company_positions_v.symbol is '종목코드';
+comment on column company_positions_v.qty is '보유수량';
+comment on column company_positions_v.book_cost is '장부금액 (매입금액)';
 
 comment on table code_groups is '공통코드 그룹';
 comment on column code_groups.group_id is '코드 그룹 ID';
@@ -1412,7 +1431,7 @@ comment on column erp_exports.account_id is '계좌 ID (비어 있으면 모든 
 comment on column erp_exports.date_from is '시작일';
 comment on column erp_exports.date_to is '종료일';
 comment on column erp_exports.unit is '전표 단위 (ENTRY 건별 / DAY 일별 합계)';
-comment on column erp_exports.company_code is '회사코드 (매핑 파일, 없으면 빈 값)';
+comment on column erp_exports.company_code is '회사코드 (계좌 법인의 ERP 회사코드, 없으면 매핑 파일의 값, 법인이 여럿이면 쉼표로)';
 comment on column erp_exports.document_type is '전표유형 (매핑 파일, 없으면 빈 값)';
 comment on column erp_exports.mapping_sha256 is '매핑 파일 해시 (SHA-256, 비어 있으면 MiniSTP 계정 그대로)';
 comment on column erp_exports.documents is '전표 수';

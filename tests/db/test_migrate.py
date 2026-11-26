@@ -141,3 +141,27 @@ def test_db_migrate_command_reports_nothing_to_do_on_a_current_database(conn, ca
     out = capsys.readouterr().out
     assert rc == 0 and "적용할 마이그레이션이 없어요" in out and "남은 것 0개" in out
     assert len(mg.applied(conn)) == len(mg.discover())
+
+
+RENAME = ("-- title: 이름 바꾸기\n-- erd: 9.9\n-- renames: mig_scratch -> mig_board, mig_scratch.v -> label\n"
+          "alter table mig_scratch rename to mig_board;\nalter table mig_board rename column v to label;\n")
+CLEANUP_RENAME = "drop table if exists mig_board;"
+
+
+def test_a_declared_rename_keeps_the_proof_over_the_new_names(conn):
+    conn.execute(CLEANUP_RENAME)
+    try:
+        bare = _mig(1, "rename", RENAME.replace("-- renames: mig_scratch -> mig_board, mig_scratch.v -> label\n", ""))
+        with pytest.raises(mg.MigrationError, match="mig_scratch: 테이블이나 기존 컬럼이 없어졌어요"):
+            mg.migrate(conn, [bare])
+        assert mg._has_table(conn, "mig_scratch") and not mg._has_table(conn, "mig_board")
+        (report,) = mg.migrate(conn, [_mig(1, "rename", RENAME)], dry_run=True)
+        row = next(t for t in report.tables if t.table == "mig_scratch → mig_board")
+        assert row.unchanged and row.rows_before == 2 and "mig_board" not in report.new_tables
+        sneaky = _mig(1, "rename", RENAME + "insert into mig_board values (3, 'c');\n")
+        with pytest.raises(mg.MigrationError, match="행 수가 2 → 3"):        # a rename does not hide new rows
+            mg.migrate(conn, [sneaky])
+        with pytest.raises(mg.MigrationError, match="renames에 적힌 테이블이 없어요: no_such"):
+            mg.migrate(conn, [_mig(1, "typo", "-- renames: no_such -> other\nselect 1;")])
+    finally:
+        conn.execute(CLEANUP_RENAME)

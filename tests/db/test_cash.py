@@ -156,7 +156,7 @@ def test_a_transfer_is_written_to_both_accounts_in_one_piece(two):   # noqa: F81
     assert (row.action, row.outcome, row.account_id, row.target) == ("CASH_TRANSFER", "DONE", "A0001", "TR-1")
     assert row.detail["to"] == "A0002" and row.detail["amount"] == 2_000_000 and row.detail["memo"] == "계좌 정리"
 
-    for src, dst, amount, said in ((a1, a1, 1, "같아요"), (a1, a3, 1, "같은 고객의 계좌 사이에서만"),
+    for src, dst, amount, said in ((a1, a1, 1, "같아요"), (a1, a3, 1, "같은 법인의 계좌 사이에서만"),
                                    (a1, a2, room, "출금가능금액")):
         with pytest.raises(OpsError, match=said):
             cash.transfer(src, dst, day, amount, today=day)
@@ -198,7 +198,7 @@ def test_verify_finds_a_transfer_whose_halves_do_not_match(two):   # noqa: F811
     assert "TR-2 보낸 금액·날짜와 받은 금액·날짜가 다름" in _check(conn, "transfers", insts=insts).detail
     ledgers["A0001"].transfer_out(day, 3, "A0003", 1_000)
     ledgers["A0003"].transfer_in(day, 3, "A0001", 1_000)
-    assert "TR-3 고객이 다른 계좌 사이의 대체" in _check(conn, "transfers", insts=insts).detail
+    assert "TR-3 법인이 다른 계좌 사이의 대체" in _check(conn, "transfers", insts=insts).detail
     with pytest.raises(Exception):                                     # one number, one sending event (the index)
         ledgers["A0001"].transfer_out(day, 3, "A0002", 1)
 
@@ -244,7 +244,7 @@ def test_cash_commands(conn, broker, capsys):
     assert cli.run(["cash", "withdraw", "919450", "--date", "2026-11-20"], now=at(MON, 9), **kw) == 0
     assert "[2026-11-20] 출금 919,450원 (A0001): 예수금 104,000,000원, 출금가능 104,000,000원, 좌수 -919,450좌" in (
         capsys.readouterr().out)
-    assert cli.run(["customer", "add", "C0002", "둘째"], **kw) == 0
+    assert cli.run(["company", "add", "C0002", "둘째"], **kw) == 0
     assert cli.run(["account", "add", "A0002", "C0001", "두 번째 계좌", "--credential", "KIS_2"], now=at(FRI, 9), **kw) == 0
     assert cli.run(["account", "add", "A0003", "C0002", "남의 계좌", "--credential", "KIS_3"], now=at(FRI, 9), **kw) == 0
     capsys.readouterr()

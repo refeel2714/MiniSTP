@@ -1,6 +1,6 @@
 # MiniSTP ERD
 
-ERD 버전: v2.13 · 스키마 해시: `eaa473e502b4`
+ERD 버전: v2.14 · 스키마 해시: `4f11b05999b5`
 
 이 문서는 `scripts/gen_erd.py`가 `src/ministp/store/schema.sql`로 만든 DB에서 읽어 생성해요. 직접 고치지 말고 스키마의 한글 주석(COMMENT)을 고친 뒤 다시 생성하세요. 모든 원장 테이블은 append-only(수정·삭제 불가)예요.
 
@@ -14,14 +14,14 @@ erDiagram
         char1 normal_side "정상잔액 방향 (D 차변 / C 대변)"
         boolean in_use "사용 여부 (사용 중지한 계정은 지난 전표만 가리키고 새 분개에 쓰지 않음)"
     }
-    customers {
-        text customer_id PK "고객 ID"
-        text alias "고객 별칭"
+    companies {
+        text company_id PK "법인 ID"
+        text alias "법인 별칭"
         timestamptz created_at "등록 시각"
     }
     trading_accounts {
         text account_id PK "계좌 ID"
-        text customer_id FK "고객 ID"
+        text company_id FK "법인 ID"
         text alias "계좌 별칭"
         text broker "증권사 (KIS)"
         text env "환경 (PAPER 모의 / LIVE 실전)"
@@ -34,6 +34,14 @@ erDiagram
         bigint id PK "행 번호"
         text account_id FK "계좌 ID"
         text status "상태 (OPEN 정상 / SUSPENDED 정지 / CLOSED 해지)"
+        date effective_from "적용 시작일"
+        text reason "사유"
+        timestamptz created_at "기록 시각"
+    }
+    company_erp_codes {
+        bigint id PK "행 번호"
+        text company_id FK "법인 ID"
+        text erp_company_code "ERP 회사코드"
         date effective_from "적용 시작일"
         text reason "사유"
         timestamptz created_at "기록 시각"
@@ -260,7 +268,7 @@ erDiagram
         date date_from "시작일"
         date date_to "종료일"
         text unit "전표 단위 (ENTRY 건별 / DAY 일별 합계)"
-        text company_code "회사코드 (매핑 파일, 없으면 빈 값)"
+        text company_code "회사코드 (계좌 법인의 ERP 회사코드, 없으면 매핑 파일의 값, 법인이 여럿이면 쉼표로)"
         text document_type "전표유형 (매핑 파일, 없으면 빈 값)"
         text mapping_sha256 "매핑 파일 해시 (SHA-256, 비어 있으면 MiniSTP 계정 그대로)"
         integer documents "전표 수"
@@ -339,8 +347,9 @@ erDiagram
         text checksum "적용한 파일의 해시"
         timestamptz applied_at "적용 시각"
     }
-    customers ||--o{ trading_accounts : "customer_id"
+    companies ||--o{ trading_accounts : "company_id"
     trading_accounts ||--o{ account_status_history : "account_id"
+    companies ||--o{ company_erp_codes : "company_id"
     trading_accounts ||--o{ ledger_events : "account_id"
     ledger_events ||--o{ journal_entries : "event_seq, account_id"
     journal_entries ||--o{ journal_entries : "reverses_entry_id"
@@ -390,12 +399,12 @@ erDiagram
 | `normal_side` | 정상잔액 방향 (D 차변 / C 대변) | character(1) | Y |  |
 | `in_use` | 사용 여부 (사용 중지한 계정은 지난 전표만 가리키고 새 분개에 쓰지 않음) | boolean | Y |  |
 
-### customers — 고객 (별칭만 관리, 개인정보 없음) (테이블)
+### companies — 법인 (장부를 가진 회사, 별칭만 관리) (테이블)
 
 | 컬럼 | 한글명 | 타입 | 필수 | 키 |
 |---|---|---|---|---|
-| `customer_id` | 고객 ID | text | Y | PK |
-| `alias` | 고객 별칭 | text | Y |  |
+| `company_id` | 법인 ID | text | Y | PK |
+| `alias` | 법인 별칭 | text | Y |  |
 | `created_at` | 등록 시각 | timestamp with time zone | Y |  |
 
 ### trading_accounts — 위탁계좌 (계좌번호·인증키는 DB에 없음) (테이블)
@@ -403,7 +412,7 @@ erDiagram
 | 컬럼 | 한글명 | 타입 | 필수 | 키 |
 |---|---|---|---|---|
 | `account_id` | 계좌 ID | text | Y | PK |
-| `customer_id` | 고객 ID | text | Y | FK → customers.customer_id |
+| `company_id` | 법인 ID | text | Y | FK → companies.company_id |
 | `alias` | 계좌 별칭 | text | Y |  |
 | `broker` | 증권사 (KIS) | text | Y |  |
 | `env` | 환경 (PAPER 모의 / LIVE 실전) | text | Y |  |
@@ -419,6 +428,17 @@ erDiagram
 | `id` | 행 번호 | bigint | Y | PK |
 | `account_id` | 계좌 ID | text | Y | FK → trading_accounts.account_id |
 | `status` | 상태 (OPEN 정상 / SUSPENDED 정지 / CLOSED 해지) | text | Y |  |
+| `effective_from` | 적용 시작일 | date | Y |  |
+| `reason` | 사유 | text |  |  |
+| `created_at` | 기록 시각 | timestamp with time zone | Y |  |
+
+### company_erp_codes — 법인 ERP 회사코드 이력 (변경은 새 행으로 추가) (테이블)
+
+| 컬럼 | 한글명 | 타입 | 필수 | 키 |
+|---|---|---|---|---|
+| `id` | 행 번호 | bigint | Y | PK |
+| `company_id` | 법인 ID | text | Y | FK → companies.company_id |
+| `erp_company_code` | ERP 회사코드 | text | Y |  |
 | `effective_from` | 적용 시작일 | date | Y |  |
 | `reason` | 사유 | text |  |  |
 | `created_at` | 기록 시각 | timestamp with time zone | Y |  |
@@ -711,7 +731,7 @@ erDiagram
 | `date_from` | 시작일 | date | Y |  |
 | `date_to` | 종료일 | date | Y |  |
 | `unit` | 전표 단위 (ENTRY 건별 / DAY 일별 합계) | text | Y |  |
-| `company_code` | 회사코드 (매핑 파일, 없으면 빈 값) | text | Y |  |
+| `company_code` | 회사코드 (계좌 법인의 ERP 회사코드, 없으면 매핑 파일의 값, 법인이 여럿이면 쉼표로) | text | Y |  |
 | `document_type` | 전표유형 (매핑 파일, 없으면 빈 값) | text | Y |  |
 | `mapping_sha256` | 매핑 파일 해시 (SHA-256, 비어 있으면 MiniSTP 계정 그대로) | text |  |  |
 | `documents` | 전표 수 | integer | Y |  |
@@ -845,16 +865,16 @@ erDiagram
 | 컬럼 | 한글명 | 타입 | 필수 | 키 |
 |---|---|---|---|---|
 | `account_id` | 계좌 ID | text |  |  |
-| `customer_id` | 고객 ID | text |  |  |
+| `company_id` | 법인 ID | text |  |  |
 | `alias` | 계좌 별칭 | text |  |  |
 | `status` | 현재 상태 | text |  |  |
 | `effective_from` | 상태 적용 시작일 | date |  |  |
 
-### customer_positions_v — 고객별·종목별 보유 합계 (여러 계좌 합산) (뷰)
+### company_positions_v — 법인별·종목별 보유 합계 (여러 계좌 합산) (뷰)
 
 | 컬럼 | 한글명 | 타입 | 필수 | 키 |
 |---|---|---|---|---|
-| `customer_id` | 고객 ID | text |  |  |
+| `company_id` | 법인 ID | text |  |  |
 | `symbol` | 종목코드 | text |  |  |
 | `qty` | 보유수량 | numeric |  |  |
 | `book_cost` | 장부금액 (매입금액) | numeric |  |  |
@@ -1125,3 +1145,4 @@ erDiagram
 | v2.11 | 2026-11-25 | ERP 전송 이력(R-104, 초안). ERP 전송 이력 `erp_exports`(`erp export`가 만든 파일마다 한 행: 계좌, 기간, 전표 단위, 회사코드·전표유형, 매핑 파일 해시, 전표 수·줄 수·차대 합계, 파일 이름과 SHA-256, 내보낸 사람), 전송 전표 `erp_export_docs`(파일에 든 증빙번호마다 한 행: 계좌, 전표일자), 전송 무효 `erp_export_voids`(ERP가 받지 않은 파일, 사유) 신설, 셋 다 수정·삭제·비우기 금지(테이블 27개). 무효가 아닌 내보내기에 이미 든 증빙번호와, 같은 계좌·같은 날을 다른 단위(건별 ↔ 일별 합계)로 낸 전표는 DB 트리거 `ministp_erp_doc_once`가 거부한다(계좌·날마다 잠그고 읽음). 뷰 `erp_exports_v`(무효 여부 포함) 추가. 공통코드 그룹 2개(ERP 전표 단위, ERP 전송 상태)와 감사 행위 `ERP_EXPORT`, `ERP_EXPORT_VOID` 추가(마이그레이션 `0011_erp_exports`). 기존 데이터는 바뀌지 않는다. |
 | v2.12 | 2026-11-25 | 마감 점검 단계 기준과 점검 결과 이력(R-105, 초안). 단계 기준 `close_steps`(단계 코드마다 한 행: 이름, 순서, 사용 여부, 필수 여부, 상세 화면, 적용 자산 유형, 설명. 고칠 수 있지만 지우거나 코드를 바꾸지 못함: 트리거 `ministp_guard_close_steps`) 신설, 기본 단계 9개(결제, 주문·체결, 배당, 시세, 기준가, 증권사 대사, 일 마감, ERP 전송(선택), 원장 내부 대사)를 넣는다. 점검 결과 `close_checks`(점검할 때마다 계좌·영업일마다 한 행: 그날 상태, 끝난 필수 단계 수, 점검한 명령과 사람)와 `close_check_steps`(그 점검의 단계마다 한 행: 그때의 이름·필수 여부, 상태, 내용) 신설, 둘 다 수정·삭제·비우기 금지(테이블 29개). 뷰 `close_checks_last_v`(계좌·영업일마다 마지막 점검) 추가. 공통코드 그룹 2개(마감 점검 단계 상태, 마감 점검 일 상태)와 감사 행위 `CLOSE_STEP_SET` 추가(마이그레이션 `0012_close_steps`). 기존 데이터는 바뀌지 않는다. |
 | v2.13 | 2026-11-25 | 계정과목표 v2: 법인 장부 기준(스펙 D4 v2, `docs/spec/05-chart-of-accounts-v2.md`, 초안). 계정과목 `accounts_chart`에 사용 여부 `in_use` 추가. 이름 변경(코드는 그대로): 1010 예수금 → 증권예치금, 1100 FVPL 주식 → FVPL 금융자산, 1110 FVPL 주식 평가조정 → FVPL 금융자산 평가조정, 3010 투자원금 → 본사 자금 대체, 4030 배당수익 → 배당금수익. 계정 추가: 1040 선납세금(원천징수 법인세, 자산), 4050 분배금수익(ETF 분배금). 5050 법인세등(원천징수)은 사용 중지(지난 전표가 가리키므로 행은 남김), 사용 중지한 계정으로는 새 분개 줄이 들어가지 않는다(트리거 `ministp_account_in_use`). 마이그레이션 `0013_chart_v2`(`changes-data: accounts_chart`, 이름과 사용 여부만 바뀌고 전표는 그대로). |
+| v2.14 | 2026-11-26 | 고객을 법인으로(스펙 D7 v2, 11/26 사용자 결정, 초안). 계좌 위의 층은 리테일 위탁 고객이 아니라 장부를 가진 법인(회사)이다(D9). 이름 변경: `customers` → `companies`, `customer_id` → `company_id`(`companies`, `trading_accounts`, 뷰 `account_status_v`), 뷰 `customer_positions_v` → `company_positions_v`. 값과 규칙(C와 숫자 4자리)은 그대로이고 C는 Company로 읽는다. 법인 ERP 회사코드 이력 `company_erp_codes`(법인마다 코드와 적용시작일, 바꿀 때마다 한 행, 수정·삭제·비우기 금지, 테이블 30개) 신설. ERP 일반전표 파일의 회사코드는 줄마다 그 계좌 법인의 그날 코드, 없으면 매핑 파일의 값. 감사 행위 `COMPANY_ADD`, `COMPANY_ERP_CODE` 추가, `CUSTOMER_ADD`는 지난 기록용으로 이름만 바꿈. 마이그레이션 `0014_companies`(`renames` 머리말: 바뀐 이름으로 다시 지문을 떠서 기존 행이 그대로인지 확인, `changes-data: common_codes`). |

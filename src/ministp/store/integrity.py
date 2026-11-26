@@ -27,11 +27,11 @@ from .postgres import DEFAULT_ACCOUNT, cash_rows, close_row, from_payload, posit
 # tests/unit/test_integrity_tables.py keeps the two in step.
 APPEND_ONLY_TABLES = ("ledger_events", "journal_entries", "journal_lines", "position_ledger", "cash_ledger",
                       "instruments", "oms_orders", "oms_order_acks", "broker_snapshots", "recon_results",
-                      "customers", "trading_accounts", "account_status_history", "day_closes", "audit_log",
+                      "companies", "trading_accounts", "account_status_history", "day_closes", "audit_log",
                       "corporate_actions", "master_loads", "instrument_master",
                       "app_users", "user_rights", "order_requests", "order_request_lines", "order_approvals",
                       "order_sends", "erp_exports", "erp_export_docs", "erp_export_voids",
-                      "close_checks", "close_check_steps")
+                      "close_checks", "close_check_steps", "company_erp_codes")
 BALANCE_TRIGGERS = ("journal_entries_balanced", "journal_lines_balanced")
 # R-78 in the database: no entry, cash row or close dated inside a closed day (ERD v2.2).
 CLOSED_DAY_TRIGGERS = ("journal_entries_closed_day", "cash_ledger_closed_day", "day_closes_closed_day")
@@ -123,14 +123,14 @@ def check_rights(conn: psycopg.Connection) -> Check:
 
 def transfer_halves(conn: psycopg.Connection) -> tuple[dict, list[str]]:
     """R-65: every transfer has exactly two halves that name each other: one account sent what the
-    other received, on the same day, and both accounts belong to one customer.
+    other received, on the same day, and both accounts belong to one company.
     Returns (transfer id -> its halves, what is wrong with the ones that do not pair)."""
     halves: dict[int, list[tuple]] = {}
-    for tid, acct, kind, date, amount, other, customer in conn.execute(
-            "select m.transfer_id, m.account_id, m.kind, m.date, m.amount, m.counter_account, t.customer_id"
+    for tid, acct, kind, date, amount, other, company in conn.execute(
+            "select m.transfer_id, m.account_id, m.kind, m.date, m.amount, m.counter_account, t.company_id"
             " from cash_movements_v m join trading_accounts t using (account_id)"
             " where m.kind in ('TRANSFER_OUT', 'TRANSFER_IN') order by m.transfer_id, m.kind desc, m.event_seq"):
-        halves.setdefault(tid, []).append((acct, kind, date, int(amount), other, customer))
+        halves.setdefault(tid, []).append((acct, kind, date, int(amount), other, company))
     bad = []
     for tid, rows in halves.items():
         if tid is None or [r[1] for r in rows] != ["TRANSFER_OUT", "TRANSFER_IN"]:
@@ -142,7 +142,7 @@ def transfer_halves(conn: psycopg.Connection) -> tuple[dict, list[str]]:
         elif out[3] != -got[3] or out[2] != got[2]:
             bad.append(f"TR-{tid} 보낸 금액·날짜와 받은 금액·날짜가 다름")
         elif out[5] != got[5]:
-            bad.append(f"TR-{tid} 고객이 다른 계좌 사이의 대체")
+            bad.append(f"TR-{tid} 법인이 다른 계좌 사이의 대체")
     return halves, bad
 
 

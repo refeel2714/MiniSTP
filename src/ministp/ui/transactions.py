@@ -448,19 +448,25 @@ def _account_status(c: TxContext, p) -> TxResult:
     return TxResult({"main": q.account_status_history(c.conn, p["account_id"])})
 
 
-def _customers(c: TxContext, p) -> TxResult:
-    return TxResult({"main": q.customer_list(c.conn)})
+def _companies(c: TxContext, p) -> TxResult:
+    return TxResult({"main": q.company_list(c.conn)})
 
 
-def _customer_positions(c: TxContext, p) -> TxResult:
-    """One customer's accounts added up per symbol (all customers when none is named)."""
-    return TxResult({"main": q.customer_positions(c.conn, p.get("customer_id") or None)})
+def _company_positions(c: TxContext, p) -> TxResult:
+    """One company's accounts added up per symbol (all companies when none is named)."""
+    return TxResult({"main": q.company_positions(c.conn, p.get("company_id") or None)})
 
 
-def _customer_accounts(c: TxContext, p) -> TxResult:
-    if not p.get("customer_id"):
-        raise TxError("고객 ID가 필요해요")
-    return TxResult({"main": q.customer_accounts(c.conn, p["customer_id"])})
+def _company_accounts(c: TxContext, p) -> TxResult:
+    if not p.get("company_id"):
+        raise TxError("법인 ID가 필요해요")
+    return TxResult({"main": q.company_accounts(c.conn, p["company_id"])})
+
+
+def _company_erp_codes(c: TxContext, p) -> TxResult:
+    if not p.get("company_id"):
+        raise TxError("법인 ID가 필요해요")
+    return TxResult({"main": q.company_erp_codes(c.conn, p["company_id"])})
 
 
 def _code_groups(c: TxContext, p) -> TxResult:
@@ -977,9 +983,10 @@ TRANSACTIONS: dict[str, Tx] = {t.tx_id: t for t in [
     Tx("STP4300R05", "주문 검증 기준", {}, _risk),
     Tx("STP4400R01", "계좌 목록", {}, _accounts),
     Tx("STP4400R02", "계좌 상태 이력", {"account_id": "text"}, _account_status),
-    Tx("STP1400R01", "고객 목록", {}, _customers),
-    Tx("STP1400R02", "고객 보유 합산", {"customer_id": "text"}, _customer_positions),
-    Tx("STP1400R03", "고객의 계좌", {"customer_id": "text"}, _customer_accounts),
+    Tx("STP1400R01", "법인 목록", {}, _companies),
+    Tx("STP1400R02", "법인 보유 합산", {"company_id": "text"}, _company_positions),
+    Tx("STP1400R03", "법인의 계좌", {"company_id": "text"}, _company_accounts),
+    Tx("STP1400R04", "법인 ERP 회사코드 이력", {"company_id": "text"}, _company_erp_codes),
     Tx("STP4600R01", "코드 그룹 목록", {}, _code_groups),
     Tx("STP4600R02", "그룹의 코드", {"group_id": "text"}, _codes),
     Tx("STP1210R01", "주문 작성과 보낸 요청", {"lines": "text", "picked": "text"}, _order_lines),

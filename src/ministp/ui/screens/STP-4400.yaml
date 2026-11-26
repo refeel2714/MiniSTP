@@ -2,7 +2,7 @@ id: STP-4400
 title: 계좌 관리
 layout: split
 left: 60
-purpose: 등록된 위탁계좌의 기본정보예요. 기준정보라서 어느 계좌에 무엇이 얼마나 들어 있는지는 여기에 없어요. 예수금과 결제 예정은 계좌정보(STP-3400), 보유는 잔고(STP-1100)와 고객별 보유(STP-1400)에 있어요. 왼쪽에서 계좌를 고르면 오른쪽에 그 계좌의 상태 이력이 나와요. 화면을 열면 위쪽 막대에서 고른 계좌가 먼저 골라져 있고, 더블클릭하면 그 계좌의 계좌정보(STP-3400)로 가요. 계좌번호와 인증키는 DB에 없고 이 화면에도 나오지 않아요. 계좌 등록과 상태 변경은 위탁계좌 그리드 오른쪽 위 버튼으로 해요 (CLI의 account 명령과 같은 처리). 고객 등록은 고객별 보유(STP-1400)에서 해요.
+purpose: 등록된 위탁계좌의 기본정보예요. 기준정보라서 어느 계좌에 무엇이 얼마나 들어 있는지는 여기에 없어요. 예수금과 결제 예정은 계좌정보(STP-3400), 보유는 잔고(STP-1100)와 법인별 보유(STP-1400)에 있어요. 왼쪽에서 계좌를 고르면 오른쪽에 그 계좌의 상태 이력이 나와요. 화면을 열면 위쪽 막대에서 고른 계좌가 먼저 골라져 있고, 더블클릭하면 그 계좌의 계좌정보(STP-3400)로 가요. 계좌번호와 인증키는 DB에 없고 이 화면에도 나오지 않아요. 계좌 등록과 상태 변경은 위탁계좌 그리드 오른쪽 위 버튼으로 해요 (CLI의 account 명령과 같은 처리). 법인 등록과 ERP 회사코드는 법인별 보유(STP-1400)에서 해요.
 grids:
   - id: accounts
     title: 위탁계좌
@@ -14,7 +14,7 @@ grids:
     columns:
       - {name: account_id, source: trading_accounts.account_id, format: code}
       - {name: alias, source: trading_accounts.alias}
-      - {name: customer_alias, source: customers.alias}
+      - {name: company_alias, source: companies.alias}
       - {name: status, source: account_status_v.status, format: code, codes: ACCOUNT_STATUS, color: status}
       - {name: broker, source: trading_accounts.broker, format: code}
       - {name: env, source: trading_accounts.env, format: code}
@@ -28,7 +28,7 @@ grids:
         note: 계좌번호와 인증키는 넣지 않아요. 인증정보 이름만 적고, 키는 이 PC의 환경변수(MINISTP_<이름>_APP_KEY 등)에 둬요. 지금은 모의투자 계좌만 등록해요.
         fields:
           - {name: account_id, source: trading_accounts.account_id}
-          - {name: customer_id, source: trading_accounts.customer_id, lookup: customer}
+          - {name: company_id, source: trading_accounts.company_id, lookup: company}
           - {name: alias, source: trading_accounts.alias}
           - {name: credential_ref, source: trading_accounts.credential_ref}
       - id: status

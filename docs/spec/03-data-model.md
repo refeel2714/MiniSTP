@@ -5,7 +5,7 @@
 
 공통 규칙
 - 모든 테이블은 `id`(bigserial), `created_at`(timestamptz)을 가진다.
-- `*_ledger`, `*_events`, `journal_*`, `recon_results`, `broker_snapshots`와 고객·계좌 테이블(v1.12)은 append-only다. UPDATE와 DELETE를 막는 트리거를 둔다.
+- `*_ledger`, `*_events`, `journal_*`, `recon_results`, `broker_snapshots`와 법인(v2.14 전 고객)·계좌 테이블(v1.12)은 append-only다. UPDATE와 DELETE를 막는 트리거를 둔다.
 - 금액 컬럼은 `bigint`(원), 단가 표시값만 `numeric(18,2)`.
 
 ## 기준 정보
@@ -69,7 +69,7 @@ Phase 2 구현(v1.4)은 위 설계를 단순화했다. 주문 생성 정보는 `
 새 DB는 `schema.sql`로 만들고(`db-init`), 이미 운영 중인 DB는 마이그레이션 파일(`src/ministp/store/migrations/NNNN_이름.sql`)로 다음 ERD 버전에 올린다(`db-migrate`).
 
 1. 마이그레이션 하나는 트랜잭션 하나다. 실패하면 아무것도 남지 않는다.
-2. 적용 전후로 모든 테이블의 지문(행 수, 기존 컬럼 기준 행 해시)을 비교한다. 기존 행이 하나라도 바뀌면 되돌린다. 의도한 변경은 파일 머리에 `-- changes-data: 테이블`로 적어야만 통과한다.
+2. 적용 전후로 모든 테이블의 지문(행 수, 기존 컬럼 기준 행 해시)을 비교한다. 기존 행이 하나라도 바뀌면 되돌린다. 의도한 변경은 파일 머리에 `-- changes-data: 테이블`로 적어야만 통과한다. 테이블이나 컬럼의 이름을 바꾸면 `-- renames: 옛테이블 -> 새테이블, 옛테이블.옛컬럼 -> 새컬럼`으로 적는다(v2.14). 그러면 바뀐 이름으로 다시 지문을 떠서 같은 행이 그대로 있는지 확인한다.
 3. append-only 테이블의 기존 행은 적어 두어도 고칠 수 없다(R-04 트리거가 그대로 적용된다).
 4. `--dry-run`은 적용과 검증을 모두 한 뒤 되돌린다. 운영 DB에 적용하기 전에 백업을 복원한 복사본에서 먼저 돌린다.
 5. 적용된 마이그레이션은 번호·이름·해시로 `schema_migrations`에 기록한다. 적용된 파일을 고치면 거부한다.
@@ -85,8 +85,9 @@ Phase 2 구현(v1.4)은 위 설계를 단순화했다. 주문 생성 정보는 `
 
 | 테이블 | 주요 컬럼 | 비고 |
 |---|---|---|
-| customers | customer_id(`C0001` 형식), alias | 고객 1 : 계좌 N. 실명 등 개인정보는 두지 않는다 |
-| trading_accounts | account_id(`A0001` 형식), customer_id, alias, broker(KIS), env(PAPER/LIVE), account_type(GENERAL), credential_ref, opened_on | 계좌번호와 인증키는 두지 않는다. `credential_ref`는 PC 환경변수 묶음의 이름표일 뿐이고, 같은 증권사·환경에서 한 계좌만 쓸 수 있다 |
+| companies (v2.14, 예전 customers) | company_id(`C0001` 형식, C는 Company), alias | 법인 1 : 계좌 N. 장부를 가진 회사(계열사마다 하나) |
+| company_erp_codes (v2.14) | company_id, erp_company_code, effective_from, reason | 법인의 ERP 회사코드. 바꿀 때는 새 행을 더하고, 날짜마다 그날 적용되는 코드를 쓴다. 두 법인이 같은 날 같은 코드를 쓰지 않는다 |
+| trading_accounts | account_id(`A0001` 형식), company_id, alias, broker(KIS), env(PAPER/LIVE), account_type(GENERAL), credential_ref, opened_on | 계좌번호와 인증키는 두지 않는다. `credential_ref`는 PC 환경변수 묶음의 이름표일 뿐이고, 같은 증권사·환경에서 한 계좌만 쓸 수 있다 |
 | account_status_history | account_id, status(OPEN/SUSPENDED/CLOSED), effective_from, reason | 상태는 행을 고치지 않고 이력을 쌓는다. 현재 상태는 `account_status_v` |
 
 1. `ledger_events`, `journal_entries`, `position_ledger`, `cash_ledger`, `oms_orders`, `broker_snapshots`, `recon_results`에 `account_id`가 있다.
@@ -94,13 +95,13 @@ Phase 2 구현(v1.4)은 위 설계를 단순화했다. 주문 생성 정보는 `
 3. 순번(`seq`)은 계좌와 상관없이 1부터 빈 번호 없이 이어진다. 계좌 하나의 원장은 그 계좌의 이벤트만 순서대로 재생한 결과다.
 4. 저장 계층은 계좌 하나에 묶여 열린다. 이벤트를 쓰기 전에 그 계좌의 저장된 이벤트 수가 메모리의 원장과 같은지 확인하고, 다르면 쓰지 않고 원장을 멈춘다.
 5. 체결 ID는 계좌 안에서만 유일하다(`(account_id, exec_id)`). 증권사 주문번호는 계좌마다 따로 매겨지기 때문이다.
-6. 뷰 `account_balances_v`, `positions_v`, `cash_balance_v`는 계좌별이다. `customer_positions_v`는 한 고객의 계좌들을 종목별로 합친다.
-7. 기존 DB의 원장은 마이그레이션 `0001_multi_account`가 기본 고객 `C0001`의 기본 계좌 `A0001`로 옮긴다. 개설일은 첫 이벤트의 날짜다. 기존 행의 기존 컬럼 값은 바뀌지 않는다.
+6. 뷰 `account_balances_v`, `positions_v`, `cash_balance_v`는 계좌별이다. `company_positions_v`(v2.14, 예전 `customer_positions_v`)는 한 법인의 계좌들을 종목별로 합친다.
+7. 기존 DB의 원장은 마이그레이션 `0001_multi_account`가 기본 고객(v2.14부터 법인) `C0001`의 기본 계좌 `A0001`로 옮긴다. 개설일은 첫 이벤트의 날짜다. 기존 행의 기존 컬럼 값은 바뀌지 않는다.
 8. 명령은 계좌 하나를 골라 실행한다(`--account`, 기본은 `A0001`). 화면도 계좌 하나를 골라 본다: 계좌는 화면 정의의 조회조건이 아니라 플랫폼이 조회 트랜잭션마다 함께 전달하고, 서버는 형식과 등록 여부를 확인한다.
 
 ### 계좌 운영 (v1.13)
 
-1. 고객과 계좌는 명령으로 등록한다(`customer add`, `account add`). 계좌를 등록하면 `OPEN` 상태 행이 함께 생긴다. Phase 4 전에는 모의투자(PAPER) 계좌만 등록한다.
+1. 법인과 계좌는 명령으로 등록한다(`company add`, `account add`). 법인의 ERP 회사코드는 `company add --erp-code` 또는 `company erp-code`로 정한다(v2.14). 계좌를 등록하면 `OPEN` 상태 행이 함께 생긴다. Phase 4 전에는 모의투자(PAPER) 계좌만 등록한다.
 2. 계좌의 인증정보는 `credential_ref`를 머리말로 하는 환경변수에서만 읽는다. `KIS_2`이면 `MINISTP_KIS_2_APP_KEY`, `MINISTP_KIS_2_APP_SECRET`, `MINISTP_KIS_2_ACCOUNT`, `MINISTP_KIS_2_HTS_ID`. 값이 없으면 실행할 때 물어보고 저장하지 않는다. 다른 계좌의 값으로 대신하지 않는다.
 3. `credential_ref`는 계좌마다 달라야 한다(DB 유일 제약). 두 계좌의 환경변수가 같은 증권사 계좌번호를 가리키면 명령을 시작하지 않는다. 접근 토큰 캐시 파일도 계좌마다 따로 둔다(토큰은 앱키 하나에 속한다).
 4. `open`, `run`, `order`, `daily`, `status`는 고른 계좌의 원장만 읽고 쓴다. 마감, 대사, 무오류 연속 영업일(R-74)도 계좌별이다.
@@ -273,7 +274,7 @@ Phase 2 구현(v1.4)은 위 설계를 단순화했다. 주문 생성 정보는 `
 | 분개 대차 | 모든 분개의 차변 합 = 대변 합 |
 | 감사 로그 (v1.16) | `audit_log`의 번호가 1부터 빈 번호 없이 이어지고, 각 줄의 해시가 앞 줄의 해시와 자기 내용으로 다시 계산한 값과 같다 (R-87) |
 | 권리 (v1.17) | 계좌에 기록된 배당이 모두 권리 원장에 있고, 종목이 같고, 인식 금액 = 수량 × 주당 배당금이며, 취소된 권리가 입금으로 기록된 계좌가 없다 (R-59) |
-| 대체 (v1.18) | 대체마다 보낸 쪽 이벤트와 받은 쪽 이벤트가 하나씩 있고, 서로의 계좌를 가리키며, 금액과 날짜가 같고, 두 계좌가 같은 고객의 것이다 (R-65) |
+| 대체 (v1.18) | 대체마다 보낸 쪽 이벤트와 받은 쪽 이벤트가 하나씩 있고, 서로의 계좌를 가리키며, 금액과 날짜가 같고, 두 계좌가 같은 법인의 것이다 (R-65) |
 | 분개 재생 | 저장된 분개가 이벤트 재생 결과와 건별로 같다 |
 | 계정 잔액 | 계정과목별 잔액이 재생 결과와 같다 |
 | 보유 | `position_ledger`의 행과 종목별 수량·장부금액이 재생 결과와 같다 |

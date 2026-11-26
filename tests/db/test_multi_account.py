@@ -90,12 +90,12 @@ def _report(conn) -> list:
     return integrity_report(conn, CAL, FEES, load_instruments(conn))
 
 
-def _open_account(conn, account_id, customer_id="C0001") -> PostgresLedgerStore:
-    conn.execute("insert into customers (customer_id, alias) values (%s, %s) on conflict do nothing",
-                 (customer_id, f"고객 {customer_id}"))
-    conn.execute("insert into trading_accounts (account_id, customer_id, alias, broker, env, account_type,"
+def _open_account(conn, account_id, company_id="C0001") -> PostgresLedgerStore:
+    conn.execute("insert into companies (company_id, alias) values (%s, %s) on conflict do nothing",
+                 (company_id, f"법인 {company_id}"))
+    conn.execute("insert into trading_accounts (account_id, company_id, alias, broker, env, account_type,"
                  " credential_ref, opened_on) values (%s, %s, %s, 'KIS', 'PAPER', 'GENERAL', %s, %s)",
-                 (account_id, customer_id, f"계좌 {account_id}", f"KIS_{account_id}", FIRST_DAY))
+                 (account_id, company_id, f"계좌 {account_id}", f"KIS_{account_id}", FIRST_DAY))
     conn.execute("insert into account_status_history (account_id, status, effective_from) values (%s, 'OPEN', %s)",
                  (account_id, FIRST_DAY))
     return PostgresLedgerStore(conn, account_id)
@@ -115,7 +115,7 @@ def test_rehearsal_on_v1_1_passes_and_leaves_no_trace(old):
     assert not report.applied and report.migration.erd_version == "2.0"
     assert sorted(t.table for t in report.kept) == V1_TABLES and all(t.unchanged for t in report.kept)
     assert sorted(t.table for t in report.tables if t.rows_before is None) == sorted(NEW_TABLES)
-    assert [r.migration.erd_version for r in later] == ["2.1", "2.2", "2.3", "2.4", "2.5", "2.6", "2.7", "2.9", "2.10", "2.11", "2.12", "2.13"] and not any(r.applied for r in later)
+    assert [r.migration.erd_version for r in later] == ["2.1", "2.2", "2.3", "2.4", "2.5", "2.6", "2.7", "2.9", "2.10", "2.11", "2.12", "2.13", "2.14"] and not any(r.applied for r in later)
     assert mg.fingerprint(old) == before and _shape(old) == shape
     assert not mg._has_table(old, mg.TABLE)
 
@@ -139,11 +139,11 @@ def test_applying_keeps_every_row_and_puts_the_ledger_in_the_default_account(old
     assert old.execute("select code from accounts_chart where not in_use").fetchall() == [("5050",)]
     for t in WITH_ACCOUNT:
         assert old.execute(f"select distinct account_id from {t}").fetchall() == [(DEFAULT_ACCOUNT,)], t
-    assert old.execute("select customer_id, broker, env, account_type, credential_ref, opened_on"
+    assert old.execute("select company_id, broker, env, account_type, credential_ref, opened_on"
                        " from trading_accounts").fetchall() == [("C0001", "KIS", "PAPER", "GENERAL", "KIS", FIRST_DAY)]
-    assert old.execute("select account_id, customer_id, status, effective_from from account_status_v").fetchall() == [
+    assert old.execute("select account_id, company_id, status, effective_from from account_status_v").fetchall() == [
         (DEFAULT_ACCOUNT, "C0001", "OPEN", FIRST_DAY)]
-    assert list(mg.applied(old)) == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13] and mg.migrate(old) == []
+    assert list(mg.applied(old)) == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14] and mg.migrate(old) == []
     checks = _report(old)
     assert all(c.ok for c in checks), [c for c in checks if not c.ok]
 
@@ -203,7 +203,7 @@ def test_db_migrate_and_verify_commands_on_v1_1(old, capsys):
     assert "적용된 DB에서 원장 무결성 점검 16개 통과" in out and out.count("16개 통과") == 2   # rehearsed, then applied
     assert cli.run(["verify"], environ=env) == 0
     out = capsys.readouterr().out
-    assert "문제" not in out and "29개 테이블" in out and "[A0001]" not in out      # one account: no prefix
+    assert "문제" not in out and "30개 테이블" in out and "[A0001]" not in out      # one account: no prefix
 
 
 def test_apply_refuses_a_database_whose_ledger_would_not_verify_afterwards(old, capsys):
@@ -222,7 +222,7 @@ def test_apply_refuses_a_database_whose_ledger_would_not_verify_afterwards(old, 
 
 @pytest.fixture
 def two(fresh, calendar, instruments):
-    """Two accounts of one customer plus one of another, writing in turn into the one event stream."""
+    """Two accounts of one company plus one of another, writing in turn into the one event stream."""
     from ministp.fees import FeeSchedule
     fees = FeeSchedule.spec_v1()
     stores = {DEFAULT_ACCOUNT: PostgresLedgerStore(fresh), "A0002": _open_account(fresh, "A0002"),
@@ -268,9 +268,9 @@ def test_the_integrity_report_checks_every_account(two):
     assert ("A0001", "cash") in bad and ("A0002", "cash") in bad and ("A0003", "cash") not in bad
 
 
-def test_customer_view_sums_the_accounts_of_one_customer(two):
+def test_company_view_sums_the_accounts_of_one_company(two):
     conn = two[0]
-    assert conn.execute("select customer_id, symbol, qty, book_cost from customer_positions_v order by 1, 2").fetchall() == [
+    assert conn.execute("select company_id, symbol, qty, book_cost from company_positions_v order by 1, 2").fetchall() == [
         ("C0001", "A", 10, two[2]["A0001"].positions()["A"].book_cost),
         ("C0001", "E", 130, two[2]["A0001"].positions()["E"].book_cost + two[2]["A0002"].positions()["E"].book_cost),
         ("C0002", "E", 7, two[2]["A0003"].positions()["E"].book_cost)]
@@ -319,17 +319,17 @@ def test_a_stale_ledger_of_one_account_halts_and_the_other_account_goes_on(two):
     assert all(c.ok for c in integrity_report(conn, calendar, fees, instruments))
 
 
-def test_account_and_customer_rows_are_append_only_and_shaped(fresh):
-    for t in NEW_TABLES:
+def test_account_and_company_rows_are_append_only_and_shaped(fresh):
+    for t in ("companies", "trading_accounts", "account_status_history"):
         with pytest.raises(psycopg.errors.InsufficientPrivilege):
             fresh.execute(f"delete from {t}")
     with pytest.raises(psycopg.errors.InsufficientPrivilege):
         fresh.execute("update trading_accounts set alias = 'x'")
     with pytest.raises(psycopg.errors.CheckViolation):
-        fresh.execute("insert into customers (customer_id, alias) values ('홍길동', 'x')")
+        fresh.execute("insert into companies (company_id, alias) values ('홍길동', 'x')")
     with pytest.raises(psycopg.errors.UniqueViolation):          # one broker key cannot serve two accounts
-        fresh.execute("insert into trading_accounts (account_id, customer_id, alias, broker, env, account_type,"
+        fresh.execute("insert into trading_accounts (account_id, company_id, alias, broker, env, account_type,"
                       " credential_ref, opened_on) values ('A0002', 'C0001', 'x', 'KIS', 'PAPER', 'GENERAL', 'KIS',"
                       " current_date)")
-    cols = set(mg._tables(fresh)["trading_accounts"]) | set(mg._tables(fresh)["customers"])
+    cols = set(mg._tables(fresh)["trading_accounts"]) | set(mg._tables(fresh)["companies"])
     assert not cols & {"account_no", "app_key", "app_secret", "name", "rrn", "phone"}   # no secrets, no identity

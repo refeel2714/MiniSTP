@@ -212,6 +212,12 @@ def test_one_account_at_a_time_and_every_line_names_its_account_and_stock(conn):
     assert not any(ln.symbol for ln in everyone.lines if "평가" in ln.memo)    # 계좌 전체의 평가는 종목 없음
     days = erp.export(conn, None, first, s.last_day, by="day", account_id=None)
     assert {ln.doc_no for ln in days.lines} == {erp.day_doc_no(ln.date, ln.account_id) for ln in days.lines}
+    # v2.14 회사코드: 계열사 B(C0002, A0003)는 법인의 ERP 회사코드, 코드가 없는 기본 법인은 매핑 파일의 값
+    mapped = erp.export(conn, erp.load_mapping(EXAMPLE), first, s.last_day, account_id=None)
+    assert {(ln.account_id, ln.company) for ln in mapped.lines} == {("A0001", "1000"), ("A0002", "1000"), ("A0003", "2000")}
+    assert mapped.company == "1000, 2000" and each["A0003"].company == "2000" and each["A0001"].company == ""
+    rows = list(csv.reader(erp.render_csv(mapped).decode("utf-8-sig").splitlines()))
+    assert {(r[11], r[0]) for r in rows[1:]} == {("A0001", "1000"), ("A0002", "1000"), ("A0003", "2000")}
     assert len({(ln.account_id, ln.date) for ln in days.lines}) == days.documents
     with pytest.raises(erp.ErpError, match="A9999"):
         erp.export(conn, None, first, s.last_day, account_id="A9999")

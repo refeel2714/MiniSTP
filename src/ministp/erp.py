@@ -27,7 +27,7 @@ import io
 import os
 import pathlib
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import psycopg
 import yaml
@@ -98,6 +98,7 @@ class DocLine:
     account_id: str = ""
     account_name: str = ""
     symbol: str = ""
+    company: str = ""          # 회사코드: the account's company's ERP code that day, else the mapping's (v2.14)
 
 
 @dataclass
@@ -106,6 +107,11 @@ class Export:
     lines: list[DocLine]
     mapping: Mapping
     account_id: str | None = DEFAULT_ACCOUNT     # None: every account
+
+    @property
+    def company(self) -> str:
+        """회사코드 of the file: one code, or several joined by ", " when the accounts belong to several companies."""
+        return ", ".join(sorted({ln.company for ln in self.lines if ln.company})) or self.mapping.company
 
     @property
     def documents(self) -> int:
@@ -272,7 +278,24 @@ def export(conn: psycopg.Connection, mapping: Mapping | None, date_from: dt.date
                            + ", ".join(f"{a} {d.isoformat()}" for a, d in open_days))
         result = Export(by, _by_day(rows, mapping, aliases), mapping, account_id)
     _check_balanced(result.lines)
+    result.lines = _with_company(conn, result.lines, mapping)
     return result
+
+
+def _with_company(conn, lines: list[DocLine], mapping: Mapping) -> list[DocLine]:
+    """Each line's 회사코드 (v2.14): the ERP code its account's company had on the line's day. A company without
+    one (or before its first) takes the mapping file's `company`, so one mapping can serve a single company."""
+    owner = dict(conn.execute("select account_id, company_id from trading_accounts").fetchall())
+    history: dict[str, list[tuple[dt.date, str]]] = defaultdict(list)
+    for cid, day, code in conn.execute("select company_id, effective_from, erp_company_code from company_erp_codes"
+                                       " order by company_id, effective_from, id"):
+        history[cid].append((day, code))
+
+    def code_on(acct: str, day: dt.date) -> str:
+        found = [c for start, c in history.get(owner.get(acct, ""), []) if start <= day]
+        return found[-1] if found else mapping.company
+
+    return [replace(ln, company=code_on(ln.account_id, ln.date)) for ln in lines]
 
 
 def _by_entry(conn, rows, mapping: Mapping, aliases: dict[str, str]) -> list[DocLine]:
@@ -336,7 +359,7 @@ def render_csv(result: Export) -> bytes:
     w = csv.writer(buf)
     w.writerow(HEADER)
     for ln in result.lines:
-        w.writerow([mapping.company, mapping.document_type, ln.doc_no, ln.date.isoformat(), mapping.currency,
+        w.writerow([ln.company or mapping.company, mapping.document_type, ln.doc_no, ln.date.isoformat(), mapping.currency,
                     ln.line_no, ln.erp_code, ln.erp_name, ln.debit, ln.credit, ln.memo,
                     ln.account_id, ln.account_name, ln.symbol, ln.ministp_accounts, ln.events, ln.reverses])
     return buf.getvalue().encode("utf-8-sig")
@@ -383,7 +406,7 @@ def control_text(result: Export, file_name: str, sha256: str, size: int, export_
     """The control file: what the receiver checks before posting. Plain `key=value` lines, UTF-8 without BOM."""
     rows = [("file", file_name), ("sha256", sha256), ("bytes", size), ("export_id", export_id),
             ("account", result.account_id or "ALL"), ("from", date_from.isoformat()), ("to", date_to.isoformat()),
-            ("unit", UNITS[result.by]), ("company", result.mapping.company),
+            ("unit", UNITS[result.by]), ("company", result.company),
             ("document_type", result.mapping.document_type), ("documents", result.documents),
             ("lines", len(result.lines)), ("debit", result.debit), ("credit", result.credit),
             ("created_at", created_at.isoformat(timespec="seconds"))]
@@ -473,7 +496,7 @@ def deliver(conn: psycopg.Connection, result: Export, path: str | pathlib.Path, 
             "insert into erp_exports (account_id, date_from, date_to, unit, company_code, document_type, mapping_sha256,"
             " documents, lines, debit_total, credit_total, file_name, file_sha256, created_by)"
             " values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) returning export_id, created_at",
-            (result.account_id, date_from, date_to, UNITS[result.by], result.mapping.company,
+            (result.account_id, date_from, date_to, UNITS[result.by], result.company,
              result.mapping.document_type, result.mapping.sha256, result.documents, len(result.lines),
              result.debit, result.credit, p.name, digest, actor)).fetchone()
         with conn.cursor() as cur:

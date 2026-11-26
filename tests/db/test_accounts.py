@@ -1,11 +1,11 @@
-"""고객·계좌 등록, 계좌 상태, and the daily commands run for one account at a time (`--account`)."""
+"""법인·계좌 등록, 계좌 상태, and the daily commands run for one account at a time (`--account`)."""
 import datetime as dt
 import os
 
 import pytest
 
 from ministp import __main__ as cli
-from ministp.accounts import add_account, add_customer, get_account, list_accounts, set_status
+from ministp.accounts import add_account, add_company, erp_code_on, get_account, list_accounts, set_erp_code, set_status
 from ministp.ledger import Side
 from ministp.ops import OpsError, add_instrument, clean_streak, daily_close, load_books, open_books, place_order
 from ministp.queries import order_check
@@ -35,7 +35,7 @@ def conn():
 
 @pytest.fixture
 def second(conn):
-    """A second account of the default customer, registered but not opened."""
+    """A second account of the default company, registered but not opened."""
     return add_account(conn, "A0002", "C0001", "두 번째 계좌", credential_ref="KIS_2", opened_on=DAY)
 
 
@@ -52,10 +52,10 @@ def at(h, m):
 
 # ---------- registering ----------
 
-def test_register_a_customer_and_an_account(conn):
-    add_customer(conn, "C0002", "두 번째 고객")
+def test_register_a_company_and_an_account(conn):
+    add_company(conn, "C0002", "두 번째 법인")
     a = add_account(conn, "A0002", "C0002", "연습 계좌", credential_ref="KIS_2", opened_on=DAY)
-    assert (a.customer_id, a.broker, a.env, a.account_type, a.status, a.status_from) == (
+    assert (a.company_id, a.broker, a.env, a.account_type, a.status, a.status_from) == (
         "C0002", "KIS", "PAPER", "GENERAL", "OPEN", DAY)
     assert a.env_prefix == "MINISTP_KIS_2"
     assert [x.account_id for x in list_accounts(conn)] == ["A0001", "A0002"]
@@ -64,29 +64,67 @@ def test_register_a_customer_and_an_account(conn):
 
 @pytest.mark.parametrize("args, message", [
     (("B0002", "C0001", "x", "KIS_2"), "계좌 ID는 A와 숫자 4자리"),
-    (("A0002", "C0009", "x", "KIS_2"), "등록되지 않은 고객"),
+    (("A0002", "C0009", "x", "KIS_2"), "등록되지 않은 법인"),
     (("A0001", "C0001", "x", "KIS_2"), "이미 있는 계좌"),
     (("A0002", "C0001", " ", "KIS_2"), "별칭"),
     (("A0002", "C0001", "x", "KIS"), "계좌 A0001가 쓰고 있어요"),          # one key set, one account
     (("A0002", "C0001", "x", "12345678-01"), "계좌번호나 키를 넣는 자리가 아니에요"),
 ])
 def test_account_registration_refuses(conn, args, message):
-    account_id, customer_id, alias, ref = args
+    account_id, company_id, alias, ref = args
     with pytest.raises(OpsError, match=message):
-        add_account(conn, account_id, customer_id, alias, credential_ref=ref, opened_on=DAY)
+        add_account(conn, account_id, company_id, alias, credential_ref=ref, opened_on=DAY)
     assert len(list_accounts(conn)) == 1
     assert conn.execute("select count(*) from account_status_history").fetchone()[0] == 1
 
 
-def test_only_paper_accounts_and_well_formed_customers(conn):
+def test_only_paper_accounts_and_well_formed_companies(conn):
     with pytest.raises(OpsError, match="모의투자"):
         add_account(conn, "A0002", "C0001", "x", credential_ref="KIS_2", opened_on=DAY, env="LIVE")
-    with pytest.raises(OpsError, match="고객 ID는 C와 숫자 4자리"):
-        add_customer(conn, "홍길동", "x")
-    with pytest.raises(OpsError, match="이미 있는 고객"):
-        add_customer(conn, "C0001", "x")
+    with pytest.raises(OpsError, match="법인 ID는 C와 숫자 4자리"):
+        add_company(conn, "홍길동", "x")
+    with pytest.raises(OpsError, match="이미 있는 법인"):
+        add_company(conn, "C0001", "x")
     with pytest.raises(OpsError, match="등록되지 않은 계좌"):
         load_books(conn, CAL, FEES, "A0009")
+
+
+def test_a_company_keeps_the_history_of_its_erp_company_code(conn):
+    """v2.14: 법인마다 ERP 회사코드. 바꿀 때는 새 행, 날짜마다 그날의 코드."""
+    assert erp_code_on(conn, "C0001", DAY) is None                     # 기본 법인: 아직 없음
+    add_company(conn, "C0002", "계열사 B", erp_code="2000", effective_from=DAY)
+    set_erp_code(conn, "C0001", "1000", DAY, "ERP 연결")
+    set_erp_code(conn, "C0001", "1100", DAY + dt.timedelta(days=10), "ERP 회사 재편")
+    assert [erp_code_on(conn, "C0001", d) for d in (DAY - dt.timedelta(days=1), DAY, DAY + dt.timedelta(days=9),
+                                                   DAY + dt.timedelta(days=10))] == [None, "1000", "1000", "1100"]
+    assert erp_code_on(conn, "C0002", DAY) == "2000"
+    for args, said in ((("C0002", "1100", DAY + dt.timedelta(days=20), "x"), "법인 C0001가 쓰고 있어요"),
+                       (("C0002", "1000", DAY, "x"), "법인 C0001가 쓰고 있어요"),       # 지난 날의 코드도
+                       (("C0001", "1100", DAY + dt.timedelta(days=30), "x"), "이미 1100"),
+                       (("C0001", "1200", DAY, "x"), "시작일"),
+                       (("C0001", "12 00", DAY + dt.timedelta(days=30), "x"), "영문·숫자"),
+                       (("C0001", "1200", DAY + dt.timedelta(days=30), " "), "사유"),
+                       (("C0009", "1200", DAY + dt.timedelta(days=30), "x"), "등록되지 않은 법인")):
+        with pytest.raises(OpsError, match=said):
+            set_erp_code(conn, *args)
+    with pytest.raises(psycopg.errors.InsufficientPrivilege):           # 고치지 않고 새 행
+        conn.execute("update company_erp_codes set erp_company_code = 'X'")
+    assert conn.execute("select action, target from audit_log where action like 'COMPANY%' order by id").fetchall() == [
+        ("COMPANY_ADD", "C0002"), ("COMPANY_ERP_CODE", "C0002"), ("COMPANY_ERP_CODE", "C0001"), ("COMPANY_ERP_CODE", "C0001")]
+
+
+def test_company_commands(conn, capsys):
+    kw = dict(environ=ENV, now=at(8, 0))
+    assert cli.run(["company", "add", "C0002", "계열사 B", "--erp-code", "2000"], **kw) == 0
+    assert cli.run(["company", "erp-code", "C0001", "1000", "ERP 연결"], **kw) == 0
+    assert cli.run(["company", "erp-code", "C0001", "2000", "겹침"], **kw) == 1
+    out = capsys.readouterr().out
+    assert "법인 등록: C0002 계열사 B (ERP 회사코드 2000, 2026-11-20부터)" in out and "법인 C0002가 쓰고 있어요" in out
+    assert cli.run(["company", "list"], **kw) == 0
+    out = capsys.readouterr().out
+    assert "C0001 기본 법인: 계좌 1개, ERP 회사코드 1000" in out and "C0002 계열사 B: 계좌 0개, ERP 회사코드 2000" in out
+    assert conn.execute("select action, outcome from audit_log where action = 'COMPANY_ERP_CODE' order by id").fetchall() == [
+        ("COMPANY_ERP_CODE", "DONE"), ("COMPANY_ERP_CODE", "DONE"), ("COMPANY_ERP_CODE", "REFUSED")]
 
 
 # ---------- status (R-39) ----------
@@ -142,7 +180,7 @@ def test_cli_two_accounts_from_registration_to_the_daily_close(conn, capsys):
         return brokers[cfg.account_no]
 
     kw = dict(environ=ENV, client_factory=factory, sleep=lambda s: None)
-    assert cli.run(["customer", "add", "C0002", "두 번째 고객"], now=at(8, 0), **kw) == 0
+    assert cli.run(["company", "add", "C0002", "두 번째 법인"], now=at(8, 0), **kw) == 0
     assert cli.run(["account", "add", "A0002", "C0002", "연습 계좌", "--credential", "KIS_2"], now=at(8, 0), **kw) == 0
     out = capsys.readouterr().out
     assert "MINISTP_KIS_2_APP_KEY" in out and "open --account A0002" in out
@@ -152,7 +190,7 @@ def test_cli_two_accounts_from_registration_to_the_daily_close(conn, capsys):
     assert seen == [("k1", "11111111", "kis_token.json"), ("k2", "22222222", "kis_token_kis_2.json")]
     out = capsys.readouterr().out
     assert "원장 시작: 예수금 100,000,000" in out and "원장 시작: 예수금 30,000,000" in out
-    assert "계좌 A0002 연습 계좌 (고객 C0002, OPEN)" in out
+    assert "계좌 A0002 연습 계좌 (법인 C0002, OPEN)" in out
 
     let_me_order(conn)                                    # 주문은 결재를 거쳐요 (셀프 승인, R-99~101)
     assert cli.run(["order", "069500", "buy", "2", "--account", "A0002"], now=at(10, 0), **kw) == 0
@@ -177,7 +215,7 @@ def test_cli_two_accounts_from_registration_to_the_daily_close(conn, capsys):
     assert "069500 KODEX 200: 2주" in out and "무오류 연속 영업일: 1 / 20" in out
     assert cli.run(["account", "list"], now=at(16, 5), **kw) == 0
     out = capsys.readouterr().out
-    assert "A0001 기본 계좌: 고객 C0001" in out and "A0002 연습 계좌: 고객 C0002" in out and "MINISTP_KIS_2_*" in out
+    assert "A0001 기본 계좌: 법인 C0001" in out and "A0002 연습 계좌: 법인 C0002" in out and "MINISTP_KIS_2_*" in out
     assert cli.run(["verify"], now=at(16, 6), **kw) == 0
     out = capsys.readouterr().out
     assert "[A0001] 현금" in out and "[A0002] 현금" in out and "문제" not in out

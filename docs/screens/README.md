@@ -11,7 +11,7 @@
 | **1 주문·잔고**<br>주문에서 체결까지, 그리고 지금 들고 있는 것 (IBOR) | 11 잔고 | [STP-1100](STP-1100.md) 실시간 잔고 |
 |  | 12 주문·체결 | [STP-1200](STP-1200.md) 주문·체결 블로터, [STP-1210](STP-1210.md) 주식 주문 |
 |  | 13 주문가능 | [STP-1300](STP-1300.md) 주문가능 조회 |
-|  | 14 고객별 보유 | [STP-1400](STP-1400.md) 고객별 보유 |
+|  | 14 법인별 보유 | [STP-1400](STP-1400.md) 법인별 보유 |
 |  | 15 운용 주문 | [STP-1500](STP-1500.md) 바스켓 주문 시뮬레이션 |
 | **2 대사·평가**<br>증권사와 맞는지, 하루의 값이 얼마인지 | 21 대사 | [STP-2100](STP-2100.md) 일일 대사 결과, [STP-2110](STP-2110.md) 원장 내부 대사 |
 |  | 22 기준가 | [STP-2200](STP-2200.md) 기준가·무오류 현황, [STP-2210](STP-2210.md) 기준가 이력 |
@@ -37,7 +37,7 @@
 | [STP-1200](STP-1200.md) | 주문·체결 블로터 | 4 | `STP1200R01`, `STP1200R02` |
 | [STP-1210](STP-1210.md) | 주식 주문 | 3 | `STP1210R01`, `STP1210R02`, `STP1210R03`, `STP1210U01`, `STP1210U02` |
 | [STP-1300](STP-1300.md) | 주문가능 조회 | 2 | `STP1300R02`, `STP1300R01` |
-| [STP-1400](STP-1400.md) | 고객별 보유 | 3 | `STP1400R01`, `STP1400R02`, `STP1400R03`, `STP1400U01` |
+| [STP-1400](STP-1400.md) | 법인별 보유 | 4 | `STP1400R01`, `STP1400R02`, `STP1400R03`, `STP1400R04`, `STP1400U01`, `STP1400U02` |
 | [STP-1500](STP-1500.md) | 바스켓 주문 시뮬레이션 | 3 | `STP1500R01`, `STP1500R02` |
 | [STP-2100](STP-2100.md) | 일일 대사 결과 | 2 | `STP2100R02`, `STP2100R01`, `STP2100U01` |
 | [STP-2110](STP-2110.md) | 원장 내부 대사 | 3 | `STP2110R01`, `STP2110R02` |
@@ -100,11 +100,14 @@
 | `common_codes.group_id` | 코드 그룹 ID | STP-4600 codes 버튼 add, STP-4600 codes 버튼 rename, STP-4600 codes 버튼 use |
 | `common_codes.in_use` | 사용 여부 | STP-4600 codes, STP-4600 codes 버튼 use |
 | `common_codes.name` | 코드명 | STP-4600 codes, STP-4600 codes 버튼 add, STP-4600 codes 버튼 rename |
-| `customer_positions_v.book_cost` | 장부금액 | STP-1400 positions |
-| `customer_positions_v.qty` | 보유수량 | STP-1400 positions |
-| `customer_positions_v.symbol` | 종목코드 | STP-1400 positions |
-| `customers.alias` | 고객 별칭 | STP-1400 customers, STP-1400 customers 버튼 add, STP-4400 accounts |
-| `customers.customer_id` | 고객 ID | STP-1400 customers, STP-1400 customers 버튼 add |
+| `companies.alias` | 법인 별칭 | STP-1400 companies, STP-1400 companies 버튼 add, STP-4400 accounts |
+| `companies.company_id` | 법인 ID | STP-1400 companies, STP-1400 companies 버튼 add, STP-1400 companies 버튼 erp_code |
+| `company_erp_codes.effective_from` | 적용 시작일 | STP-1400 companies 버튼 erp_code, STP-1400 erp_codes |
+| `company_erp_codes.erp_company_code` | ERP 회사코드 | STP-1400 companies, STP-1400 companies 버튼 add, STP-1400 companies 버튼 erp_code, STP-1400 erp_codes |
+| `company_erp_codes.reason` | 사유 | STP-1400 companies 버튼 erp_code, STP-1400 erp_codes |
+| `company_positions_v.book_cost` | 장부금액 | STP-1400 positions |
+| `company_positions_v.qty` | 보유수량 | STP-1400 positions |
+| `company_positions_v.symbol` | 종목코드 | STP-1400 positions |
 | `instrument_master.load_id` | 적재 번호 | STP-4100 attrs |
 | `instrument_master.market` | 시장 | STP-4100 instruments |
 | `instrument_master.name` | 종목명 | STP-4100 instruments, STP-4101 changes |
@@ -186,8 +189,8 @@
 | `trading_accounts.account_type` | 계좌 유형 | STP-4400 accounts |
 | `trading_accounts.alias` | 계좌 별칭 | STP-1400 accounts, STP-3400 account, STP-4400 accounts, STP-4400 accounts 버튼 add |
 | `trading_accounts.broker` | 증권사 | STP-4400 accounts |
+| `trading_accounts.company_id` | 법인 ID | STP-4400 accounts 버튼 add |
 | `trading_accounts.credential_ref` | 인증정보 참조 | STP-4400 accounts 버튼 add |
-| `trading_accounts.customer_id` | 고객 ID | STP-4400 accounts 버튼 add |
 | `trading_accounts.env` | 환경 | STP-4400 accounts |
 | `trading_accounts.opened_on` | 개설일 | STP-4400 accounts |
 | `user_rights.account_id` | 계좌 ID | STP-5200 rights, STP-5200 rights 버튼 grant, STP-5200 rights 버튼 revoke |

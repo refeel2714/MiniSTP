@@ -28,7 +28,7 @@ EVENT_TYPES = {cls.__name__: cls for cls in
                 AdjustmentCancelEvent)}
 DATE_FIELDS = {"date", "trade_date", "booked_on"}
 DEFAULT_ACCOUNT = "A0001"    # the account every pre-v2.0 row belongs to
-DEFAULT_CUSTOMER = "C0001"
+DEFAULT_COMPANY = "C0001"
 
 
 class SchemaError(RuntimeError):
@@ -128,13 +128,13 @@ class PostgresLedgerStore:
                     [(m.version, m.name, m.erd_version, m.checksum) for m in migrations])
             from ..codes import seed as seed_codes   # 공통코드, as migration 0002 leaves them
             seed_codes(self.conn)
-            # The default customer and account, as the 0001 migration leaves them on an existing database.
-            self.conn.execute("insert into customers (customer_id, alias) values (%s, '기본 고객')",
-                              (DEFAULT_CUSTOMER,))
+            # The default company and account, as the 0001 migration leaves them on an existing database.
+            self.conn.execute("insert into companies (company_id, alias) values (%s, '기본 법인')",
+                              (DEFAULT_COMPANY,))
             self.conn.execute(
-                "insert into trading_accounts (account_id, customer_id, alias, broker, env, account_type,"
+                "insert into trading_accounts (account_id, company_id, alias, broker, env, account_type,"
                 " credential_ref, opened_on) values (%s, %s, '기본 계좌', 'KIS', 'PAPER', 'GENERAL', 'KIS',"
-                " coalesce(%s, current_date))", (DEFAULT_ACCOUNT, DEFAULT_CUSTOMER, opened_on))
+                " coalesce(%s, current_date))", (DEFAULT_ACCOUNT, DEFAULT_COMPANY, opened_on))
             self.conn.execute(
                 "insert into account_status_history (account_id, status, effective_from, reason)"
                 " values (%s, 'OPEN', coalesce(%s, current_date), '기본 계좌')", (DEFAULT_ACCOUNT, opened_on))

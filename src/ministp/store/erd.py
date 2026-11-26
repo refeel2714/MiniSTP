@@ -164,8 +164,9 @@ def generate(conn: psycopg.Connection, history: str, previous: str | None = None
 # ---------- shareable HTML page ----------
 
 GROUPS = [
-    ("고객과 계좌", "고객 한 명이 위탁계좌 여러 개를 가져요. 아래 모든 기록은 계좌 하나에 속해요. 계좌번호와 인증키는 DB에 없어요.",
-     ["customers", "trading_accounts", "account_status_history"]),
+    ("법인과 계좌", "장부를 가진 법인(회사) 하나가 위탁계좌 여러 개를 가져요. 아래 모든 기록은 계좌 하나에 속해요. "
+     "법인의 ERP 회사코드는 바뀔 때마다 한 행씩 쌓여요. 계좌번호와 인증키는 DB에 없어요.",
+     ["companies", "company_erp_codes", "trading_accounts", "account_status_history"]),
     ("원장", "모든 기록의 원천. 이벤트가 쌓이면 분개·보유·예수금이 함께 남아요. 마감한 날로는 더 들어가지 않아요.",
      ["ledger_events", "journal_entries", "journal_lines", "position_ledger", "cash_ledger", "day_closes"]),
     ("기준정보", "계정과목, 등록 종목, 종목에 생긴 권리(현금배당), 시장 전 종목의 마스터 이력(바뀐 날에만 한 행).",
@@ -191,7 +192,7 @@ def _esc(s: str) -> str:
 
 # Bands of the diagram, each a list of four columns of tables (left to right = data flow).
 LAYOUT = [
-    ("고객과 계좌", [["customers"], ["trading_accounts"], ["account_status_history"], []]),
+    ("법인과 계좌", [["companies"], ["company_erp_codes", "trading_accounts"], ["account_status_history"], []]),
     ("원장 · 기준정보", [["ledger_events"], ["journal_entries", "position_ledger", "cash_ledger", "day_closes"],
                      ["journal_lines"], ["accounts_chart"]]),
     ("주문 · 권리", [["instruments"], ["oms_orders", "corporate_actions"], ["oms_order_acks"], []]),
