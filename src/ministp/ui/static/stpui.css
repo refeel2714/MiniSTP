@@ -222,7 +222,7 @@ button.primary:hover { filter: brightness(1.08); }
 button.day { cursor: pointer; transition: box-shadow var(--t-fast) var(--ease), transform var(--t-fast) var(--ease); }
 button.day:hover { border-color: var(--ink); }
 .day.off { border-color: transparent; opacity: .55; }
-.day.st-ok { background: var(--ok-bg); border-color: var(--ok); color: var(--ink); font-weight: 500; }
+.day.st-ok { color: var(--ink); }   /* 일치한 날은 칠하지 않아요: 눈은 불일치 날로 가요 */
 .day.st-warn { background: var(--warn-bg); border-color: var(--warn); color: var(--ink); font-weight: 500; }
 .day.st-bad { background: var(--bad-bg); border-color: var(--bad); color: var(--ink); font-weight: 500; }
 .day.st-miss { border-style: dashed; border-color: var(--bad); color: var(--bad); font-weight: 500; }

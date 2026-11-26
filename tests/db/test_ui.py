@@ -431,9 +431,9 @@ def test_recon_calendar_opens_on_the_latest_day_and_counts_the_gate(client, samp
     assert days[0]["date"] == last
     assert meta == {"clean_streak": sample.streak, "gate_left": 20 - sample.streak, "selected": last}
     states = {r["state"] for r in days}
-    assert "판단 완료" in states and states <= {"일치", "판단 완료", "휴장"}   # 샘플은 불일치를 모두 판단해 둬요
+    assert "불일치(판단함)" in states and states <= {"일치", "불일치(판단함)", "휴장"}   # 샘플은 불일치를 모두 판단해 둬요
     # 오른쪽 상세는 달력의 한 칸이 가리키는 그날의 대사 결과
-    judged = next(r for r in days if r["state"] == "판단 완료")
+    judged = next(r for r in days if r["state"] == "불일치(판단함)")
     detail, _ = _rows(client, "STP2100R01", {"date_from": judged["date"], "date_to": judged["date"], "kind": judged["kind"]})
     assert len(detail) == judged["items"] and sum(r["status"] == "BREAK" for r in detail) == judged["breaks"]
     assert all(r["resolved_cause"] for r in detail if r["status"] == "BREAK") and judged["open_breaks"] == 0
