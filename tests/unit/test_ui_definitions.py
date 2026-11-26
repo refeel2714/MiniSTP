@@ -453,7 +453,9 @@ def test_every_shipped_screen_has_its_place_in_the_classification():
     assert [(a["id"], a["name"]) for a in tree] == [("1", "주문·잔고"), ("2", "대사·평가"), ("3", "원장·회계"),
                                                     ("4", "기준정보"), ("6", "성과")]  # the order a trade flows in
     placed = [s["id"] for a in tree for g in a["groups"] for s in g["screens"]]
-    assert placed == sorted(screens)                                             # every screen once, in number order
+    assert sorted(placed) == sorted(screens) and len(placed) == len(set(placed))   # every screen once
+    # groups in the order menu.yaml lists them (업무 순서): 주문 준비(13) comes before 주문·체결(12)
+    assert placed[:4] == ["STP-1100", "STP-1300", "STP-1310", "STP-1200"]
     for a in tree:
         for g in a["groups"]:                                                    # the number says where a screen is
             assert g["id"].startswith(a["id"]) and all(s["id"][4:6] == g["id"] for s in g["screens"])
@@ -483,17 +485,17 @@ def test_a_screen_number_outside_the_classification_is_a_problem():
 
 def test_an_input_grid_types_one_column_and_feeds_a_grid_that_takes_its_values():
     from ministp.ui.definitions import load_lookups, split_sides
-    shipped = load_screens()["STP-1500"]
+    shipped = load_screens()["STP-1310"]
     left, right, below = split_sides(shipped)
     assert [g.id for g in left] == ["basket"] and [g.id for g in right] == ["plan", "summary"] and below == []
     assert "symbol" in resolve(shipped, {}, load_lookups())["lookups"]   # 행 추가 찾기 팝업이 화면에 실려요
     cols = [Column("symbol", label="종목", format="code"), Column("current_weight", label="현재", format="rate"),
             Column("target_weight", label="목표", format="rate")]
-    plan = Grid("plan", "안", "STP1500R02", [Column("symbol", label="종목", format="code")], load="input")
+    plan = Grid("plan", "안", "STP1310R02", [Column("symbol", label="종목", format="code")], load="input")
 
     def errs(edit, conds=(), **kw):
-        g = Grid("basket", "바스켓", "STP1500R01", cols, load="open", edit=edit, **kw)
-        s = {"STP-1500": Screen("STP-1500", "바스켓", "", list(conds), [g, plan])}
+        g = Grid("basket", "바스켓", "STP1310R01", cols, load="open", edit=edit, **kw)
+        s = {"STP-1310": Screen("STP-1310", "바스켓", "", list(conds), [g, plan])}
         return validate(s, CATALOG)
 
     good = {"column": "target_weight", "base": "current_weight", "param": "basket", "reset": "되돌리기", "add": "symbol"}
