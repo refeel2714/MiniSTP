@@ -1,0 +1,72 @@
+id: STP-5200
+title: 결재 권한
+purpose: 누가 주문을 쓰고 승인할 수 있는지 정해요(R-99, R-102). 왼쪽에서 사용자를 고르면 그 사람의 권한 이력이 오른쪽에 나와요. 권한은 고치지 않고 부여·회수할 때마다 한 줄씩 쌓여서, 어느 날 누가 승인 권한이 있었는지 언제든 다시 볼 수 있어요. 계좌를 정한 줄이 모든 계좌 줄보다 앞서요. 승인 권한에는 1건 한도와 셀프 승인 허용을 붙여요. 셀프 승인 허용이 없으면 자기가 쓴 요청은 다른 승인자가 승인해야 해요. 사용자 ID는 지금 PC 로그인 이름이고(화면 서버를 띄운 사람), 처음 한 사람은 누구나 등록해 자기에게 권한 관리를 줘요. 그 뒤로는 권한 관리자만 바꿔요.
+layout: split
+left: 44
+grids:
+  - id: users
+    title: 사용자
+    tx: STP5200R01
+    load: open
+    key: user_id
+    live: true
+    meta: {user: 지금 사용자}
+    columns:
+      - {name: user_id, source: app_users.user_id, format: code}
+      - {name: name, source: app_users.name}
+      - {name: rights, label: 지금 권한}
+      - {name: created_by, source: app_users.created_by}
+      - {name: created_at, source: app_users.created_at, format: datetime}
+      - {name: me, label: 나, hidden: true}
+    actions:
+      - id: add
+        label: 사용자 등록
+        tx: STP5200U01
+        lock: admin_lock
+        note: 사용자 ID는 그 사람이 쓰는 PC 로그인 이름이에요. 등록한 뒤 오른쪽에서 권한을 줘요.
+        fields:
+          - {name: user_id, source: app_users.user_id}
+          - {name: name, source: app_users.name}
+  - id: rights
+    title: 권한 이력
+    tx: STP5200R02
+    load: master
+    master: users
+    link: {user_id: user_id}
+    columns:
+      - {name: right_row_id, source: user_rights.right_row_id, format: number, hidden: true}
+      - {name: right_code, source: user_rights.right_code, format: code}
+      - {name: account_id, source: user_rights.account_id, format: code}
+      - {name: granted, label: 부여·회수}
+      - {name: max_order_value, source: user_rights.max_order_value, format: money}
+      - {name: self_approve, source: user_rights.self_approve}
+      - {name: effective_from, source: user_rights.effective_from, format: date}
+      - {name: state, label: 적용, display: pill, color: status}
+      - {name: granted_by, source: user_rights.granted_by}
+      - {name: reason, source: user_rights.reason}
+      - {name: created_at, source: user_rights.created_at, format: datetime}
+    actions:
+      - id: grant
+        label: 권한 부여
+        tx: STP5200U02
+        lock: admin_lock
+        note: 새 줄로 쌓여요. 한도나 셀프 승인을 바꿀 때도 새로 줘요. 계좌를 비우면 모든 계좌예요. 처음에는 권한 관리(RIGHTS_ADMIN)부터 줘요.
+        fields:
+          - {name: user_id, source: user_rights.user_id, column: user_id, readonly: true}
+          - {name: right_code, source: user_rights.right_code, type: select, options: [ORDER_WRITE, ORDER_APPROVE, RIGHTS_ADMIN]}
+          - {name: account_id, source: user_rights.account_id, lookup: account}
+          - {name: max_order_value, source: user_rights.max_order_value, type: number}
+          - {name: self_approve, source: user_rights.self_approve, type: bool}
+          - {name: effective_from, source: user_rights.effective_from, type: date, default: today}
+          - {name: reason, source: user_rights.reason}
+      - id: revoke
+        label: 권한 회수
+        tx: STP5200U03
+        lock: admin_lock
+        note: 회수도 새 줄로 쌓여요. 그 날부터 권한이 없어져요. 지난 이력은 그대로 남아요.
+        fields:
+          - {name: user_id, source: user_rights.user_id, column: user_id, readonly: true}
+          - {name: right_code, source: user_rights.right_code, type: select, options: [ORDER_WRITE, ORDER_APPROVE, RIGHTS_ADMIN]}
+          - {name: account_id, source: user_rights.account_id, lookup: account}
+          - {name: effective_from, source: user_rights.effective_from, type: date, default: today}
+          - {name: reason, source: user_rights.reason}

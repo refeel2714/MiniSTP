@@ -37,7 +37,10 @@
     RENAMED: "warn", DIFFERENT: "bad", DELISTED: "bad", MISSING: "miss",   // 종목 마스터 대조 (R-95)
     "등록": "info", "신규": "info", "변경": "warn", "빠짐": "miss", "상장폐지": "miss",
     "거래정지": "bad", "정리매매": "bad", "관리종목": "warn", "투자주의": "warn", "투자경고": "warn", "투자위험": "bad",
+    "작성 중": "info", APPROVED: "info", SENT: "ok", SEND_FAILED: "bad", EXPIRED: "miss",   // 주문 결재 (R-100)
   };
+  // 검사 칸(check): 통과는 초록, 걸린 사유는 빨강, 아직 볼 것이 없는 칸은 색 없이
+  const CHECK_QUIET = new Set(["", "선택 안 함", "보낸 요청", "없음"]);
 
   // ---------- account (다계좌) ----------
   // Every screen looks at one account, picked in the top bar and remembered in this browser.
@@ -207,6 +210,7 @@
     if (rule === "sign") return v > 0 ? "up" : v < 0 ? "down" : "";
     if (rule === "side") return v === "BUY" ? "up" : v === "SELL" ? "down" : "";
     if (rule === "status") return STATUS[v] ? "st-" + STATUS[v] : "";
+    if (rule === "check") return v === "통과" ? "st-ok" : CHECK_QUIET.has(String(v)) ? "" : "st-bad";
     return "";
   }
 
@@ -478,7 +482,9 @@
   // ---------- 처리 입력 창 ----------
   // A 처리 button opens this: the row it works on at the top, the inputs, and one button that
   // calls the 처리 transaction. A refusal from the server is shown here and the window stays open.
-  function openForm(def, g, b, ctx, onDone) {
+  function openForm(def, g, b, ctx, onDone, opts = {}) {
+    // opts.run: what 확인 does instead of the 처리 transaction (줄 추가) · opts.extra: values the grid gives (체크한 행, 쓴 줄)
+    // · opts.about: one line on what it works on (체크한 3건)
     const inputs = {};
     const err = h("div", { class: "ferr", role: "alert" });
     const fields = b.fields.map(f => {
@@ -520,7 +526,7 @@
       }
       ok.disabled = true; err.textContent = "";
       try {
-        const res = await act(b.tx, values());
+        const res = opts.run ? await opts.run(values()) : await act(b.tx, Object.assign(values(), opts.extra || {}));
         dlg.close();
         onDone(res);
       } catch (ex) {
@@ -534,9 +540,10 @@
     const dlg = h("dialog", { class: "dlg", "aria-labelledby": "dlg-title" },
       h("form", { onsubmit: submit, novalidate: true, oninput: () => { err.textContent = ""; } },
         h("div", { class: "dhead" }, h("h2", { id: "dlg-title", text: b.label }),
-          h("span", { class: "txid", title: "처리 트랜잭션: " + b.title, text: b.tx })),
+          b.tx ? h("span", { class: "txid", title: "처리 트랜잭션: " + b.title, text: b.tx }) : null),
         DATA.env === "live" ? h("p", { class: "flive", role: "note", text: (ACCOUNT_LIVE ? "실전 계좌예요." : "실전 환경이에요.") + " 이 처리는 실전 원장에 기록돼요." }) : null,
-        shows, b.note ? h("p", { class: "fnote", text: b.note }) : null,
+        shows, opts.about ? h("p", { class: "fabout", text: opts.about }) : null,
+        b.note ? h("p", { class: "fnote", text: b.note }) : null,
         h("div", { class: "fields" }, fields), err,
         h("div", { class: "dfoot" }, h("button", { type: "button", class: "ghost", onclick: () => dlg.close() }, "취소"), ok)));
     dlg.addEventListener("close", () => dlg.remove());
@@ -574,6 +581,9 @@
       h("span", { class: "grow" }),
       h("button", { type: "button", class: "jumpbtn", title: "화면이나 종목으로 바로 가기 (Ctrl+K)", onclick: openJump },
         "바로 가기", h("kbd", { text: "Ctrl K" })),
+      DATA.user ? h("span", { class: "who", title: DATA.user.name ? "결재 사용자 (R-99): 처리 버튼은 이 이름으로 기록돼요"
+        : "결재 사용자로 등록되지 않았어요. STP-5200 결재 권한에서 등록해요 (사용자 ID는 PC 로그인 이름)" },
+        "사용자 ", h("b", { text: DATA.user.id }), DATA.user.name ? " " + DATA.user.name : " (미등록)") : null,
       accountPicker(),
       h("span", { class: "env", title: DATA.writable
         ? `DB ${DATA.db} · 조회는 읽기 전용 연결, 처리 버튼을 누를 때만 쓰기 연결`
@@ -719,6 +729,11 @@
         const v = grids[e.id] && grids[e.id].editValue();
         if (v !== undefined) out[e.edit.param] = v;
       }
+      // 체크박스와 화면에서 쓰는 줄: 그 그리드가 가진 값이 같은 이름의 조건으로 가요 (비면 보내지 않아요)
+      for (const x of def.grids) {
+        if (!grids[x.id]) continue;
+        for (const [param, v] of Object.entries(grids[x.id].given())) if (g.tx_params.includes(param) && v) out[param] = v;
+      }
       return out;
     }
 
@@ -767,21 +782,31 @@
     // when it is done the grids are read again in place, so the changed cells light up.
     function onAction(g, b, row) {
       const ctx = Object.assign({}, grids[g.id].params || {}, row || {});
+      const given = grids[g.id].given();
+      const extra = Object.fromEntries((b.params || []).filter(p => p in given).map(p => [p, given[p]]));
+      const n = g.pick && b.params.includes(g.pick.param) ? grids[g.id].pickedKeys().length : 0;
       openForm(def, g, b, ctx, async res => {
         if (b.reload) {   // the top bar shows it too (계좌 선택): open the page again and say it there
           try { sessionStorage.setItem(TOAST_KEY, res.message); } catch (e) { /* private mode */ }
           return location.reload();
         }
+        if (b.clears) grids[g.id].dropPicked();   // 요청으로 넘어간 줄은 화면에서 지워요
         toast(res.message);
         await refresh();
         status.textContent = `${b.tx} ${res.elapsed_ms}ms · ${res.message}`;
-      });
+      }, { extra, about: n ? `체크한 ${n}건: ${grids[g.id].pickedKeys().join(", ")}` : null });
     }
     async function refresh() {
       const shown = g => grids[g.id].params !== undefined;
-      const again = g => grids[g.id].params;
+      const again = g => g.load === "input" ? searchParams(g) : grids[g.id].params;   // 체크와 쓴 줄은 지금 값으로
       await load(def.grids.filter(g => g.load !== "master" && shown(g)), again, { live: true });
       await load(def.grids.filter(g => g.load === "master" && shown(g)), again, { live: true });
+    }
+    // 화면에서 쓰는 줄의 줄 추가: 입력 창은 처리 버튼과 같고, 확인은 서버에 가지 않고 줄 하나를 더해요.
+    function onDraft(g, add) {
+      const b = { label: g.draft.label.replace(/^[＋+]\s*/, "") || "줄 추가", fields: g.draft.fields, shows: [], tx: null,
+        note: "저장하지 않아요. 줄을 체크하면 오른쪽에서 묶음으로 다시 계산돼요." };
+      openForm(def, g, b, {}, res => toast(res.message), { run: async values => ({ message: add(values) }) });
     }
 
     const conds = def.conditions.length ? h("form", { class: "conds", onsubmit: e => { e.preventDefault(); search(); } },
@@ -791,6 +816,7 @@
     const panels = def.grids.map(g => {
       const grid = Grid(g, { onSelect: row => onSelect(g, row), onDrill: row => drill(g, row),
         onAction: (b, row) => onAction(g, b, row), onEdit: () => recalc(), lookups: def.lookups,
+        onDraft: add => onDraft(g, add),
         leads: def.grids.some(d => d.load === "master" && d.master === g.id) });
       grids[g.id] = grid;
       return grid.el;
@@ -799,10 +825,10 @@
     // 좌우 구성: the list that has details on the left, its details on the right, each scrolling
     // inside its own panel. Grids that follow no row stay below, full width.
     function splitView() {
-      const editParams = def.grids.filter(g => g.edit).map(g => g.edit.param);
-      const follows = g => g.load === "input" && g.tx_params.some(p => editParams.includes(p));   // worked out from an 입력 그리드
-      const detail = g => g.load === "master" || follows(g);
-      const leads = g => !!g.edit || def.grids.some(d => d.load === "master" && d.master === g.id);
+      const editParams = def.grids.flatMap(g => [g.edit, g.pick, g.draft].filter(Boolean).map(x => x.param));
+      const leads = g => !!g.edit || !!g.draft || def.grids.some(d => d.load === "master" && d.master === g.id);
+      const follows = g => !leads(g) && g.load === "input" && g.tx_params.some(p => editParams.includes(p));   // worked out from what is typed or checked
+      const detail = g => !leads(g) && (g.load === "master" || follows(g));
       const pick = test => def.grids.filter(test).map(g => grids[g.id].el);
       def.grids.filter(g => (leads(g) || detail(g)) && g.view !== "cards")
         .forEach(g => { grids[g.id].el.style.flexGrow = g.weight; });   // share of the height (cards take what they need)
@@ -897,7 +923,7 @@
   }
 
   // ---------- grid ----------
-  function Grid(g, { onSelect, onDrill, leads, onAction, onEdit, lookups }) {
+  function Grid(g, { onSelect, onDrill, leads, onAction, onEdit, onDraft, lookups }) {
     let rows = [], view = [], sel = -1, sortCol = null, sortDir = 1;
     let changed = new Map();   // row key -> Set of changed columns ("*" = new row), shown once
     let previous = new Map();  // row key -> the row before this fill (numbers roll from here)
@@ -930,6 +956,74 @@
     // 처리 버튼 live at the top right of their grid.
     const acts = (g.actions || []).map(b => ({ b, btn: h("button", { type: "button", class: "act",
       onclick: () => onAction(b, b.needs_row ? view[sel] : null) }, b.label) }));
+    let meta0 = {};            // the last meta of this grid's transaction: 잠금 이유(lock)가 여기 있어요
+    // 체크박스: 여러 행을 골라 한 번에 처리해요. 체크한 행의 키가 같은 이름의 조건으로 다른 그리드와 버튼에 가요.
+    const pk = g.pick || null;
+    let picked = new Set();
+    const pickable = r => !pk.when || r[pk.when] === true;
+    function togglePick(r, on) {
+      const keys = pk.group && r[pk.group] ? rows.filter(x => x[pk.group] === r[pk.group] && pickable(x)).map(rowKey) : [rowKey(r)];
+      keys.forEach(k => on ? picked.add(k) : picked.delete(k));   // 묶음은 함께 체크하고 함께 풀어요
+      pickChanged();
+    }
+    function pickChanged() {
+      body.querySelectorAll("tbody tr").forEach(tr => {
+        const box = tr.querySelector("input.pkbox");
+        if (box) { box.checked = picked.has(tr.dataset.k); tr.classList.toggle("picked", box.checked); }
+      });
+      syncAll(); syncActions(); onEdit();
+    }
+    let allBox = null;
+    function syncAll() {
+      if (!allBox) return;
+      const can = view.filter(pickable);   // 찾기로 좁혔으면 보이는 행만
+      allBox.checked = can.length > 0 && can.every(r => picked.has(rowKey(r)));
+      allBox.indeterminate = !allBox.checked && can.some(r => picked.has(rowKey(r)));
+    }
+    // 화면에서 쓰는 줄: 입력 창으로 한 줄씩 더해요. 저장하지 않고, `줄번호:값:…`을 쉼표로 이어 조건으로 보내요.
+    const dr = g.draft || null;
+    let drafts = [], nextKey = 1;   // [{ key, text }]
+    function addDraft(text) { const key = "N" + nextKey++; drafts.push({ key, text }); return key; }
+    if (dr) {   // 다른 화면에서 넘겨받은 줄 (바스켓의 주문 줄로 보내기): 한 번만 받고 주소에서 지워요
+      const q = new URLSearchParams(location.search);
+      const sent = q.get(dr.param);
+      if (sent) {
+        sent.split(",").map(x => x.trim()).filter(Boolean).forEach(t => picked.add(addDraft(t)));
+        q.delete(dr.param);
+        history.replaceState(null, "", location.pathname + (q.toString() ? "?" + q : ""));
+        setTimeout(() => toast(`넘겨받은 주문 줄 ${drafts.length}개를 체크해 두었어요`), 0);
+      }
+    }
+    function draftLine(values) {
+      const parts = dr.fields.map(f => String(values[f.name] ?? "").trim());
+      if (parts.some(v => /[:,]/.test(v))) throw new Error("값에 쌍점(:)이나 쉼표(,)는 넣을 수 없어요");
+      const key = addDraft(parts.join(":").toUpperCase());
+      picked.add(key);
+      onEdit();
+      return `줄 ${key}를 더하고 체크했어요`;
+    }
+    const draftBtns = dr ? [
+      h("button", { type: "button", class: "act", title: "입력 창에서 한 줄을 써서 더해요 (저장하지 않아요)",
+        onclick: () => onDraft(draftLine) }, dr.label),
+      dr.remove ? h("button", { type: "button", class: "act", title: "체크한 쓴 줄을 빼요", onclick: () => {
+        const n = dropPicked();
+        onEdit();
+        if (n) toast(`쓴 줄 ${n}개를 뺐어요`); else toast("뺄 줄을 체크하세요 (보낸 요청은 빼지 않아요)");
+      } }, dr.remove) : null,
+    ].filter(Boolean) : [];
+    function dropPicked() {
+      const before = drafts.length;
+      drafts = drafts.filter(d => !picked.has(d.key));
+      drafts.forEach(d => picked.delete(d.key));
+      return before - drafts.length;
+    }
+    // 다른 화면으로 넘기기: 이 그리드 모든 행의 한 열 값을 이어서 그 화면의 쓴 줄로 보내요
+    const ho = g.handoff || null;
+    const handBtn = ho ? h("button", { type: "button", class: "act", title: `${ho.screen}에서 이어서 해요`, onclick: () => {
+      const lines = rows.map(r => r[ho.column]).filter(v => v);
+      if (!lines.length) return toast("보낼 줄이 없어요 (수량이 있는 줄만 가요)");
+      location.href = "/screen/" + ho.screen + "?" + new URLSearchParams({ [ho.param]: lines.join(",") });
+    } }, ho.label + " →") : null;
     // 입력 그리드: one column is typed in here. Nothing is saved; the values go to the grids that work them out.
     const ed = g.edit || null;
     let edits = new Map();     // row key -> typed text
@@ -946,7 +1040,8 @@
         metaBox, count, finder,
         modes ? h("div", { class: "seg", role: "group", "aria-label": "보기" }, modes) : null,
         h("span", { class: "txid", title: "조회 트랜잭션", text: g.tx }),
-        acts.length || editBtns.length ? h("div", { class: "acts" }, editBtns, acts.map(a => a.btn)) : null),
+        acts.length || editBtns.length || draftBtns.length || handBtn
+          ? h("div", { class: "acts" }, editBtns, draftBtns, acts.map(a => a.btn), handBtn) : null),
       chartBox, body);
 
     // A button is off, and says why, until it has what it works on.
@@ -959,8 +1054,11 @@
         else if (g.load === "master" && !loaded) why = "목록에서 행을 먼저 고르세요";
         else if (b.needs_row && !row) why = "행을 먼저 고르세요";
         else if (unmet.length) why = unmet.map(([c, vals]) => `${g.columns.find(x => x.name === c).label}: ${vals.join("·")}인 행만 처리해요`).join(", ");
-        btn.disabled = !!why;
-        btn.title = why || `${b.title} (${b.tx})`;
+        else if (pk && (b.params || []).includes(pk.param) && !picked.size) why = "처리할 행을 먼저 체크하세요";
+        const locked = !why && b.lock && meta0[b.lock] ? String(meta0[b.lock]) : "";   // 권한·묶음 검증: 서버가 준 이유
+        btn.disabled = !!(why || locked);
+        btn.classList.toggle("locked", !!locked);
+        btn.title = locked ? "잠김: " + locked : why || `${b.title} (${b.tx})`;
       }
     }
     syncActions();
@@ -982,6 +1080,7 @@
     function busy(on) { el.classList.toggle("busy", on); el.setAttribute("aria-busy", on ? "true" : "false"); }
     function fail(msg) {
       busy(false); rows = []; view = []; sel = -1; loaded = false;
+      metaBox.replaceChildren();   // 지난 조회의 판단(예: 결재 가능 예)이 오류 옆에 남지 않게
       morph(body, () => body.replaceChildren(h("div", { class: "err", role: "alert", text: msg })));
       syncActions();
     }
@@ -989,7 +1088,13 @@
     function fill(ds, meta, live) {
       busy(false);
       if (!ds) return fail(`데이터셋 ${g.dataset}이 없어요`);
+      meta0 = meta || {};
       const fresh = ds.rows.map(r => Object.fromEntries(ds.columns.map((c, i) => [c, r[i]])));
+      if (pk) {   // 체크는 아직 있고 체크할 수 있는 행에만 남아요. 빠진 것이 있으면 다른 그리드도 다시 계산해요
+        const can = new Set(fresh.filter(pickable).map(rowKey));
+        const kept = new Set([...picked].filter(k => can.has(k)));
+        if (kept.size !== picked.size) { picked = kept; setTimeout(onEdit, 0); }
+      }
       if (ed) {   // rows the user added stay unless the list now has them itself
         const have = new Set(fresh.map(r => rowKey(r)));
         added = added.filter(r => !have.has(rowKey(r)));
@@ -1399,7 +1504,8 @@
     }
 
     function renderTable() {
-      if (!rows.length) return body.replaceChildren(h("div", { class: "empty", text: "조회된 내역이 없어요" }));
+      if (!rows.length) return body.replaceChildren(h("div", { class: "empty",
+        text: dr ? `${dr.label} 버튼으로 주문을 한 줄씩 써요` : "조회된 내역이 없어요" }));
       const cols = g.columns.filter(c => !c.inside && !c.hidden);   // drawn inside another cell, or only there to name the row
       // 셀 안 막대, 비중 막대: each bar is the value against the largest one in its column
       const scaled = c => c.display === "bar" || (c.display === "meter" && !c.of);
@@ -1407,7 +1513,10 @@
         [c.name, Math.max(0, ...rows.map(r => Math.abs(Number(r[c.name]) || 0)))]));
       const edges = new Set();   // 묶음 머리: a line down the table where each band after the first starts
       g.bands.reduce((at, b) => { if (at) edges.add(at); return at + b.span; }, 0);
-      const head = h("tr", {}, h("th", { class: "rn", scope: "col", text: "#" }), cols.map((c, ci) => {
+      allBox = pk ? h("input", { type: "checkbox", class: "pkbox", "aria-label": "보이는 행 중 체크할 수 있는 행 모두",
+        onclick: e => { e.stopPropagation(); const on = e.target.checked; view.filter(pickable).forEach(r => on ? picked.add(rowKey(r)) : picked.delete(rowKey(r))); pickChanged(); } }) : null;
+      const head = h("tr", {}, h("th", { class: "rn", scope: "col", text: "#" }),
+        pk ? h("th", { class: "pk", scope: "col" }, allBox) : null, cols.map((c, ci) => {
         const on = sortCol === c.name;
         const th = h("th", { scope: "col", class: [c.align === "right" ? "r" : "", edges.has(ci) ? "edge" : ""].join(" ").trim() || null,
           "aria-sort": on ? (sortDir > 0 ? "ascending" : "descending") : null,
@@ -1426,7 +1535,10 @@
           g.emphasis && LEVELS.has(r[g.emphasis]) ? "lv-" + r[g.emphasis] : ""].join(" ").trim() || null,
         "aria-selected": i === sel ? "true" : "false",
         onclick: () => select(i), ondblclick: () => onDrill(view[i]),
-      }, h("td", { class: "rn", text: i + 1 }), cols.map((c, ci) => {
+      }, h("td", { class: "rn", text: i + 1 }), pk ? h("td", { class: "pk" }, pickable(r)
+          ? h("input", { type: "checkbox", class: "pkbox", checked: picked.has(rowKey(r)), "aria-label": `${rowKey(r)} 체크`,
+              onclick: e => { e.stopPropagation(); togglePick(r, e.target.checked); }, ondblclick: e => e.stopPropagation() })
+          : null) : null, cols.map((c, ci) => {
         if (ed && c.name === ed.column) return h("td", { class: "r ecell" }, editCell(r));
         const v = r[c.name];
         const named = codeName(c, v);
@@ -1452,7 +1564,7 @@
         return td;
       }))));
       editTotal = null;
-      const foot = g.totals.length ? h("tfoot", {}, h("tr", {}, h("td", { class: "rn", text: q ? "찾은 행 합계" : "합계" }), cols.map(c =>
+      const foot = g.totals.length ? h("tfoot", {}, h("tr", {}, h("td", { class: "rn", text: q ? "찾은 행 합계" : "합계" }), pk ? h("td", {}) : null, cols.map(c =>
         ed && c.name === ed.column ? (editTotal = h("td", { class: "r" }))
         : g.totals.includes(c.name)
           ? (sum => h("td", { class: ("r " + (c.color === "sign" ? tone(sum, "sign") : "")).trim(), text: fmt(sum, c.format) }))(
@@ -1461,8 +1573,10 @@
       const table = h("table", { tabindex: "0", role: "grid", "aria-rowcount": rows.length,
         onkeydown: key, class: g.bands.length ? "grid banded" : "grid" },
         h("thead", {}, g.bands.length ? h("tr", { class: "band" }, h("th", { class: "rn", "aria-hidden": "true" }),
+          pk ? h("th", { class: "pk", "aria-hidden": "true" }) : null,
           g.bands.map(b => h("th", { scope: "colgroup", colspan: b.span, text: b.label }))) : null, head), tbody, foot);
       body.replaceChildren(table, h("div", { class: "selbar", "aria-hidden": "true" }));
+      if (pk) { body.querySelectorAll("tbody tr").forEach(tr => tr.classList.toggle("picked", picked.has(tr.dataset.k))); syncAll(); }
       showEditTotal();
       rolls.forEach(a => roll(...a));
       if (g.drill) el.classList.add("drillable");
@@ -1535,6 +1649,7 @@
       else if (e.key === "Home") { e.preventDefault(); select(0); }
       else if (e.key === "End") { e.preventDefault(); select(view.length - 1); }
       else if (e.key === "Enter" && !e.ctrlKey && !e.metaKey && sel >= 0) { e.preventDefault(); onDrill(view[sel]); }
+      else if (e.key === " " && pk && sel >= 0 && pickable(view[sel])) { e.preventDefault(); togglePick(view[sel], !picked.has(rowKey(view[sel]))); }
     }
 
     function renderChart() {
@@ -1574,7 +1689,15 @@
       chartBox.replaceChildren(s);
     }
 
-    return { el, fill, clear, busy, fail, skeleton, about, editValue: () => (ed ? editValue() : undefined) };
+    // 이 그리드가 다른 그리드와 버튼에 주는 값: 체크한 행, 화면에서 쓴 줄
+    function given() {
+      const out = {};
+      if (pk) out[pk.param] = [...picked].join(",");
+      if (dr) out[dr.param] = drafts.map(d => `${d.key}:${d.text}`).join(",");
+      return out;
+    }
+    return { el, fill, clear, busy, fail, skeleton, about, given, dropPicked, pickedKeys: () => [...picked],
+      editValue: () => (ed ? editValue() : undefined) };
   }
 
   // The tree starts shut where the viewer shut it, and on a narrow window (it would push the screen down).

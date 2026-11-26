@@ -18,7 +18,8 @@ DISPLAY_TEXT = {None: "", "badge": "배지(이름 첫 글자, 색은 코드·모
                 "meter": "비율 막대(%)", "spark": "추세선(오래된 값부터)", "pill": "상태 표시(둥근 표시)",
                 "steps": "진행 단계"}
 INSIDE_TEXT = {"badge": "배지", "meter": "막대"}
-COLOR_TEXT = {None: "", "sign": "부호(+빨강/-파랑)", "side": "매수 빨강/매도 파랑", "status": "상태", "verdict": "판단(가능 초록/불가 빨강)"}
+COLOR_TEXT = {None: "", "sign": "부호(+빨강/-파랑)", "side": "매수 빨강/매도 파랑", "status": "상태", "verdict": "판단(가능 초록/불가 빨강)",
+              "check": "검사(통과 초록/걸린 사유 빨강)"}
 
 
 def _cell(s) -> str:
@@ -114,6 +115,22 @@ def screen_markdown(screen: Screen, catalog: dict, lookups=None, menu=None) -> s
                          + (f" 그리드 오른쪽 위 `{e['reset']}` 버튼은 모든 행을 되돌려요." if e.get("reset") else "")
                          + (f" 행 추가는 찾기 팝업 `{e['add']}`로 골라요." if e.get("add") else "")
                          + f" 넣은 값은 `{e['param']}` 조건(`행키:값,…`)으로 오른쪽 그리드에 가요")
+        if g.pick:
+            k = g.pick
+            facts.append(f"- 체크박스: 행 앞의 체크박스로 여러 행을 골라요. 체크한 행의 키(`{g.key or g.columns[0].name}`)를 쉼표로 이어"
+                         f" `{k['param']}`로 보내요(그 값을 받는 그리드는 체크를 바꿀 때마다 다시 계산)."
+                         + (f" `{k['when']}`이 참인 행만 체크할 수 있어요." if k.get("when") else "")
+                         + (f" `{k['group']}` 값이 같은 행은 함께 체크되고 함께 풀려요(묶음은 전부 아니면 전무)." if k.get("group") else "")
+                         + " 머리의 체크박스는 모두 체크·해제, 행에서 스페이스로도 체크해요")
+        if g.draft:
+            d = g.draft
+            facts.append(f"- 화면에서 쓰는 줄: `{d['label']}` 버튼의 입력 창으로 한 줄씩 더해요(저장하지 않음, 더한 줄은 체크된 채로 들어와요)."
+                         f" 줄은 `줄번호:{':'.join(f.name for f in d['fields'])}`을 쉼표로 이어 `{d['param']}`로 보내요."
+                         + (f" `{d['remove']}` 버튼은 체크한 쓴 줄을 빼요." if d.get("remove") else "")
+                         + f" 다른 화면이 주소의 `{d['param']}`로 줄을 넘기면 그 줄들이 체크된 채로 들어와요")
+        if g.handoff:
+            o = g.handoff
+            facts.append(f"- 넘기기: `{o['label']}` 버튼이 모든 행의 `{o['column']}` 값을 이어 {o['screen']}의 `{o['param']}`(화면에서 쓰는 줄)로 보내요")
         if g.totals:
             facts.append(f"- 합계: {', '.join(f'`{t}`' for t in g.totals)}")
         if g.meta:
@@ -160,6 +177,17 @@ def screen_markdown(screen: Screen, catalog: dict, lookups=None, menu=None) -> s
                 out.append(f"- 입력 창 위에 보여 주는 행의 값: {', '.join(f'`{c}`' for c in b.shows)}")
             if b.note:
                 out.append(f"- 안내: {b.note}")
+            given = [p for p in (g.pick, g.draft) if p and p["param"] in ACTIONS[b.tx].params]
+            if given:
+                out.append(f"- 그리드가 채우는 입력: {', '.join(f'`{p['param']}`' for p in given)} (체크한 행, 화면에서 쓴 줄)")
+            if b.lock:
+                out.append(f"- 잠금: 트랜잭션 `{g.tx}`의 상태값 `{b.lock}`이 비어 있지 않으면 잠기고 그 글이 이유로 보여요."
+                           " 서버는 누를 때 같은 검사를 다시 해요")
+            if b.clears:
+                out.append("- 끝나면: 화면에서 쓴 줄 가운데 체크한 줄을 지워요 (요청으로 넘어갔으니까)")
+            if not b.fields:
+                out += ["- 입력 창: 입력 항목 없이 확인만 받아요", ""]
+                continue
             out += ["", "| 입력 항목 | 한글명 | 형식 | DB 컬럼 | 필수 | 처음 값 | 선택값 | 찾기 팝업 |",
                     "|---|---|---|---|---|---|---|---|"]
             for f, fd in zip(b.fields, bd["fields"]):
@@ -170,6 +198,15 @@ def screen_markdown(screen: Screen, catalog: dict, lookups=None, menu=None) -> s
                            f"| {'예' if fd['required'] else ''} | {start} | {_cell(', '.join(f.options))} "
                            f"| {_lookup_text(f)} |")
             out.append("")
+    for g, gd in zip(screen.grids, r["grids"]):
+        if not g.draft:
+            continue
+        out += [f"### 줄 추가 `{g.id}` {g.draft['label']}", "", "- 위치: 그리드 오른쪽 위", "- 서버에 가지 않아요. 확인을 누르면 줄 하나가 그리드에 더해져요",
+                "", "| 입력 항목 | 한글명 | 형식 | DB 컬럼 | 필수 | 선택값 | 찾기 팝업 |", "|---|---|---|---|---|---|---|"]
+        for f, fd in zip(g.draft["fields"], gd["draft"]["fields"]):
+            out.append(f"| `{f.name}` | {_cell(fd['label'])} | {f.type} | {_cell(f.source or '-')} | {'예' if fd['required'] else ''} "
+                       f"| {_cell(', '.join(f.options))} | {_lookup_text(f)} |")
+        out.append("")
     if r["lookups"]:
         out += ["## 찾기 팝업", "", "입력 칸 옆 찾기 버튼(또는 F2)으로 여는 목록이에요. 여러 화면이 같은 정의(`lookups.yaml`)를 같이 써요.",
                 "", "| 이름 | 제목 | 조회 트랜잭션 | 고르면 들어가는 열 | 함께 보여 주는 열 | 목록의 열 |", "|---|---|---|---|---|---|"]

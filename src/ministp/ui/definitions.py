@@ -16,7 +16,7 @@ from .transactions import TRANSACTIONS
 
 FORMATS = {"text", "code", "number", "money", "rate", "date", "datetime", "time", "json", "series", "steps"}
 RIGHT = {"number", "money", "rate"}
-COLORS = {None, "sign", "side", "status", "verdict"}  # verdict: the row's ok field
+COLORS = {None, "sign", "side", "status", "verdict", "check"}  # verdict: the row's ok field · check: 통과 초록, 걸린 사유 빨강
 # 셀 표시 유형: how a cell is drawn on top of its value. The value stays; the picture sits next to it.
 #   badge  종목 배지: 이름 첫 글자, 아래에 코드. 색은 코드에서 정해지고 모양은 자산 유형
 #   bar    셀 안 막대: 이 열에서 가장 큰 값 대비 크기
@@ -30,7 +30,7 @@ DISPLAY_FORMATS = {"badge": {"text"}, "bar": {"number", "money"}, "meter": {"rat
 DRAWN_ONLY = {"series": "spark", "steps": "steps"}   # formats that have no text form: they are always drawn
 STEP_STATES = {"done", "now", "stop", "wait"}
 MAX_STEPS = 6
-PILL_COLORS = {"status", "side", "verdict"}
+PILL_COLORS = {"status", "side", "verdict", "check"}
 # 그리드 보기: grid 표 · cards 한 행 요약 카드 · calendar 달력(하루가 한 칸, 칸 색은 상태 열의 색 규칙)
 #            · taccount 분개(처음엔 전표 보기: ERP 전표처럼 차변 계정·과목·금액과 대변 계정·과목·금액을 나란히. T계정과 표로 바꿔 볼 수 있음)
 #            · map 구성 지도(행 하나가 타일 하나, 면적은 크기 열, 색은 부호 열. 표 보기의 그리드에 map만 적으면 바꿔 보는 보기로 붙음)
@@ -41,6 +41,17 @@ MAP_KEYS = MAP_NEEDS | {"tone"}     # tone: 색이 되는 열 (크기 대비 +�
 TACCOUNT_NEEDS = {"account", "debit", "credit"}       # view: taccount 에 꼭 적는 열
 TACCOUNT_KEYS = TACCOUNT_NEEDS | {"name", "entry"}     # name: 계정명 열 · entry: 전표를 가르는 열
 LOADS = {"search", "open", "master", "input"}
+# 체크박스(pick): 행 앞의 체크박스로 여러 행을 골라요. {param[, when][, group]}
+#   param 체크한 행의 키(쉼표로 이음)를 받는 조건이자 처리 트랜잭션의 입력 · when 체크할 수 있는 행인지(참·거짓 열)
+#   · group 같은 값의 행을 함께 체크·해제하는 열(묶음은 전부 아니면 전무)
+PICK_KEYS = {"param", "when", "group"}
+# 화면에서 쓰는 줄(draft): 입력 창으로 한 줄씩 더하는 행. 저장하지 않고, 줄들이 `줄번호:값:값,…`로 param 조건이 돼요.
+#   {param, label, fields[, remove]}  label 줄 추가 버튼 이름 · fields 입력 창 항목(순서대로 값이 이어져요)
+#   · remove 체크한 줄을 빼는 버튼 이름
+DRAFT_NEEDS = {"param", "label", "fields"}
+DRAFT_KEYS = DRAFT_NEEDS | {"remove"}
+# 다른 화면으로 넘기기(handoff): 모든 행의 한 열 값을 이어 다른 화면의 화면에서 쓰는 줄로 보내요. {label, screen, column, param}
+HANDOFF_KEYS = {"label", "screen", "column", "param"}
 EDIT_NEEDS = {"column", "base", "param"}
 EDIT_KEYS = EDIT_NEEDS | {"reset", "add"}
 LAYOUTS = {"stack", "split"}   # stack: grids one under another · split: 목록 왼쪽, 상세 오른쪽
@@ -103,6 +114,7 @@ class Field:
     default: str | None = None  # "today" or a literal
     lookup: str | None = None   # 찾기 팝업: a name in lookups.yaml
     lookup_params: dict[str, str] = field(default_factory=dict)   # fixed parameters of that list
+    optional: bool = False      # 화면에서 쓰는 줄의 항목만: 비워도 돼요 (예: 지정가가 비면 시장가)
 
 
 @dataclass
@@ -117,6 +129,10 @@ class Button:
     shows: list[str] = field(default_factory=list)        # columns of that row shown at the top of the window
     note: str | None = None     # one line in the window: what pressing 확인 does
     reload: bool = False        # open the page again afterwards: it changed what the top bar shows (계좌 선택)
+    # 잠금: 그리드 트랜잭션이 주는 상태값(meta)의 이름. 값이 빈 글자가 아니면 버튼이 잠기고 그 글이 이유로 보여요
+    # (권한이 없거나 묶음 검증에 걸렸을 때). 서버는 누를 때 같은 검사를 다시 해요.
+    lock: str | None = None
+    clears: bool = False        # 끝나면 화면에서 쓰는 줄 가운데 체크한 줄을 지워요 (요청으로 넘어갔으니까)
 
 
 @dataclass
@@ -159,6 +175,9 @@ class Grid:
     #   column 고쳐 쓰는 열 · base 되돌아갈 값이 있는 열 · param 이 열의 값들을 받는 같은 화면 트랜잭션의 조건
     #   (`행키:값,행키:값`) · reset 모두 되돌리는 버튼 이름 · add 행을 더할 때 여는 찾기 팝업
     edit: dict | None = None
+    pick: dict | None = None      # 체크박스 (PICK_KEYS)
+    draft: dict | None = None     # 화면에서 쓰는 줄 (DRAFT_KEYS); fields는 Field 목록
+    handoff: dict | None = None   # 다른 화면으로 넘기기 (HANDOFF_KEYS)
     # 묶음 머리: a row over the column headers, [{label, span}] covering the visible columns left to right
     #   (시산표의 차변 | 계정과목 | 대변). The table is then read in its own order and not sorted.
     bands: list[dict] = field(default_factory=list)
@@ -194,7 +213,9 @@ def _build(raw: dict, file: str) -> Screen:
     try:
         grids = [Grid(**{**g, "columns": [Column(**c) for c in g["columns"]],
                          "actions": [Button(**{**a, "fields": [Field(**f) for f in a.get("fields", [])]})
-                                     for a in g.get("actions", [])]}) for g in raw["grids"]]
+                                     for a in g.get("actions", [])],
+                         "draft": {**g["draft"], "fields": [Field(**f) for f in g["draft"].get("fields", [])]}
+                         if g.get("draft") else None}) for g in raw["grids"]]
         conds = [Condition(**c) for c in raw.get("conditions", [])]
         return Screen(raw["id"], raw["title"], raw.get("purpose", ""), conds, grids, file,
                       raw.get("layout", "stack"), raw.get("left", 45))
@@ -346,7 +367,15 @@ def column_comment(catalog: dict, source: str) -> str | None:
 
 
 def edit_params(screen: Screen) -> set[str]:
-    return {g.edit["param"] for g in screen.grids if g.edit and "param" in g.edit}
+    """Values the screen fills itself (입력 그리드, 체크박스, 화면에서 쓰는 줄), not 조회조건."""
+    return ({g.edit["param"] for g in screen.grids if g.edit and "param" in g.edit}
+            | {g.pick["param"] for g in screen.grids if g.pick and "param" in g.pick}
+            | {g.draft["param"] for g in screen.grids if g.draft and "param" in g.draft})
+
+
+def grid_params(g: Grid) -> set[str]:
+    """The values this grid itself gives its buttons: what is checked and the lines written on the screen."""
+    return {x["param"] for x in (g.pick, g.draft) if x and "param" in x}
 
 
 def follows_edit(g: Grid, screen: Screen) -> bool:
@@ -359,8 +388,8 @@ def split_sides(screen: Screen) -> tuple[list[Grid], list[Grid], list[Grid]]:
 
     An 입력 그리드 is a list too: what is typed there on the left, what it works out to on the right."""
     masters = {g.master for g in screen.grids if g.load == "master"}
-    left = [g for g in screen.grids if g.id in masters or g.edit]
-    right = [g for g in screen.grids if g.load == "master" or follows_edit(g, screen)]
+    left = [g for g in screen.grids if g.id in masters or g.edit or g.draft]
+    right = [g for g in screen.grids if g not in left and (g.load == "master" or follows_edit(g, screen))]
     below = [g for g in screen.grids if g not in left and g not in right]
     return left, right, below
 
@@ -600,7 +629,10 @@ def _button_problems(g: Grid, s: Screen, gw: str, catalog: dict, lookups: dict[s
         if (b.shows or b.when) and not b.needs_row:
             errs.append(f"{bw}: shows·when은 행을 고르는 버튼(needs_row)에만 써요")
         names = [f.name for f in b.fields]
-        for missing in [p for p in action.params if action.required(p) and p not in names]:
+        given = grid_params(g) & set(action.params)    # 체크한 행, 화면에서 쓴 줄: 그리드가 채워요
+        for name in given & set(names):
+            errs.append(f"{bw}: {name}는 그리드가 채우는 값이라 입력 항목으로 두지 않아요")
+        for missing in [p for p in action.params if action.required(p) and p not in names and p not in given]:
             errs.append(f"{bw}: {b.tx}의 필수 입력 {missing}에 해당하는 항목이 없어요")
         for f in b.fields:
             fw = f"{bw}.{f.name}"
@@ -612,6 +644,8 @@ def _button_problems(g: Grid, s: Screen, gw: str, catalog: dict, lookups: dict[s
                 errs.append(f"{fw}: 입력 항목 중복")
             if f.type not in FIELD_TYPES:
                 errs.append(f"{fw}: 없는 입력 형식 {f.type}")
+            if f.optional:
+                errs.append(f"{fw}: optional은 화면에서 쓰는 줄의 항목에만 써요 (처리 버튼은 트랜잭션이 정해요)")
             if f.type == "select" and not f.options:
                 errs.append(f"{fw}: select는 options가 필요해요")
             if f.source and column_comment(catalog, f.source) is None:
@@ -626,6 +660,81 @@ def _button_problems(g: Grid, s: Screen, gw: str, catalog: dict, lookups: dict[s
             elif f.readonly and f.default is None:
                 errs.append(f"{fw}: 읽기 전용 항목은 채울 값(column이나 default)이 필요해요")
             errs += _lookup_use_problems(f.lookup, f.lookup_params, fw, lookups)
+        if b.lock and not isinstance(b.lock, str):
+            errs.append(f"{bw}: lock은 잠금 이유를 주는 상태값(meta)의 이름이에요")
+        if b.clears and not (g.draft and g.pick):
+            errs.append(f"{bw}: clears(체크한 줄 지우기)는 체크박스가 있는 화면에서 쓰는 줄 그리드에만 써요")
+    return errs
+
+
+def _pick_problems(g: Grid, s: Screen, gw: str) -> list[str]:
+    if not g.pick:
+        return []
+    if "param" not in g.pick or not set(g.pick) <= PICK_KEYS:
+        return [f"{gw}: 체크박스는 pick에 param(체크한 행을 받는 값)을 적어요 (when 체크할 수 있는 행 열, group 함께 체크할 열은 있으면)"]
+    errs = []
+    cols = {c.name for c in g.columns}
+    for role in ("when", "group"):
+        if g.pick.get(role) and g.pick[role] not in cols:
+            errs.append(f"{gw}: 체크박스의 {role} 열 {g.pick[role]}가 이 그리드에 없어요")
+    if g.pick["param"] in {c.name for c in s.conditions}:
+        errs.append(f"{gw}: {g.pick['param']}는 조회조건이 아니라 체크박스가 채우는 값이에요")
+    users = [x for x in s.grids if x.tx in TRANSACTIONS and g.pick["param"] in TRANSACTIONS[x.tx].params]
+    users += [b for b in g.actions if b.tx in ACTIONS and g.pick["param"] in ACTIONS[b.tx].params]
+    if not users:
+        errs.append(f"{gw}: 체크한 행({g.pick['param']})을 받는 트랜잭션이나 처리 버튼이 없어요")
+    if g.view != "grid":
+        errs.append(f"{gw}: 체크박스는 표 보기에만 써요")
+    return errs
+
+
+def _draft_problems(g: Grid, s: Screen, gw: str, catalog: dict, lookups: dict[str, Lookup]) -> list[str]:
+    if not g.draft:
+        return []
+    d = g.draft
+    if not DRAFT_NEEDS <= set(d) <= DRAFT_KEYS:
+        return [f"{gw}: 화면에서 쓰는 줄은 draft에 param, label(줄 추가 버튼), fields(입력 항목)를 적어요 (remove 줄 빼기 버튼은 있으면)"]
+    errs = []
+    if g.tx in TRANSACTIONS and d["param"] not in TRANSACTIONS[g.tx].params:
+        errs.append(f"{gw}: 이 그리드의 트랜잭션 {g.tx}가 줄({d['param']})을 받지 않아요")
+    if g.load != "input":
+        errs.append(f"{gw}: 화면에서 쓰는 줄 그리드는 load: input이어야 해요 (줄이 바뀌면 다시 계산)")
+    if d.get("remove") and not g.pick:
+        errs.append(f"{gw}: 줄 빼기는 체크한 줄을 빼요. 체크박스(pick)가 필요해요")
+    if not d["fields"]:
+        errs.append(f"{gw}: 화면에서 쓰는 줄의 입력 항목이 없어요")
+    for f in d["fields"]:
+        fw = f"{gw} 줄 항목 {f.name}"
+        if f.type not in FIELD_TYPES - {"bool"}:
+            errs.append(f"{fw}: 줄 항목은 글자·숫자·날짜·선택만 돼요")
+        if f.type == "select" and not f.options:
+            errs.append(f"{fw}: select는 options가 필요해요")
+        if f.source and column_comment(catalog, f.source) is None:
+            errs.append(f"{fw}: DB에 없는 컬럼 {f.source}")
+        if not (f.source or f.label):
+            errs.append(f"{fw}: source나 label이 필요해요")
+        if f.column or f.readonly:
+            errs.append(f"{fw}: 줄 항목은 행의 값에서 시작하지 않아요 (column·readonly 없음)")
+        if f.type == "select" and f.optional:
+            errs.append(f"{fw}: 선택 항목은 비워 둘 수 없어요")
+        errs += _lookup_use_problems(f.lookup, f.lookup_params, fw, lookups)
+    return errs
+
+
+def _handoff_problems(g: Grid, screens: dict[str, Screen], gw: str) -> list[str]:
+    if not g.handoff:
+        return []
+    h = g.handoff
+    if set(h) != HANDOFF_KEYS:
+        return [f"{gw}: 넘기기는 handoff에 label, screen, column, param을 적어요"]
+    errs = []
+    if h["column"] not in {c.name for c in g.columns}:
+        errs.append(f"{gw}: 넘길 열 {h['column']}이 이 그리드에 없어요")
+    target = screens.get(h["screen"])
+    if target is None:
+        errs.append(f"{gw}: 없는 화면으로 넘기기 {h['screen']}")
+    elif not any(x.draft and x.draft.get("param") == h["param"] for x in target.grids):
+        errs.append(f"{gw}: {h['screen']}에 {h['param']}를 받는 화면에서 쓰는 줄 그리드가 없어요")
     return errs
 
 
@@ -689,6 +798,9 @@ def validate(screens: dict[str, Screen], catalog: dict, lookups: dict[str, Looku
             errs += _band_problems(g, gw)
             errs += _button_problems(g, s, gw, catalog, lookups)
             errs += _edit_problems(g, s, gw, lookups)
+            errs += _pick_problems(g, s, gw)
+            errs += _draft_problems(g, s, gw, catalog, lookups)
+            errs += _handoff_problems(g, screens, gw)
             if not isinstance(g.weight, int) or not 1 <= g.weight <= 5:
                 errs.append(f"{gw}: weight(높이 비중)는 1~5 사이 정수")
             if g.key and g.key not in {c.name for c in g.columns}:
@@ -739,6 +851,7 @@ def validate(screens: dict[str, Screen], catalog: dict, lookups: dict[str, Looku
 
 def _used_lookups(screen: Screen) -> set[str]:
     fields = [f for g in screen.grids for b in g.actions for f in b.fields]
+    fields += [f for g in screen.grids if g.draft for f in g.draft["fields"]]
     adds = {g.edit["add"] for g in screen.grids if g.edit and g.edit.get("add")}
     return {x.lookup for x in [*screen.conditions, *fields] if x.lookup} | adds
 
@@ -758,9 +871,14 @@ def resolve(screen: Screen, catalog: dict, lookups: dict[str, Lookup] | None = N
             cd["inside"] = next((x.name for x in g.columns if c.name in (x.code, x.shape, x.of, x.sub)), None)
         for b, bd in zip(g.actions, gd["actions"]):
             bd["title"] = ACTIONS[b.tx].title
+            bd["params"] = list(ACTIONS[b.tx].params)
             for f, fd in zip(b.fields, bd["fields"]):
                 fd["label"] = label(f)
                 fd["required"] = ACTIONS[b.tx].required(f.name)
+        if g.draft:
+            for f, fd in zip(g.draft["fields"], gd["draft"]["fields"]):
+                fd["label"] = label(f)
+                fd["required"] = not f.optional
     for c, cd in zip(screen.conditions, out["conditions"]):
         cd["label"] = label(c)
         cd["codes"] = code_group(c)

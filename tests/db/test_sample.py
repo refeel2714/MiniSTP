@@ -94,7 +94,9 @@ def test_the_sample_shows_a_suspension_that_refuses_orders_but_not_the_close(con
     # R-85: the refused orders are in no order table; the audit log is where they are kept, as the generator's rows
     refused = audit.rows(conn, limit=1000, account_id=third.account_id, action="ORDER", outcome="REFUSED")
     assert len(refused) == third.refused and {r.detail["reason"] for r in refused} == {"ACCOUNT_NOT_OPEN"}
-    assert {(r.channel, r.actor) for r in audit.rows(conn, limit=5000)} == {("SYSTEM", "sample")}
+    # 주문 결재 샘플(R-99~101)의 행은 그 일을 한 가상 사용자의 이름으로 남아요
+    assert {(r.channel, r.actor) for r in audit.rows(conn, limit=5000)} == {
+        ("SYSTEM", "sample"), ("SYSTEM", "choi.cfo"), ("SYSTEM", "kim.trader"), ("SYSTEM", "lee.fin")}
     assert audit.chain_problems(conn)[2] == []
     assert conn.execute("select count(*) from oms_orders where account_id = 'A0003' and trade_date >= %s"
                         " and trade_date < %s", (suspended_from, reopened)).fetchone()[0] == 0

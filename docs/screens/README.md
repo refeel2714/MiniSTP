@@ -10,7 +10,7 @@
 |---|---|---|
 | **1 주문·잔고**<br>주문에서 체결까지, 그리고 지금 들고 있는 것 (IBOR) | 11 잔고 | [STP-1100](STP-1100.md) 실시간 잔고 |
 |  | 13 주문 준비 | [STP-1300](STP-1300.md) 주문가능 조회, [STP-1310](STP-1310.md) 바스켓 주문 시뮬레이션 |
-|  | 12 주문·체결 | [STP-1200](STP-1200.md) 주문·체결 블로터 |
+|  | 12 주문·체결 | [STP-1210](STP-1210.md) 주식 주문, [STP-1200](STP-1200.md) 주문·체결 블로터 |
 |  | 14 고객별 보유 | [STP-1400](STP-1400.md) 고객별 보유 |
 | **2 대사·평가**<br>증권사와 맞는지, 하루의 값이 얼마인지 | 21 대사 | [STP-2100](STP-2100.md) 일일 대사 결과, [STP-2110](STP-2110.md) 원장 내부 대사 |
 |  | 22 순자산 | [STP-2200](STP-2200.md) 순자산·무오류 현황, [STP-2210](STP-2210.md) 순자산 이력 |
@@ -25,6 +25,8 @@
 |  | 44 계좌 관리 | [STP-4400](STP-4400.md) 계좌 관리 |
 |  | 45 회계 기준 | [STP-4500](STP-4500.md) 분개 모형 |
 |  | 46 공통코드 | [STP-4600](STP-4600.md) 코드 관리 |
+| **5 운용 통제**<br>주문이 나가기 전의 결재와 그 권한. 승인 없는 주문은 나가지 않아요 (D9, R-99~101) | 51 주문 결재 | [STP-5100](STP-5100.md) 주문 결재 |
+|  | 52 결재 권한 | [STP-5200](STP-5200.md) 결재 권한 |
 | **6 성과**<br>원장과 순자산에서 나온 결과. 입출금은 수익률에 섞이지 않아요 | 61 수익률 | [STP-6100](STP-6100.md) 수익률 |
 
 ## 화면
@@ -33,6 +35,7 @@
 |---|---|---|---|
 | [STP-1100](STP-1100.md) | 실시간 잔고 | 3 | `STP1100R02`, `STP1100R01` |
 | [STP-1200](STP-1200.md) | 주문·체결 블로터 | 3 | `STP1200R01`, `STP1200R02` |
+| [STP-1210](STP-1210.md) | 주식 주문 | 3 | `STP1210R01`, `STP1210R02`, `STP1210R03`, `STP1210U01`, `STP1210U02` |
 | [STP-1300](STP-1300.md) | 주문가능 조회 | 2 | `STP1300R02`, `STP1300R01` |
 | [STP-1310](STP-1310.md) | 바스켓 주문 시뮬레이션 | 3 | `STP1310R01`, `STP1310R02` |
 | [STP-1400](STP-1400.md) | 고객별 보유 | 3 | `STP1400R01`, `STP1400R02`, `STP1400R03`, `STP1400U01` |
@@ -52,6 +55,8 @@
 | [STP-4400](STP-4400.md) | 계좌 관리 | 2 | `STP4400R01`, `STP4400R02`, `STP4400U01`, `STP4400U02` |
 | [STP-4500](STP-4500.md) | 분개 모형 | 2 | `STP4500R01`, `STP4500R02` |
 | [STP-4600](STP-4600.md) | 코드 관리 | 2 | `STP4600R01`, `STP4600R02`, `STP4600U01`, `STP4600U02`, `STP4600U03`, `STP4600U04` |
+| [STP-5100](STP-5100.md) | 주문 결재 | 4 | `STP5100R01`, `STP5100R02`, `STP5100R04`, `STP5100R03`, `STP5100U01`, `STP5100U02`, `STP5100U03` |
+| [STP-5200](STP-5200.md) | 결재 권한 | 2 | `STP5200R01`, `STP5200R02`, `STP5200U01`, `STP5200U02`, `STP5200U03` |
 | [STP-6100](STP-6100.md) | 수익률 | 2 | `STP6100R01`, `STP6100R02` |
 
 ## 바로 가기 창 (Ctrl+K)
@@ -60,7 +65,7 @@
 
 | 찾는 것 | 목록을 주는 트랜잭션 | 열 수 있는 화면 (넘기는 조회조건) |
 |---|---|---|
-| 화면 | - | 화면 22개 모두 |
+| 화면 | - | 화면 25개 모두 |
 | 종목 | `STP4100R05` | STP-1300 주문가능 조회(`symbol`), STP-3100 원장 조회(`symbol`), STP-3200 분개 조회(`symbol`) |
 
 ## 영향도: DB 컬럼 → 화면
@@ -75,6 +80,10 @@
 | `account_status_v.status` | 현재 상태 | STP-1400 accounts, STP-3400 account, STP-4400 accounts |
 | `accounts_chart.code` | 계정코드 | STP-2210 bridge, STP-3300 trial, STP-4500 lines |
 | `accounts_chart.name` | 계정명 | STP-2210 bridge, STP-3200 journal, STP-3300 trial, STP-4500 lines |
+| `app_users.created_at` | 등록 시각 | STP-5200 users |
+| `app_users.created_by` | 등록한 사람 | STP-5200 users |
+| `app_users.name` | 이름 | STP-5200 users, STP-5200 users 버튼 add |
+| `app_users.user_id` | 사용자 ID | STP-5200 users, STP-5200 users 버튼 add |
 | `broker_snapshots.kind` | 유형 | STP-2100 days, STP-2100 조회조건 |
 | `broker_snapshots.taken_at` | 수신 시각 | STP-2100 results |
 | `cash_ledger.amount` | 금액 | STP-3100 cash |
@@ -101,9 +110,9 @@
 | `instrument_master.sec_group` | 증권그룹 구분 | STP-4100 instruments, STP-4100 조회조건, STP-4101 changes |
 | `instrument_master.symbol` | 단축코드 | STP-4100 instruments, STP-4101 changes |
 | `instrument_master_match_v.status` | 대조 결과 | STP-4100 instruments |
-| `instruments.asset_type` | 자산 유형 | STP-1100 holdings, STP-1200 orders, STP-1300 symbols, STP-1310 basket, STP-1310 plan, STP-1400 positions, STP-2300 symbols, STP-3400 settlements, STP-4300 fees, STP-4300 ticks |
+| `instruments.asset_type` | 자산 유형 | STP-1100 holdings, STP-1200 orders, STP-1210 lines, STP-1300 symbols, STP-1310 basket, STP-1310 plan, STP-1400 positions, STP-2300 symbols, STP-3400 settlements, STP-4300 fees, STP-4300 ticks, STP-5100 requests, STP-5100 lines |
 | `instruments.market` | 시장 | STP-4100 조회조건, STP-4300 fees |
-| `instruments.name` | 종목명 | STP-1100 holdings, STP-1200 orders, STP-1300 symbols, STP-1310 basket, STP-1310 plan, STP-1400 positions, STP-2300 symbols, STP-3400 settlements |
+| `instruments.name` | 종목명 | STP-1100 holdings, STP-1200 orders, STP-1210 lines, STP-1300 symbols, STP-1310 basket, STP-1310 plan, STP-1400 positions, STP-2300 symbols, STP-3400 settlements, STP-5100 requests, STP-5100 lines |
 | `instruments.symbol` | 종목코드 | STP-1100 holdings, STP-1300 symbols, STP-1300 조회조건, STP-1310 basket, STP-1310 plan, STP-2300 symbols, STP-3100 events, STP-3100 조회조건, STP-3200 events, STP-3200 조회조건, STP-3400 settlements |
 | `journal_entries.date` | 회계일 | STP-3200 journal |
 | `journal_entries.entry_id` | 전표 번호 | STP-3200 journal |
@@ -133,6 +142,27 @@
 | `oms_orders.side` | 매매구분 | STP-1200 orders, STP-1300 조회조건, STP-1310 조회조건, STP-3400 settlements |
 | `oms_orders.symbol` | 종목코드 | STP-1200 orders |
 | `oms_orders.trade_date` | 주문일 | STP-1200 조회조건 |
+| `order_approvals.actor` | 처리한 사람 | STP-1210 history, STP-5100 history |
+| `order_approvals.at` | 처리 시각 | STP-1210 history, STP-5100 history |
+| `order_approvals.reason` | 사유 | STP-1210 history, STP-5100 requests 버튼 reject, STP-5100 requests 버튼 cancel, STP-5100 history |
+| `order_approvals.self_approved` | 셀프 승인 | STP-1210 history, STP-5100 history |
+| `order_request_lines.limit_price` | 지정가 | STP-1210 lines, STP-5100 lines |
+| `order_request_lines.line_no` | 줄 번호 | STP-1210 lines, STP-5100 lines |
+| `order_request_lines.qty` | 수량 | STP-1210 lines, STP-5100 lines |
+| `order_request_lines.side` | 매매 구분 | STP-1210 lines, STP-5100 requests, STP-5100 lines |
+| `order_request_lines.symbol` | 종목코드 | STP-1210 lines, STP-5100 requests, STP-5100 lines |
+| `order_requests.created_by` | 작성자 | STP-5100 requests |
+| `order_requests.order_type` | 주문 유형 | STP-1210 lines, STP-5100 requests |
+| `order_requests.request_no` | 요청 번호 | STP-1210 lines, STP-5100 requests |
+| `order_requests.trade_date` | 주문일 | STP-5100 requests, STP-5100 조회조건 |
+| `order_requests_v.approved_by` | 승인자 | STP-5100 requests |
+| `order_requests_v.last_reason` | 마지막 사유 | STP-5100 requests |
+| `order_requests_v.line_count` | 줄 수 | STP-5100 requests |
+| `order_requests_v.status` | 상태 | STP-1210 lines, STP-5100 requests, STP-5100 조회조건 |
+| `order_sends.client_id` | 주문 ID | STP-1210 history, STP-5100 lines, STP-5100 history |
+| `order_sends.line_no` | 줄 번호 | STP-1210 history, STP-5100 history |
+| `order_sends.outcome` | 전송 결과 | STP-5100 lines |
+| `order_sends.reason` | 사유 | STP-5100 lines |
 | `position_ledger.cost_delta` | 장부금액 증감 | STP-3100 positions |
 | `position_ledger.exec_id` | 체결 ID | STP-1200 fills, STP-3100 positions |
 | `position_ledger.qty_delta` | 수량 증감 | STP-3100 positions |
@@ -159,3 +189,13 @@
 | `trading_accounts.customer_id` | 고객 ID | STP-4400 accounts 버튼 add |
 | `trading_accounts.env` | 환경 | STP-4400 accounts |
 | `trading_accounts.opened_on` | 개설일 | STP-4400 accounts |
+| `user_rights.account_id` | 계좌 ID | STP-5200 rights, STP-5200 rights 버튼 grant, STP-5200 rights 버튼 revoke |
+| `user_rights.created_at` | 기록 시각 | STP-5200 rights |
+| `user_rights.effective_from` | 적용 시작일 | STP-5200 rights, STP-5200 rights 버튼 grant, STP-5200 rights 버튼 revoke |
+| `user_rights.granted_by` | 부여·회수한 사람 | STP-5200 rights |
+| `user_rights.max_order_value` | 1건 승인 한도 | STP-5200 rights, STP-5200 rights 버튼 grant |
+| `user_rights.reason` | 사유 | STP-5200 rights, STP-5200 rights 버튼 grant, STP-5200 rights 버튼 revoke |
+| `user_rights.right_code` | 권한 | STP-5200 rights, STP-5200 rights 버튼 grant, STP-5200 rights 버튼 revoke |
+| `user_rights.right_row_id` | 권한 행 번호 | STP-5200 rights |
+| `user_rights.self_approve` | 셀프 승인 허용 | STP-5200 rights, STP-5200 rights 버튼 grant |
+| `user_rights.user_id` | 사용자 ID | STP-5200 rights 버튼 grant, STP-5200 rights 버튼 revoke |

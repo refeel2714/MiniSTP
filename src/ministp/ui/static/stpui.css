@@ -440,6 +440,8 @@ button.primary:active, .tile:active { transform: scale(.97); }
 /* ---------- 처리 버튼, 입력 창, 찾기 팝업 ---------- */
 /* buttons live at the top right of the grid they act on */
 .acts { display: flex; gap: 6px; margin-left: 4px; }
+.top .who { font-size: 12px; color: var(--top-muted); white-space: nowrap; }
+.top .who b { color: var(--top-ink); font-weight: 600; }
 button.act, button.ghost, button.find { font: inherit; color: var(--ink); background: var(--panel); border: 1px solid var(--line-strong);
   border-radius: 4px; cursor: pointer; white-space: nowrap;
   transition: border-color var(--t-fast) ease-out, background-color var(--t-fast) ease-out, transform var(--t-fast) var(--ease); }
@@ -447,6 +449,12 @@ button.act { font-size: 12px; font-weight: 600; height: 24px; padding: 0 10px; }
 button.act:hover:not(:disabled), button.ghost:hover, button.find:hover { border-color: var(--sel-line); background: var(--hover); }
 button.act:active:not(:disabled) { transform: scale(.97); }
 button.act:disabled { color: var(--muted); opacity: .6; cursor: not-allowed; }
+button.act.locked::before { content: "🔒 "; font-size: 11px; }   /* 권한이 없거나 묶음 검증에 걸려 잠김: 이유는 마우스를 올리면 */
+/* 체크박스: 여러 행을 골라 한 번에 처리 */
+.grid th.pk, .grid td.pk { width: 28px; text-align: center; padding-left: 2px; padding-right: 2px; }
+.grid input.pkbox { margin: 0; width: 14px; height: 14px; accent-color: var(--sel-line); cursor: pointer; vertical-align: middle; }
+.grid tbody tr.picked td { background: color-mix(in srgb, var(--sel-line) 7%, transparent); }
+.dlg .fabout { margin: 10px 14px 0; font-weight: 600; font-size: 12px; word-break: break-all; }
 button.primary:disabled { opacity: .6; cursor: progress; }
 button.ghost { height: 28px; padding: 0 14px; }
 button.find { font-size: 12px; height: 28px; padding: 0 8px; background: var(--head); }
