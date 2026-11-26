@@ -1,23 +1,24 @@
 id: STP-2200
-title: 기준가·무오류 현황
-purpose: 일별 순자산과 기준가(1,000좌당) 추이, Phase 2 게이트(20영업일 연속 무오류) 진행을 봐요. 기준가는 원장을 그날 상태로 재현해 계산해요.
+title: 순자산·무오류 현황
+purpose: 일별 순자산과 설정 이후 수익률, Phase 2 게이트(20영업일 연속 무오류) 진행을 봐요. 순자산은 원장을 그날 상태로 재현해 예수금 + 미수금 - 미지급금 + 평가금액으로 세요. 설정 이후 수익률은 입출금을 뺀 투자 성과(시간가중수익률)라서 입금이 들어와 순자산이 늘어도 움직이지 않아요. 기간별 수익률은 수익률(STP-6100)에서 봐요.
 conditions:
   - {name: date_from, type: date, label: 시작일}
   - {name: date_to, type: date, label: 종료일}
 grids:
   - id: nav
-    title: 기준가 추이
+    title: 순자산 추이
     live: true
     tx: STP2200R01
     load: open
     meta: {clean_streak: 무오류 연속 영업일, gate_days: 게이트 목표}
-    chart: {x: date, y: nav_per_1000}
+    chart: {x: date, y: net_assets}
     columns:
       - {name: date, label: 기준일, format: date}
-      - {name: nav_per_1000, label: "기준가(1,000좌당)", format: rate}
       - {name: net_assets, label: 순자산, format: money}
+      - {name: since_start, label: 설정 이후 수익률(%), format: rate, color: sign}
       - {name: market_value, label: 평가금액, format: money}
       - {name: cash, label: 예수금, format: money}
       - {name: receivables, label: 미수금, format: money}
       - {name: payables, label: 미지급금, format: money}
-      - {name: units, label: 좌수, format: number}
+      - {name: nav_per_1000, label: "기준가(1,000좌당)", format: rate, hidden: true}
+      - {name: units, label: 좌수, format: number, hidden: true}
