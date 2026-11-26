@@ -546,3 +546,184 @@ def default_out(date_from: dt.date, date_to: dt.date, by: str, account_id: str |
     kind = "건별" if by == "entry" else "일별"
     span = f"{date_from:%Y%m%d}" if date_from == date_to else f"{date_from:%Y%m%d}-{date_to:%Y%m%d}"
     return pathlib.Path("erp-export") / f"전표_{account_id or '전체계좌'}_{span}_{kind}.csv"
+
+
+# ---------- ERP 3자 대사 (R-106): MiniSTP 장부, ERP 총계정원장, 증권사 ----------
+# The ERP keeps the company's books; MiniSTP keeps one brokerage account's part of them; the broker keeps the
+# account itself. They agree when, account by ERP account, the three say the same amount.
+# - 잔액 (balance on the as-of date) for assets and liabilities, 기간 (amount booked in the period) for the rest:
+#   the ERP closes its income accounts every year, MiniSTP does not. 선납세금 (1040) is a period amount too: the
+#   ERP sets it off against the year's corporate tax at year end. 본사 자금 대체 (3010) is what moved between the
+#   company's bank and the brokerage account in the period.
+# - The broker's side exists for two accounts only: 증권예치금 (1010) against the broker's 예수금 and FVPL 금융자산
+#   (1100) against its 매입금액, both from the last daily recon of the day (R-70). The rest the broker does not keep.
+# Amounts are signed debit-positive (차변 +, 대변 −), the way an ERP trial balance lists them. Nothing is written.
+
+PERIOD_ACCOUNTS = {"1040"}           # assets read as a period amount (see above)
+BROKER_ITEMS = {"1010": "CASH_D0", "1100": "BOOK_COST"}
+ERP_HEADERS = {"code": ("계정코드", "ERP계정", "code"), "name": ("계정명", "name"), "amount": ("잔액", "금액", "amount"),
+               "debit": ("차변", "debit"), "credit": ("대변", "credit")}
+
+
+def _is_period(ministp_code: str) -> bool:
+    return ministp_code[0] in "345" or ministp_code in PERIOD_ACCOUNTS
+
+
+@dataclass(frozen=True)
+class ReconLine:
+    erp_code: str
+    erp_name: str
+    basis: str                  # "잔액" or "기간"
+    ministp: int
+    erp: int | None             # None: the ERP file does not have the account (counted as 0: ERPs leave out zero balances)
+    broker: int | None          # None: the broker does not keep this account (or no recon that day)
+    ministp_accounts: str
+
+    @property
+    def erp_diff(self) -> int | None:
+        return (self.erp or 0) - self.ministp
+
+    @property
+    def broker_diff(self) -> int | None:
+        return None if self.broker is None else self.broker - self.ministp
+
+    @property
+    def ok(self) -> bool:
+        return self.erp_diff == 0 and self.broker_diff in (None, 0)
+
+
+@dataclass
+class Recon:
+    as_of: dt.date
+    period_from: dt.date
+    account_id: str | None
+    lines: list[ReconLine]
+    erp_only: list[tuple[str, str, int]]    # ERP rows of a mapped code with no MiniSTP amount... or not mapped at all
+    broker_note: str
+
+    @property
+    def ok(self) -> bool:
+        return all(ln.ok for ln in self.lines)
+
+
+def load_erp_balances(path: str | pathlib.Path) -> dict[str, tuple[str, int]]:
+    """The ERP side: a CSV of ERP account code and amount (잔액, or 차변 and 대변), debit-positive, as the ERP's
+    계정별 원장/시산표 exports it. Codes that appear twice are added up. UTF-8 with or without BOM."""
+    p = pathlib.Path(path)
+    if not p.exists():
+        raise ErpError(f"ERP 잔액 파일 {p}이 없어요.")
+    rows = list(csv.reader(p.read_text(encoding="utf-8-sig").splitlines()))
+    if not rows:
+        raise ErpError(f"{p}이 비어 있어요.")
+    head = [h.strip() for h in rows[0]]
+
+    def col(key):
+        return next((head.index(h) for h in ERP_HEADERS[key] if h in head), None)
+    code_i, name_i, amt_i, dr_i, cr_i = col("code"), col("name"), col("amount"), col("debit"), col("credit")
+    if code_i is None or (amt_i is None and (dr_i is None or cr_i is None)):
+        raise ErpError(f"{p}의 머리글에 계정코드와 잔액(또는 차변·대변) 열이 있어야 해요: 지금 {', '.join(head)}")
+
+    def num(v: str, line: int) -> int:
+        t = (v or "").strip().replace(",", "")
+        if t in ("", "-"):
+            return 0
+        try:
+            return int(t)
+        except ValueError:
+            raise ErpError(f"{p} {line}번째 줄의 금액 {v!r}이 원 단위 정수가 아니에요.") from None
+    out: dict[str, tuple[str, int]] = {}
+    for i, r in enumerate(rows[1:], start=2):
+        if not r or not r[code_i].strip():
+            continue
+        code = r[code_i].strip()
+        amount = num(r[amt_i], i) if amt_i is not None else num(r[dr_i], i) - num(r[cr_i], i)
+        name = r[name_i].strip() if name_i is not None and name_i < len(r) else ""
+        prev = out.get(code, (name, 0))
+        out[code] = (prev[0] or name, prev[1] + amount)
+    return out
+
+
+def reconcile(conn: psycopg.Connection, mapping: Mapping | None, erp_rows: dict[str, tuple[str, int]],
+              as_of: dt.date, period_from: dt.date | None = None, account_id: str | None = None) -> Recon:
+    """`erp recon`: MiniSTP against the ERP file and the broker, per ERP account (R-106). `account_id` None takes
+    every brokerage account together, as the ERP keeps them."""
+    mapping = mapping or own_chart(conn)
+    period_from = period_from or dt.date(as_of.year, 1, 1)
+    if period_from > as_of:
+        raise ErpError("기간 시작일이 기준일보다 늦어요.")
+    if account_id is not None and account_id not in _aliases(conn):
+        raise ErpError(f"계좌 {account_id}가 없어요. account list로 확인하세요.")
+    rows = conn.execute(
+        "select l.account_code, coalesce(sum(l.debit - l.credit), 0),"
+        "       coalesce(sum(l.debit - l.credit) filter (where e.date >= %(f)s), 0)"
+        "  from journal_lines l join journal_entries e using (entry_id)"
+        " where e.date <= %(t)s and (%(a)s::text is null or e.account_id = %(a)s)"
+        " group by l.account_code", {"f": period_from, "t": as_of, "a": account_id}).fetchall()
+    unmapped = sorted({c for c, bal, per in rows if (bal or per)} - set(mapping.accounts))
+    if unmapped:
+        raise ErpError("매핑이 없는 계정이 있어 대사하지 않았어요: "
+                       + ", ".join(f"{c} {MINISTP_NAMES.get(c, '')}".strip() for c in unmapped))
+    erp_side: dict[tuple[str, str], dict] = {}
+    for code, balance, period in rows:
+        if code not in mapping.accounts:
+            continue
+        erp_code, erp_name = mapping.accounts[code]
+        basis = "기간" if _is_period(code) else "잔액"
+        d = erp_side.setdefault((erp_code, erp_name), {"basis": basis, "amount": 0, "src": set()})
+        if d["basis"] != basis:
+            raise ErpError(f"ERP 계정 {erp_code}에 잔액으로 볼 계정과 기간으로 볼 계정이 함께 매핑돼 있어요. "
+                           "3자 대사를 하려면 매핑을 나눠 주세요.")
+        d["amount"] += int(period if basis == "기간" else balance)
+        d["src"].add(code)
+    broker, note = _broker_side(conn, as_of, account_id)
+    lines = []
+    for (erp_code, erp_name), d in sorted(erp_side.items()):
+        src = sorted(d["src"])
+        legs = [broker[c] for c in src if c in BROKER_ITEMS and c in broker]
+        has_broker = bool(legs) and all(c in BROKER_ITEMS for c in src)
+        e = erp_rows.get(erp_code)
+        lines.append(ReconLine(erp_code, erp_name or (e[0] if e else ""), d["basis"], d["amount"],
+                               e[1] if e else None, sum(legs) if has_broker else None, ",".join(src)))
+    seen = {ln.erp_code for ln in lines}
+    mapped = {v[0] for v in mapping.accounts.values()}
+    erp_only = [(c, n, a) for c, (n, a) in sorted(erp_rows.items()) if c not in seen and c in mapped and a]
+    return Recon(as_of, period_from, account_id, lines, erp_only, note)
+
+
+def _broker_side(conn: psycopg.Connection, as_of: dt.date, account_id: str | None) -> tuple[dict[str, int], str]:
+    """The broker's 예수금 and 매입금액 from each account's last daily recon of the as-of date (R-70)."""
+    rows = conn.execute(
+        "with last as (select account_id, max(run_id) as run_id from recon_results"
+        "               where date = %(d)s and item in ('CASH_D0', 'BOOK_COST')"
+        "                 and (%(a)s::text is null or account_id = %(a)s) group by account_id)"
+        " select r.item, sum(r.broker_value), count(distinct r.account_id)"
+        "   from recon_results r join last using (account_id, run_id)"
+        "  where r.item in ('CASH_D0', 'BOOK_COST') and r.supersedes_id is null group by r.item",
+        {"d": as_of, "a": account_id}).fetchall()
+    wanted = 1 if account_id else conn.execute("select count(*) from trading_accounts").fetchone()[0]
+    got = {item: (int(v), n) for item, v, n in rows}
+    if not got:
+        return {}, f"{as_of} 일 마감 대사가 없어 증권사 쪽은 비워 뒀어요."
+    out = {}
+    for code, item in BROKER_ITEMS.items():
+        if item in got and got[item][1] == wanted:
+            out[code] = got[item][0]
+    if not out:
+        return {}, f"{as_of} 일 마감 대사가 모든 계좌에 있지 않아 증권사 쪽은 비워 뒀어요."
+    return out, f"{as_of} 일 마감 대사의 증권사 예수금·매입금액"
+
+
+RECON_HEADER = ["ERP계정", "계정명", "기준", "MiniSTP", "ERP", "ERP차이", "증권사", "증권사차이", "결과", "MiniSTP계정"]
+
+
+def write_recon_csv(recon: Recon, path: str | pathlib.Path) -> pathlib.Path:
+    p = pathlib.Path(path)
+    _refuse_existing(p)
+    buf = io.StringIO(newline="")
+    w = csv.writer(buf)
+    w.writerow(RECON_HEADER)
+    for ln in recon.lines:
+        w.writerow([ln.erp_code, ln.erp_name, ln.basis, ln.ministp, "" if ln.erp is None else ln.erp,
+                    "" if ln.erp_diff is None else ln.erp_diff, "" if ln.broker is None else ln.broker,
+                    "" if ln.broker_diff is None else ln.broker_diff, "일치" if ln.ok else "불일치", ln.ministp_accounts])
+    return _publish(p, buf.getvalue().encode("utf-8-sig"))
