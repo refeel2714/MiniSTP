@@ -341,6 +341,20 @@ def test_reference_data_is_read_from_what_the_ledger_uses(client):
                           {"asset_type": "ETF", "price_from": 2_000, "price_below": None, "tick": 5}]
 
 
+
+def test_journal_templates_show_each_event_types_entry_and_its_lines(client):
+    templates, _ = _rows(client, "STP4500R01")
+    assert [t["code"] for t in templates][:3] == ["JT-01", "JT-02", "JT-03"]
+    buy = next(t for t in templates if t["case"] == "매수 체결")
+    assert buy["event_type"] == "ExecutionEvent" and buy["kind_name"] == "체결" and buy["line_count"] == 3
+    lines, meta = _rows(client, "STP4500R02", {"code": buy["code"]})
+    assert meta["case"] == "매수 체결" and "JT-06" in meta["note"]
+    assert [(r["side_name"], r["account_code"]) for r in lines] == [("차변", "1100"), ("차변", "5030"), ("대변", "2010")]
+    assert lines[2]["rule"] == "R-51"
+    body = client.post("/api/tx/STP4500R02", json={"params": {"code": "JT-99"}})
+    assert "없는 분개 모형" in body.text
+
+
 # ---------- 셀 표시 유형 (실시간 잔고) ----------
 
 def test_holdings_are_valued_at_the_last_close_when_run_has_no_quotes(client, conn, sample):
