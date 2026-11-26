@@ -1,6 +1,6 @@
 id: STP-2210
-title: 기준가 이력
-purpose: 날마다 낸 기준가의 기록이에요. 왼쪽은 기준일마다 기준가(1,000좌당), 전일 대비, 순자산, 그날 기준가를 낸 횟수예요(같은 날 다시 내면 마지막 값이 그날의 기준가이고 횟수가 2 이상이 돼요). 기준일을 고르면 오른쪽에 변동 상세가 나와요. 전일 순자산에서 당일 순자산까지를 위에서 아래로 읽는 표이고, 그 사이에 기록된 분개를 계정별로 더한 값이에요. 순자산은 들고 있는 것에서 따로 세기 때문에 둘이 맞으면 설명되지 않은 차이가 0이고 검증이 일치예요. 불일치인 날이 있으면 그날이 먼저 골라져 있어요. 기준일을 두 번 누르면 그날의 분개를 분개 조회(STP-3200)에서 열어요.
+title: 순자산 이력
+purpose: 날마다 낸 순자산의 기록이에요. 왼쪽은 기준일마다 순자산, 전일 대비 증감, 그날 순자산을 낸 횟수예요(같은 날 다시 내면 마지막 값이 그날의 순자산이고 횟수가 2 이상이 돼요). 기준일을 고르면 오른쪽에 변동 상세가 나와요. 전일 순자산에서 당일 순자산까지를 위에서 아래로 읽는 표이고, 그 사이에 기록된 분개를 계정별로 더한 값이에요. 순자산은 들고 있는 것에서 따로 세기 때문에 둘이 맞으면 설명되지 않은 차이가 0이고 검증이 일치예요. 불일치인 날이 있으면 그날이 먼저 골라져 있어요. 기준일을 두 번 누르면 그날의 분개를 분개 조회(STP-3200)에서 열어요.
 layout: split
 left: 52
 conditions:
@@ -8,7 +8,7 @@ conditions:
   - {name: date_to, type: date, label: 종료일}
 grids:
   - id: days
-    title: 기준일별 기준가
+    title: 기준일별 순자산
     live: true
     key: date
     tx: STP2210R01
@@ -17,9 +17,10 @@ grids:
     meta: {all_explained: 모두 설명됨, unexplained_days: 설명 안 된 날 수}
     columns:
       - {name: date, label: 기준일, format: date}
-      - {name: nav_per_1000, label: 기준가, format: rate}
-      - {name: nav_change, label: 전일 대비, format: rate, color: sign}
       - {name: net_assets, label: 순자산, format: money}
+      - {name: change, label: 전일 대비, format: money, color: sign}
+      - {name: nav_per_1000, label: 기준가, format: rate, hidden: true}
+      - {name: nav_change, label: 기준가 전일 대비, format: rate, hidden: true}
       - {name: units, label: 좌수, format: number, hidden: true}
       - {name: struck, label: 산출, format: number}
       - {name: result, label: 검증, color: status, display: pill}
