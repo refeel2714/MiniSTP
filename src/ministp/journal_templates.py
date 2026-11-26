@@ -41,9 +41,10 @@ class JournalTemplate:
 
 
 # 전표 유형 코드 -> 화면에 적는 이름 (분개 모형 STP-4500과 분개 조회 전표 보기가 함께 써요).
-# 아직 원장이 만들지 않는 유형(지연 체결, 배당, 수동 조정)도 미리 적어 둬요. 없는 코드는 코드 그대로 보여요.
+# 없는 코드는 코드 그대로 보여요.
 KIND_NAMES = {
-    "DEPOSIT": "입금", "OPENING": "기초 잔고", "EXECUTION": "체결", "LATE_EXECUTION": "지연 체결", "SETTLEMENT": "결제",
+    "DEPOSIT": "입금", "WITHDRAWAL": "출금", "TRANSFER_IN": "대체 입금", "TRANSFER_OUT": "대체 출금",
+    "OPENING": "기초 잔고", "EXECUTION": "체결", "LATE_EXECUTION": "지연 체결", "SETTLEMENT": "결제",
     "VALUATION": "평가", "VALUATION_REVERSAL": "평가 역분개", "DIVIDEND_ACCRUAL": "배당 미수", "DIVIDEND": "배당 입금",
     "DIVIDEND_CANCEL": "배당 취소", "ADJUSTMENT": "수동 조정", "ADJUSTMENT_CANCEL": "조정 취소",
 }
@@ -132,6 +133,23 @@ TEMPLATES += (
         D(A.DIVIDEND_INCOME, "기준일에 잡은 미수배당금"),
         C(A.DIVIDEND_RECEIVABLE, "기준일에 잡은 미수배당금")),
         "JT-14를 그대로 되돌려요"),
+)
+
+
+# 출금과 계좌 간 대체(R-56, R-65): 투자원금이 들고 나요. 대체는 보낸 계좌의 출금과 받은 계좌의 입금이 한 쌍이에요.
+TEMPLATES += (
+    JournalTemplate("JT-17", "WithdrawalEvent", "WITHDRAWAL", "투자원금 출금", (
+        D(A.CONTRIBUTED_CAPITAL, "출금액", "R-56"),
+        C(A.CASH, "출금액", "R-56")),
+        "좌수는 직전 기준가로 줄어요 (R-61)"),
+    JournalTemplate("JT-18", "TransferInEvent", "TRANSFER_IN", "다른 계좌에서 받음", (
+        D(A.CASH, "대체 금액", "R-65"),
+        C(A.CONTRIBUTED_CAPITAL, "대체 금액", "R-65")),
+        "보낸 계좌의 JT-19와 같은 대체 번호로 짝을 이뤄요"),
+    JournalTemplate("JT-19", "TransferOutEvent", "TRANSFER_OUT", "다른 계좌로 보냄", (
+        D(A.CONTRIBUTED_CAPITAL, "대체 금액", "R-65"),
+        C(A.CASH, "대체 금액", "R-65")),
+        "받은 계좌의 JT-18과 같은 대체 번호로 짝을 이뤄요"),
 )
 
 

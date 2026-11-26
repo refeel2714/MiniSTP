@@ -51,6 +51,11 @@ class DividendError(ValueError):
     """R-57: a dividend step that does not follow from the ones before it (accrued twice, paid twice, ...)."""
 
 
+class CashError(ValueError):
+    """R-56, R-64: a cash movement the books cannot take: more than can leave the account,
+    or a date behind entries that are already booked."""
+
+
 class LedgerHaltedError(RuntimeError):
     """A listener (e.g. the DB store) failed; this in-memory ledger may no longer
     match the durable record and must be rebuilt from it."""
@@ -61,6 +66,33 @@ class LedgerHaltedError(RuntimeError):
 @dataclass(frozen=True)
 class DepositEvent:
     date: dt.date
+    amount: int
+
+
+@dataclass(frozen=True)
+class WithdrawalEvent:
+    """R-56: cash taken out of the account. Units are redeemed at the NAV of the day before (R-61)."""
+    date: dt.date
+    amount: int
+
+
+@dataclass(frozen=True)
+class TransferOutEvent:
+    """R-65: cash sent to another account of this database. The other half is the TransferInEvent
+    with the same `transfer_id` in the books of `to_account`; each side books it as its own
+    withdrawal or deposit."""
+    date: dt.date
+    transfer_id: int
+    to_account: str
+    amount: int
+
+
+@dataclass(frozen=True)
+class TransferInEvent:
+    """R-65: cash received from another account of this database (see TransferOutEvent)."""
+    date: dt.date
+    transfer_id: int
+    from_account: str
     amount: int
 
 
@@ -156,7 +188,13 @@ class DividendCancelEvent:
 
 
 Event = (DepositEvent | OpeningPositionEvent | ExecutionEvent | SettlementEvent | RevaluationEvent | NavEvent
-         | LateExecutionEvent | DayClosedEvent | DividendAccrualEvent | DividendPaymentEvent | DividendCancelEvent)
+         | LateExecutionEvent | DayClosedEvent | DividendAccrualEvent | DividendPaymentEvent | DividendCancelEvent
+         | WithdrawalEvent | TransferOutEvent | TransferInEvent)
+
+
+def transfer_ref(transfer_id: int) -> str:
+    """The `source_id` of both entries of a transfer between accounts."""
+    return f"TR-{transfer_id}"
 
 
 def dividend_ref(action_id: int) -> str:
@@ -226,6 +264,18 @@ class NavRow:
     nav_per_1000: Decimal
 
 
+@dataclass(frozen=True)
+class CashMovement:
+    """Cash the owner put in or took out, and the units it issued or redeemed (R-56, R-61)."""
+    date: dt.date
+    kind: str                          # DEPOSIT, WITHDRAWAL, TRANSFER_IN or TRANSFER_OUT (the journal kind)
+    amount: int                        # + in, - out
+    units: int                         # + issued, - redeemed
+    nav_per_1000: Decimal              # the NAV the units were priced at
+    transfer_id: int | None = None
+    counter_account: str | None = None
+
+
 DIVIDEND_STATUSES = ("ACCRUED", "PAID", "CANCELED")
 
 
@@ -259,13 +309,14 @@ class _State:
     journal: list[JournalEntry] = field(default_factory=list)
     results: dict[str, ExecutionResult] = field(default_factory=dict)
     units: int = 0
-    last_nav: Decimal | None = None
     last_valuation: JournalEntry | None = None
     last_nav_row: NavRow | None = None
     closed_through: dt.date | None = None                           # R-77: the last closed date
     closed_days: dict[dt.date, NavRow] = field(default_factory=dict)  # closed date -> the NAV it was closed at
     closed_at: int = 0                                              # events up to and including the last close
     dividends: dict[int, Dividend] = field(default_factory=dict)    # corporate action id -> its state here (R-57)
+    navs: list[tuple[dt.date, Decimal]] = field(default_factory=list)  # every NAV struck, in order (R-61)
+    movements: list[CashMovement] = field(default_factory=list)     # deposits, withdrawals, transfers (R-56)
 
 
 class Ledger:
@@ -288,9 +339,36 @@ class Ledger:
     # ----- commands -----
 
     def deposit(self, date: dt.date, amount: int) -> None:
-        if amount <= 0:
-            raise ValueError("deposit must be positive")
+        """R-56: cash put into the account (차 예수금 / 대 투자원금). Units are issued for it (R-61)."""
+        self.check_cash(date, amount)
         self._record(DepositEvent(date, amount))
+
+    def withdraw(self, date: dt.date, amount: int) -> None:
+        """R-56: cash taken out (차 투자원금 / 대 예수금), no more than can leave the account (R-64)."""
+        self.check_cash(date, amount, out=True)
+        self._record(WithdrawalEvent(date, amount))
+
+    def transfer_out(self, date: dt.date, transfer_id: int, to_account: str, amount: int) -> None:
+        """R-65: this account's half of a transfer to `to_account`. A withdrawal by every rule."""
+        self.check_cash(date, amount, out=True)
+        self._record(TransferOutEvent(date, transfer_id, to_account, amount))
+
+    def transfer_in(self, date: dt.date, transfer_id: int, from_account: str, amount: int) -> None:
+        """R-65: this account's half of a transfer from `from_account`. A deposit by every rule."""
+        self.check_cash(date, amount)
+        self._record(TransferInEvent(date, transfer_id, from_account, amount))
+
+    def check_cash(self, date: dt.date, amount: int, out: bool = False) -> None:
+        """Raise unless cash of `amount` can be booked on `date` (R-56), and can leave when `out` (R-64)."""
+        if amount <= 0:
+            raise ValueError("the amount must be positive")
+        if self.is_closed(date):
+            raise ClosedDayError(f"cash dated {date}: the books are closed through {self._s.closed_through}")
+        last = self.last_entry_date() or date
+        if date < last:   # the NAVs struck since then did not know about it
+            raise CashError(f"{date} is behind the books: the last entry is dated {last}")
+        if out and amount > self.withdrawable():
+            raise CashError(f"{amount:,} is more than can leave the account ({self.withdrawable():,})")
 
     def open_position(self, date: dt.date, symbol: str, qty: int, book_cost: int) -> None:
         """Only before any trade: the ledger's starting holdings (R-05)."""
@@ -429,6 +507,10 @@ class Ledger:
         """The events after the last close: all that IBOR holds and ABOR does not (D6)."""
         return tuple(self._events[self._s.closed_at:])
 
+    def last_entry_date(self) -> dt.date | None:
+        """The latest date anything is booked on. Cash is not booked behind it (R-56)."""
+        return max((book_date(e) for e in self._events), default=None)
+
     def open_day(self) -> dt.date | None:
         """The date a correction is booked on (R-78): the business day after the last close,
         or the latest day that already has entries when the books have moved on since."""
@@ -492,6 +574,22 @@ class Ledger:
         """Booked trades not settled yet, by settlement date (copies: changing them changes nothing)."""
         return sorted((replace(s) for s in self._s.settlements.values() if not s.settled),
                       key=lambda s: (s.settle_date, s.exec_id))
+
+    def withdrawable(self) -> int:
+        """R-64 출금가능금액: the cash that can leave now without any booked trade falling short
+        on its settlement date. The lowest point of 예수금 from today to the last settlement."""
+        cash = low = self.cash_balance()
+        by_date: dict[dt.date, int] = {}
+        for s in self.pending_settlements():
+            by_date[s.settle_date] = by_date.get(s.settle_date, 0) + s.signed
+        for date in sorted(by_date):
+            cash += by_date[date]
+            low = min(low, cash)
+        return max(low, 0)
+
+    def cash_movements(self) -> list[CashMovement]:
+        """Every deposit, withdrawal and transfer, with the units each issued or redeemed."""
+        return list(self._s.movements)
 
     def projected_cash(self) -> int:
         """Cash after every booked trade settles (증권사 D+2 예수금, D+1 after a T+1 cutover)."""
@@ -557,7 +655,13 @@ class Ledger:
     def _apply(self, ev: Event) -> None:
         match ev:
             case DepositEvent():
-                self._apply_deposit(ev)
+                self._apply_cash_in(ev, "DEPOSIT", "")
+            case TransferInEvent():
+                self._apply_cash_in(ev, "TRANSFER_IN", transfer_ref(ev.transfer_id), ev.transfer_id, ev.from_account)
+            case WithdrawalEvent():
+                self._apply_cash_out(ev, "WITHDRAWAL", "")
+            case TransferOutEvent():
+                self._apply_cash_out(ev, "TRANSFER_OUT", transfer_ref(ev.transfer_id), ev.transfer_id, ev.to_account)
             case OpeningPositionEvent():
                 self._apply_opening(ev)
             case ExecutionEvent():
@@ -568,7 +672,7 @@ class Ledger:
                 self._apply_revaluation(ev)
             case NavEvent():
                 self._s.last_nav_row = self._nav_row(ev.date, dict(ev.closes))
-                self._s.last_nav = self._s.last_nav_row.nav_per_1000
+                self._s.navs.append((ev.date, self._s.last_nav_row.nav_per_1000))
             case DividendAccrualEvent():
                 self._s.dividends[ev.action_id] = Dividend(ev.action_id, ev.symbol, ev.qty, ev.gross, ev.date)
                 self._s.journal.append(entry(ev.date, "DIVIDEND_ACCRUAL", dividend_ref(ev.action_id),
@@ -599,17 +703,46 @@ class Ledger:
                                      Cr(Account.DIVIDEND_INCOME, max(more, 0)),
                                      Dr(Account.DIVIDEND_INCOME, max(-more, 0))))   # R-57, R-23
 
-    def _apply_deposit(self, ev: DepositEvent) -> None:
-        nav = self._s.last_nav or INITIAL_NAV
-        self._s.units += truncate_won(Decimal(ev.amount) / nav * 1000)  # R-61
-        self._s.journal.append(entry(ev.date, "DEPOSIT", "",
+    def _unit_price(self, date: dt.date) -> Decimal:
+        """R-61: money that comes or goes on `date` is priced at the last NAV struck for an earlier
+        day. 1,000.00 before the first NAV, and again when no unit is left."""
+        if self._s.units:
+            for day, nav in reversed(self._s.navs):
+                if day < date and nav > 0:
+                    return nav
+        return INITIAL_NAV
+
+    def _apply_cash_in(self, ev, kind: str, ref: str, transfer_id: int | None = None,
+                       counter: str | None = None) -> None:
+        nav = self._unit_price(ev.date)
+        units = truncate_won(Decimal(ev.amount) / nav * 1000)  # R-61
+        self._s.units += units
+        self._s.journal.append(entry(ev.date, kind, ref,
                                      Dr(Account.CASH, ev.amount),
-                                     Cr(Account.CONTRIBUTED_CAPITAL, ev.amount)))
+                                     Cr(Account.CONTRIBUTED_CAPITAL, ev.amount)))   # R-56
+        self._s.movements.append(CashMovement(ev.date, kind, ev.amount, units, nav, transfer_id, counter))
+
+    def _apply_cash_out(self, ev, kind: str, ref: str, transfer_id: int | None = None,
+                        counter: str | None = None) -> None:
+        nav = self._unit_price(ev.date)
+        units = min(self._s.units, truncate_won(Decimal(ev.amount) / nav * 1000))  # R-61
+        self._s.journal.append(entry(ev.date, kind, ref,
+                                     Dr(Account.CONTRIBUTED_CAPITAL, ev.amount),
+                                     Cr(Account.CASH, ev.amount)))   # R-56
+        if self._is_empty():   # everything has left: no unit stays behind on a rounding difference
+            units = self._s.units
+        self._s.units -= units
+        self._s.movements.append(CashMovement(ev.date, kind, -ev.amount, -units, nav, transfer_id, counter))
+
+    def _is_empty(self) -> bool:
+        """No cash, no holding, nothing to receive or to pay."""
+        return not self.positions() and not any(
+            self.account_balance(a) for a in (Account.CASH, Account.SELL_RECEIVABLE, Account.BUY_PAYABLE,
+                                              Account.DIVIDEND_RECEIVABLE))
 
     def _apply_opening(self, ev: OpeningPositionEvent) -> None:
         self._s.positions[ev.symbol] = Position(ev.qty, ev.book_cost)
-        nav = self._s.last_nav or INITIAL_NAV
-        self._s.units += truncate_won(Decimal(ev.book_cost) / nav * 1000)
+        self._s.units += truncate_won(Decimal(ev.book_cost) / INITIAL_NAV * 1000)   # before any NAV (R-05)
         self._s.journal.append(entry(ev.date, "OPENING", ev.symbol,
                                      Dr(Account.FVPL_STOCK, ev.book_cost),
                                      Cr(Account.CONTRIBUTED_CAPITAL, ev.book_cost)))

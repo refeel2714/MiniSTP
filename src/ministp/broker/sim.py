@@ -30,6 +30,10 @@ class SimBroker:
             self.cash += amt
             self.pending.remove((sd, amt))
 
+    def move_cash(self, amount: int) -> None:
+        """The owner pays in (+) or takes out (-) at the broker. It shows in 예수금 at once."""
+        self.cash += amount
+
     def fill(self, order_no: str, qty: int, price: int) -> None:
         """Fill `qty` more shares of today's order at `price`."""
         o = self.orders[self.today][order_no]

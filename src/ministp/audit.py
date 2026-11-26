@@ -49,6 +49,9 @@ ACTIONS = {
     "CORPORATE_ACTION_ADD": "권리 등록",
     "CORPORATE_ACTION_CANCEL": "권리 취소",
     "DIVIDEND_PAY": "배당 입금 기록",
+    "CASH_DEPOSIT": "입금 기록",
+    "CASH_WITHDRAW": "출금 기록",
+    "CASH_TRANSFER": "계좌 간 대체",
 }
 MESSAGE_MAX = 500
 

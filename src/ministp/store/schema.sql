@@ -1,5 +1,5 @@
 -- MiniSTP ledger schema (spec 03).
--- ERD version: 2.4  (bump on every schema change, then run scripts/gen_erd.py) Append-only tables are enforced in the DB,
+-- ERD version: 2.5  (bump on every schema change, then run scripts/gen_erd.py) Append-only tables are enforced in the DB,
 -- not just in application code.
 
 create table if not exists accounts_chart (
@@ -47,6 +47,9 @@ create table if not exists ledger_events (
     constraint ledger_events_seq_account_key unique (seq, account_id)
 );
 create index if not exists ledger_events_account_idx on ledger_events (account_id, seq);
+-- v2.5: 대체 번호 하나에 보낸 쪽 이벤트 하나, 받은 쪽 이벤트 하나 (R-65).
+create unique index if not exists ledger_events_transfer_key on ledger_events ((payload ->> 'transfer_id'), event_type)
+    where event_type in ('TransferOutEvent', 'TransferInEvent');
 
 create table if not exists journal_entries (
     entry_id          bigserial primary key,
@@ -436,6 +439,24 @@ select e.account_id, (e.payload ->> 'action_id')::bigint as action_id, max(e.pay
  where e.event_type in ('DividendAccrualEvent', 'DividendPaymentEvent', 'DividendCancelEvent')
  group by e.account_id, (e.payload ->> 'action_id')::bigint;
 
+-- v2.5 입출금·대체 (R-56, R-65): 원장 이벤트에서 바로 읽는다 (프로젝션 테이블 없음).
+create or replace view cash_movements_v as
+select e.account_id, e.seq as event_seq, (e.payload ->> 'date')::date as date,
+       case e.event_type when 'DepositEvent' then 'DEPOSIT' when 'WithdrawalEvent' then 'WITHDRAWAL'
+                         when 'TransferInEvent' then 'TRANSFER_IN' else 'TRANSFER_OUT' end as kind,
+       case when e.event_type in ('DepositEvent', 'TransferInEvent') then 1 else -1 end
+           * (e.payload ->> 'amount')::bigint as amount,
+       (e.payload ->> 'transfer_id')::bigint as transfer_id,
+       coalesce(e.payload ->> 'to_account', e.payload ->> 'from_account') as counter_account
+  from ledger_events e
+ where e.event_type in ('DepositEvent', 'WithdrawalEvent', 'TransferInEvent', 'TransferOutEvent');
+
+create or replace view transfers_v as
+select o.transfer_id, o.date, o.account_id as from_account, i.account_id as to_account, -o.amount as amount,
+       o.event_seq as out_seq, i.event_seq as in_seq
+  from cash_movements_v o join cash_movements_v i on i.transfer_id = o.transfer_id and i.kind = 'TRANSFER_IN'
+ where o.kind = 'TRANSFER_OUT';
+
 -- Korean names (한글 명칭). Shown in pgAdmin and in docs/erd. Every table, view and
 -- column must have one; tests/db/test_erd.py fails otherwise.
 comment on table accounts_chart is '계정과목';
@@ -672,6 +693,24 @@ comment on column dividends_v.tax is '원천징수세액';
 comment on column dividends_v.paid_on is '입금일';
 comment on column dividends_v.canceled_on is '인식 취소일';
 comment on column dividends_v.status is '상태 (ACCRUED 인식 / PAID 입금 / CANCELED 취소)';
+
+comment on view cash_movements_v is '입출금·대체 내역 (계좌에 넣거나 뺀 돈, 원장 이벤트에서 계산)';
+comment on column cash_movements_v.account_id is '계좌 ID';
+comment on column cash_movements_v.event_seq is '원장 이벤트 순번';
+comment on column cash_movements_v.date is '기록일 (돈이 움직인 날짜)';
+comment on column cash_movements_v.kind is '구분 (DEPOSIT 입금 / WITHDRAWAL 출금 / TRANSFER_IN 대체 입금 / TRANSFER_OUT 대체 출금)';
+comment on column cash_movements_v.amount is '금액 (들어오면 +, 나가면 -)';
+comment on column cash_movements_v.transfer_id is '대체 번호 (대체일 때)';
+comment on column cash_movements_v.counter_account is '상대 계좌 ID (대체일 때)';
+
+comment on view transfers_v is '계좌 간 대체 (보낸 쪽과 받은 쪽을 한 행으로)';
+comment on column transfers_v.transfer_id is '대체 번호';
+comment on column transfers_v.date is '대체일';
+comment on column transfers_v.from_account is '보낸 계좌 ID';
+comment on column transfers_v.to_account is '받은 계좌 ID';
+comment on column transfers_v.amount is '금액';
+comment on column transfers_v.out_seq is '보낸 쪽 원장 이벤트 순번';
+comment on column transfers_v.in_seq is '받은 쪽 원장 이벤트 순번';
 
 comment on table audit_log is '감사 로그 (누가 언제 무엇을 했고 어떻게 끝났는지, 수정·삭제 불가)';
 comment on column audit_log.id is '행 번호 (1부터 빈 번호 없이)';

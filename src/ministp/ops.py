@@ -110,9 +110,17 @@ def _snapshot(conn, day: dt.date, kind: str, payload, account_id: str = DEFAULT_
 
 # ---------- open ----------
 
+def is_opened(books: Books) -> bool:
+    """`open` has run for this account. An account that was empty at the broker has no event to show for it,
+    only the stored answer of the broker."""
+    return bool(books.ledger.events) or books.conn.execute(
+        "select 1 from broker_snapshots where kind = 'OPENING_BALANCE' and account_id = %s limit 1",
+        (books.account_id,)).fetchone() is not None
+
+
 def open_books(books: Books, broker: BrokerGateway, day: dt.date) -> None:
     """R-05: start the ledger from the broker's settled cash and holdings."""
-    if books.ledger.events:
+    if is_opened(books):
         raise OpsError("원장이 이미 시작됐어요. 시작값은 한 번만 기록해요.")
     if books.status != "OPEN":
         raise OpsError(f"계좌 {books.account_id}가 정상 상태가 아니에요 ({books.status}).")
@@ -124,7 +132,8 @@ def open_books(books: Books, broker: BrokerGateway, day: dt.date) -> None:
     if missing:
         raise OpsError(f"종목 등록이 필요해요: {', '.join(missing)}")
     _snapshot(books.conn, day, "OPENING_BALANCE", list(bal.raw), books.account_id)
-    books.ledger.deposit(day, bal.cash_d0)
+    if bal.cash_d0:   # an account that is still empty starts with no event: its first deposit opens the books
+        books.ledger.deposit(day, bal.cash_d0)
     for sym in sorted(bal.positions):
         p = bal.positions[sym]
         books.ledger.open_position(day, sym, p.qty, p.purchase_amount)
@@ -326,7 +335,7 @@ def close_books(books: Books, day: dt.date) -> NavRow:
 
 def daily_close(books: Books, broker: BrokerGateway, day: dt.date) -> DailyReport:
     ledger = books.ledger
-    if not ledger.events:
+    if not is_opened(books):
         raise OpsError("원장 시작값이 없어요. 먼저 open 명령을 실행해 주세요.")
     notes = []
 

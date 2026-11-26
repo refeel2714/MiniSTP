@@ -16,7 +16,8 @@ from dataclasses import dataclass
 import psycopg
 
 from ..accounting import Account
-from ..ledger import DayClosedEvent, Ledger
+from ..ledger import DayClosedEvent, Ledger, OpeningPositionEvent
+from .integrity import transfer_halves
 from .integrity import APPEND_ONLY_TABLES, AUDIT_CHAIN_TRIGGER, BALANCE_TRIGGERS, CLOSED_DAY_TRIGGERS
 from .postgres import DEFAULT_ACCOUNT, cash_rows, close_row, from_payload, position_row
 
@@ -101,6 +102,16 @@ def compare_rights(conn: psycopg.Connection) -> list[Compared]:
             Compared("권리와 종목이 다른 배당 수", symbols, 0, none),
             Compared("배당 인식 금액 합계", int(gross), int(want), "기준일 보유수량 × 주당 배당금의 합계"),
             Compared("취소된 권리인데 입금으로 기록된 배당 수", paid, 0, none)]
+
+
+def compare_transfers(conn: psycopg.Connection) -> list[Compared]:
+    """R-65: what the sending accounts sent against what the receiving accounts got."""
+    halves, bad = transfer_halves(conn)
+    sides = [r for rows in halves.values() for r in rows]
+    out, got = [r for r in sides if r[1] == "TRANSFER_OUT"], [r for r in sides if r[1] == "TRANSFER_IN"]
+    return [Compared("보낸 쪽 건수", len(out), len(got), "받은 쪽 건수"),
+            Compared("보낸 금액 합계", -sum(r[3] for r in out), sum(r[3] for r in got), "받은 금액 합계"),
+            Compared("짝이 맞지 않는 대체 수", len(bad), 0, "하나도 없어야 함")]
 
 
 def compare_audit(conn: psycopg.Connection) -> list[Compared]:
@@ -202,10 +213,25 @@ def compare_dividends(conn: psycopg.Connection, ledger: Ledger, account_id: str 
                      sum(d.receivable for d in mem.values()), "입금 전 인식 금액의 합계")]
 
 
+def compare_movements(conn: psycopg.Connection, ledger: Ledger, account_id: str = DEFAULT_ACCOUNT) -> list[Compared]:
+    """R-56: the cash movement view against a replay, and 투자원금 against what was put in less what was taken out."""
+    stored = conn.execute("select date, kind, amount, transfer_id, counter_account from cash_movements_v"
+                          " where account_id = %s", (account_id,)).fetchall()
+    mem = ledger.cash_movements()
+    expected = [(m.date, m.kind, m.amount, m.transfer_id, m.counter_account) for m in mem]
+    opening = sum(e.book_cost for e in ledger.events if isinstance(e, OpeningPositionEvent))
+    return [Compared("입출금·대체 건수", len(stored), len(expected), REPLAY),
+            Compared("한쪽에만 있는 입출금 행 수", _unlike(stored, expected), 0, "하나도 없어야 함"),
+            Compared("입출금·대체 금액 합계", int(sum(r[2] for r in stored)), sum(m.amount for m in mem), REPLAY),
+            Compared("투자원금", ledger.account_balance(Account.CONTRIBUTED_CAPITAL),
+                     opening + sum(m.amount for m in mem), "입출금·대체와 시작 보유의 합계")]
+
+
 PLAIN = {"events": compare_events, "guards": compare_guards, "balanced": compare_balanced, "rights": compare_rights,
+         "transfers": compare_transfers,
          "audit": compare_audit}
 REPLAYED = {"journal": compare_journal, "accounts": compare_accounts, "positions": compare_positions,
-            "cash": compare_cash, "closes": compare_closes, "dividends": compare_dividends}
+            "cash": compare_cash, "closes": compare_closes, "dividends": compare_dividends, "movements": compare_movements}
 
 
 def compared(conn: psycopg.Connection, key: str, calendar, fees, instruments,
