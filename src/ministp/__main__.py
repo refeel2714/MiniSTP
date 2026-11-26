@@ -45,7 +45,7 @@ from .instruments import AssetType, Instrument, Market
 from .ledger import Side
 from .oms import OrderStatus
 from .accounts import STATUSES, add_account, add_customer, list_accounts, set_status
-from .ops import (GATE_DAYS, IntradayRunner, OpsError, acquire_writer, add_instrument, cancel_order, clean_streak, close_books, daily_close, load_books, open_books,
+from .ops import (GATE_DAYS, IntradayRunner, OpsError, acquire_writer, add_instrument, cancel_order, clean_streak, confirm_order, close_books, daily_close, load_books, open_books,
                   require_current_schema, resolve_break)
 from .recon import Cause, Status
 from . import rights
@@ -110,6 +110,8 @@ def audited(args, today: dt.date):
     if cmd == "order":
         return "ORDER", args.account, None, {"symbol": args.symbol, "side": args.side.upper(), "qty": args.qty,
                                              "limit_price": args.limit, "date": today}
+    if cmd == "confirm":
+        return "ORDER_CONFIRM", args.account, args.order, {"order_no": args.order_no, "not_placed": args.not_placed}
     if cmd in ("daily", "close"):
         return cmd.upper(), args.account, (args.date or today).isoformat(), None
     if cmd == "resolve":
@@ -271,7 +273,16 @@ def _order_via_approval(books, broker, today: dt.date, args, started: dt.datetim
         print(f"결재 요청 {key.request_no}을 올렸어요. 다른 승인자가 승인하면 장중 run이 보내요.")
         return None, None
     session = session_for(books, broker, today)
-    sent = approval.send_approved(books, session, today, keys=[key], now=started)[0]
+    sent = approval.send_approved(books, session, today, keys=[key], now=started)
+    if not sent:      # R-103: 답이 없는 주문이 남아 있어서 전송을 멈춘 상태
+        print(f"요청 {key.request_no}은 승인했지만 보내지 않았어요. 접수 결과를 모르는 주문이 있어요: "
+              f"{', '.join(session.unacked)}. `confirm`으로 확인하면 장중 run이 이어서 보내요.")
+        return session, None
+    sent = sent[0]
+    if sent.unknown:
+        print(f"요청 {key.request_no} 주문 {sent.client_id}: 증권사 답이 없어요. 다시 보내지 않아요. "
+              f"다음 조회에서 증권사 주문내역으로 찾거나, `confirm {sent.client_id}`로 확인해 주세요.")
+        return session, None
     if sent.client_id is None:
         print(f"주문 실패 (요청 {key.request_no}): {sent.detail}")
         return session, None
@@ -381,6 +392,12 @@ def _run(argv, *, environ=os.environ, client_factory=KisClient, connect=psycopg.
     p = sub.add_parser("cancel", parents=[by_account],
                        help="오늘 낸 주문의 미체결 잔량 취소 (run이 떠 있으면 run 창에서 cancel)")
     p.add_argument("order", help="주문 번호: 3, S20261124-0003, 또는 증권사 주문번호")
+    p = sub.add_parser("confirm", parents=[by_account],
+                       help="증권사 답이 없던 오늘 주문을 증권사 주문내역과 맞춰 확인 (R-103, run이 떠 있으면 run 창에서 confirm)")
+    p.add_argument("order", help="주문 번호: 3 또는 S20261124-0003")
+    found = p.add_mutually_exclusive_group(required=True)
+    found.add_argument("--order-no", help="HTS나 증권사 주문내역에서 본 그 주문의 증권사 주문번호")
+    found.add_argument("--not-placed", action="store_true", help="증권사에 그런 주문이 없음 (그 줄은 전송 실패로 닫혀요)")
     p = sub.add_parser("daily", parents=[by_account])
     p.add_argument("--date", type=dt.date.fromisoformat, help="지난 영업일을 다시 대사할 때")
     p = sub.add_parser("close", parents=[by_account],
@@ -620,7 +637,7 @@ def _run(argv, *, environ=os.environ, client_factory=KisClient, connect=psycopg.
                 require_current_schema(conn)    # 결재는 원장에 쓰지 않아요: run이 떠 있어도 돼요
                 return _approval(conn, args, today, order_day(calendar, started))
 
-            if args.cmd in ("open", "order", "cancel", "daily", "close", "run", "resolve", "customer") or (
+            if args.cmd in ("open", "order", "cancel", "confirm", "daily", "close", "run", "resolve", "customer") or (
                     args.cmd in ("dividend", "cash", "adjust") and args.what != "list") or (
                     args.cmd == "account" and args.what != "list") or (
                     args.cmd == "code" and args.what not in ("list", "check")):
@@ -758,6 +775,21 @@ def _run(argv, *, environ=os.environ, client_factory=KisClient, connect=psycopg.
                     print(f"주문 {cid}는 취소 전에 모두 체결됐어요 ({o.filled_qty}주). 체결을 원장에 반영했어요.")
                 else:
                     print(f"주문 {cid} 취소 요청을 증권사가 받았어요. 확인은 장중 run이나 장 마감 후 daily가 반영해요.")
+                return 0
+
+            if args.cmd == "confirm":
+                session, cid, how = confirm_order(books, broker, today, args.order,
+                                                  None if args.not_placed else args.order_no)
+                o = session.oms.orders[cid]
+                if how == "found":
+                    print(f"주문 {cid}: 조회로 이미 찾았어요 (증권사 주문 {session._by_client[cid].ack.order_no}, "
+                          f"체결 {o.filled_qty}/{o.qty}주). 따로 확인할 것이 없어요.")
+                elif how == "not_placed":
+                    print(f"주문 {cid}: 증권사에 없는 주문으로 닫았어요. 그 줄은 전송 실패로 남아요. 필요하면 새로 요청해 주세요.")
+                else:
+                    print(f"주문 {cid}: 증권사 주문 {args.order_no}로 확인했어요 (체결 {o.filled_qty}/{o.qty}주).")
+                if not session.unacked:
+                    print("답이 없던 주문을 모두 확인했어요. 장중 run이 승인된 요청을 이어서 보내요.")
                 return 0
 
             if args.cmd == "daily":

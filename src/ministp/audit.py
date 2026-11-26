@@ -62,6 +62,7 @@ ACTIONS = {
     "ORDER_APPROVE": "주문 승인",
     "ORDER_REJECT": "주문 반려",
     "ORDER_REQUEST_CANCEL": "주문 요청 취소",
+    "ORDER_CONFIRM": "주문 결과 확인",
 }
 MESSAGE_MAX = 500
 

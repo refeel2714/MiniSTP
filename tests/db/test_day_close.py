@@ -188,7 +188,7 @@ def test_a_migrated_ledger_closes_its_next_day_and_keeps_the_old_days_open_to_no
     """0003 on the v1.1 sample: no close exists yet, so the lock holds nothing until the first `daily`."""
     _restore_v1_1()
     with psycopg.connect(URL, autocommit=True) as old:
-        assert [r.migration.version for r in mg.migrate(old)] == [1, 2, 3, 4, 5, 6, 7, 8, 9]
+        assert [r.migration.version for r in mg.migrate(old)] == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
         assert old.execute("select count(*) from day_closes").fetchone()[0] == 0
         events = old.execute("select count(*) from ledger_events").fetchone()[0]
         assert old.execute("select count(*) from unclosed_events_v").fetchone()[0] == events

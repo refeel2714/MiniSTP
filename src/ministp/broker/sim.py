@@ -8,7 +8,7 @@ import datetime as dt
 from ..calendar import BusinessCalendar, SettlementCycle
 from ..fees import FeeSchedule
 from ..instruments import Instrument
-from .base import BrokerBalance, BrokerOrder, BrokerPosition, OrderAck
+from .base import BrokerBalance, BrokerOrder, BrokerPosition, OrderAck, OrderOutcomeUnknown, OrderRejected
 
 
 class SimBroker:
@@ -23,6 +23,10 @@ class SimBroker:
         self.prices = dict(prices)
         self.today = today
         self.cash_skew = 0  # demo: a broker-side cash difference to reconcile
+        # Tests of R-103: what the next place_order calls do, one word each, then back to normal.
+        # "reject": the broker says no. "lost": the order is placed but its answer never arrives.
+        # "unreachable": nothing reaches the broker and no answer arrives either.
+        self.next_outcomes: list[str] = []
 
     def set_day(self, day: dt.date) -> None:
         self.today = day
@@ -66,9 +70,16 @@ class SimBroker:
         return self.prices[symbol]
 
     def place_order(self, symbol: str, side: str, qty: int, limit_price: int | None) -> OrderAck:
+        what = self.next_outcomes.pop(0) if self.next_outcomes else "ok"
+        if what == "reject":
+            raise OrderRejected("모의 증권사 거부 (시험)", "SIM_REJECT")
+        if what == "unreachable":
+            raise OrderOutcomeUnknown("모의 증권사 응답 없음 (시험, 주문은 닿지 않음)")
         day = self.orders.setdefault(self.today, {})
         no = f"{len(day) + 1:010d}"
         day[no] = BrokerOrder(no, symbol, side, qty, 0, 0, 0, 0)
+        if what == "lost":
+            raise OrderOutcomeUnknown("모의 증권사 응답 없음 (시험, 주문은 접수됨)")
         return OrderAck(no, "SIM")
 
     def cancel_order(self, ack: OrderAck) -> None:

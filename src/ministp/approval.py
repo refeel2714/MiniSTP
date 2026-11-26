@@ -32,7 +32,7 @@ from .risk import RiskLimits
 RIGHTS = {"ORDER_WRITE": "주문 작성", "ORDER_APPROVE": "주문 승인", "RIGHTS_ADMIN": "권한 관리"}
 ACTIONS = {"REQUEST": "결재 요청", "APPROVE": "승인", "REJECT": "반려", "CANCEL": "요청 취소", "EXPIRE": "만료"}
 STATUSES = {"PENDING": "결재 대기", "APPROVED": "승인", "REJECTED": "반려", "CANCELED": "취소",
-            "SENT": "전송", "SEND_FAILED": "전송 실패", "EXPIRED": "만료"}
+            "SENT": "전송", "SEND_FAILED": "전송 실패", "EXPIRED": "만료", "SEND_UNKNOWN": "결과 미확인"}
 LIVE = ("PENDING", "APPROVED")      # 아직 주문가능금액·매도가능수량을 잡고 있는 요청
 
 
@@ -194,6 +194,13 @@ class RequestLine:
     send_outcome: str | None = None   # SENT / FAILED, 아직 안 보냈으면 None
     client_id: str | None = None
     send_reason: str | None = None
+    ack_outcome: str | None = None    # 증권사 답: ACCEPTED / REJECTED, 보냈는데 None이면 결과 미확인 (R-103)
+    order_no: str | None = None
+    ack_detail: str | None = None
+
+    @property
+    def awaiting_ack(self) -> bool:
+        return self.send_outcome == "SENT" and self.ack_outcome is None
 
 
 @dataclass(frozen=True)
@@ -242,7 +249,7 @@ def requests(conn: psycopg.Connection, *, account_id: str | None = None, trade_d
     lines: dict[tuple, list[RequestLine]] = {}
     for row in conn.execute(
             "select l.trade_date, l.request_no, l.line_no, l.symbol, l.side, l.qty, l.limit_price, l.send_outcome,"
-            " l.client_id, l.send_reason from order_request_lines_v l join order_requests_v q"
+            " l.client_id, l.send_reason, l.ack_outcome, l.order_no, l.ack_detail from order_request_lines_v l join order_requests_v q"
             " using (trade_date, request_no)" + cond + " order by l.trade_date, l.request_no, l.line_no", args):
         lines.setdefault(row[:2], []).append(RequestLine(row[2], row[3], Side(row[4]), *row[5:]))
     return [Request(*h, lines=tuple(lines.get(h[:2], ()))) for h in heads]
@@ -461,7 +468,8 @@ class Sent:
     line_no: int
     symbol: str
     client_id: str | None
-    detail: str = ""        # 전송 실패 이유
+    detail: str = ""        # 전송 실패 이유, 또는 결과 미확인 내용
+    unknown: bool = False   # R-103: 보냈지만 답이 없음. 찾을 때까지 다음 줄을 보내지 않아요
 
     def __str__(self) -> str:
         return f"요청 {self.key.request_no}-{self.line_no} {self.symbol}"
@@ -470,10 +478,18 @@ class Sent:
 def send_approved(books: Books, session, day: dt.date, *, keys=None, limits: RiskLimits = RiskLimits(),
                   weight_limit: Decimal = DEFAULT_WEIGHT_LIMIT, now: dt.datetime | None = None) -> list[Sent]:
     """오늘 승인된 요청의 보내지 않은 줄을 보내요. 보내기 직전에 묶음 검증을 다시 하고(막힌 바스켓은 통째로
-    전송 실패), 통과한 줄은 주문 경로(`session.submit`, R-36~38)로 한 줄씩 보내요."""
+    전송 실패), 통과한 줄은 주문 경로(`session.submit`, R-36~38)로 한 줄씩 보내요.
+
+    R-103: 증권사가 거부한 줄은 그 줄만 실패예요. 단건 요청이면 다음 요청은 계속 보내요. 바스켓은 한 묶음이라 남은 줄을
+    보내지 않고, 이미 나간 줄의 미체결 잔량은 바로 취소를 요청해요(체결된 수량은 되돌리지 않아요. 반대 매매는 새 주문).
+    답이 없는 줄이 생기면 거기서 멈추고, 그 주문을 증권사 주문내역에서 찾거나 사람이 확인할 때까지 이 계좌는 아무것도
+    보내지 않아요. 어느 경우에도 같은 줄을 저절로 다시 보내지 않아요."""
+    from .oms import InvalidTransition
     from .session import failure_text
     conn = books.conn
     keys = None if keys is None else set(parse_keys(keys, day))
+    if session.unacked:      # R-103: 답이 없는 주문이 있으면 찾을 때까지 아무것도 보내지 않아요
+        return []
     conn.execute("select pg_advisory_lock(hashtext('ministp.orders:' || %s))", (books.account_id,))
     try:
         reqs = [r for r in requests(conn, account_id=books.account_id, trade_date=day, statuses=("APPROVED",))
@@ -517,22 +533,59 @@ def send_approved(books: Books, session, day: dt.date, *, keys=None, limits: Ris
         # 계좌 전체 사유 가운데 현금 합계는 줄마다 쌓아 본 결과(앞 줄을 보냈다고 친 검사)로 갈음해요:
         # 앞 줄은 나가고 모자라는 줄부터 멈춰요. 킬 스위치와 계좌 상태는 모든 줄을 막아요.
         hard = tuple(i for i in result.issues if i != "INSUFFICIENT_CASH")
+        # 바스켓에서 증권사가 거부한 줄(앞서 거부됐거나, 답이 없다가 사람이 '없음'으로 닫은 줄 포함) 번호
+        stopped: dict[Key, int] = {r.key: ln.line_no for r in reqs if r.order_type == "BASKET"
+                                   for ln in r.lines if ln.ack_outcome == "REJECTED"}
+        recalled: set[Key] = set()
+
+        def recall(r: Request) -> str:
+            """바스켓의 나간 줄마다 미체결 잔량 취소를 요청해요(R-45 경로). 결과를 한 줄로 돌려줘요."""
+            recalled.add(r.key)
+            sent = {ln.client_id: ln.line_no for ln in r.lines if ln.client_id}
+            sent |= {x.client_id: x.line_no for x in out if x.key == r.key and x.client_id}
+            notes = []
+            for cid, no in sorted(sent.items(), key=lambda kv: kv[1]):
+                if cid not in session.oms.orders or cid in session.unacked:
+                    continue
+                try:
+                    session.cancel(cid)
+                    notes.append(f"{no}번 줄 미체결 취소 요청")
+                except InvalidTransition as exc:
+                    notes.append(f"{no}번 줄 취소 안 함({str(exc).split(': ', 1)[-1]})")
+                except Exception as exc:     # 취소 답을 못 받았어요. 다음 조회가 증권사 수량으로 정해요
+                    notes.append(f"{no}번 줄 취소 결과 미확인({exc})")
+            return "바스켓을 멈췄어요" + (f": {', '.join(notes)}" if notes else "")
+
         session.on_submit = on_submit
         try:
             for (r, ln), lc in zip(todo, result.lines):
+                if r.key in stopped:
+                    why = f"바스켓 {stopped[r.key]}번 줄을 증권사가 거부해서 보내지 않았어요"
+                    if r.key not in recalled:
+                        why += f". {recall(r)}"
+                    failed(r, ln, why)
+                    continue
                 if lc.blocked or hard:
                     failed(r, ln, f"보내기 직전 묶음 검증: {issue_text(hard + lc.together)}", refused=True)
                     continue
                 current[:] = [r, ln]
                 before = len(session.anomalies)
                 cid = session.submit(day, ln.symbol, ln.side, ln.qty, ln.limit_price)
+                if cid is not None and cid in session.unacked:
+                    # R-103: 답이 없어요. 증권사에 있을 수도 있으니 다시 보내지 않고, 남은 줄도 멈춰요.
+                    out.append(Sent(r.key, ln.line_no, ln.symbol, cid, session.anomalies[-1].detail, unknown=True))
+                    break
                 if cid is not None:
                     out.append(Sent(r.key, ln.line_no, ln.symbol, cid))
                     continue
                 again = conn.execute("select outcome from order_sends where trade_date = %s and request_no = %s"
                                      " and line_no = %s", (r.trade_date, r.request_no, ln.line_no)).fetchone()
                 if again:             # 의도는 남았고 증권사가 거부
-                    out.append(Sent(r.key, ln.line_no, ln.symbol, None, failure_text(session.anomalies[-1].detail)))
+                    why = failure_text(session.anomalies[-1].detail)
+                    if r.order_type == "BASKET":
+                        stopped[r.key] = ln.line_no
+                        why += f". {recall(r)}"
+                    out.append(Sent(r.key, ln.line_no, ln.symbol, None, why))
                 else:
                     why = session.anomalies[-1].detail if len(session.anomalies) > before else "주문 경로 거부"
                     failed(r, ln, failure_text(why))

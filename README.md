@@ -215,7 +215,7 @@ MINISTP_TEST_DATABASE_URL=postgresql://postgres:postgres@localhost:5432/ministp_
 
 앱키, 앱시크릿, 모의계좌번호(예: `12345678-01`)를 차례로 물어봅니다. 입력 내용은 화면에 표시되지 않고 저장되지 않습니다. `MINISTP_KIS_APP_KEY`, `MINISTP_KIS_APP_SECRET`, `MINISTP_KIS_ACCOUNT` 환경변수가 있으면 그 값을 씁니다.
 
-기본 연결 대상은 모의투자 서버입니다. 실전 서버는 `MINISTP_KIS_ENV=live`와 `MINISTP_ALLOW_LIVE=1`을 둘 다 설정해야 열립니다(Phase 4 전용). 토큰은 `~/.ministp/kis_token.json`에 캐시합니다(KIS 토큰 발급 1분당 1회 제한).
+기본 연결 대상은 모의투자 서버입니다. 실전 서버는 `MINISTP_KIS_ENV=live`와 `MINISTP_ALLOW_LIVE=1`을 둘 다 설정해야 열립니다(Phase 4 전용). 토큰은 `~/.ministp/kis_token.json`에 캐시합니다(KIS 토큰 발급 1분당 1회 제한). 모의 실측 때는 `MINISTP_KIS_TRACE=파일경로`를 주면 주문·취소 요청과 증권사 응답(rt_cd·msg_cd·msg1·output), 그리고 주문내역이 바뀔 때마다 한 줄씩 JSON으로 남깁니다(키·토큰·계좌번호는 넣지 않음).
 
 ### 주문 한 바퀴 확인 (장중, 모의투자 전용)
 
@@ -259,6 +259,15 @@ MINISTP_TEST_DATABASE_URL=postgresql://postgres:postgres@localhost:5432/ministp_
 .venv\Scripts\python -m ministp request approve 1             :: 요청 번호만 (주문일은 지금 요청이 나갈 날, 다른 날은 20261125-1)
 .venv\Scripts\python -m ministp request reject 2 --reason "가격 재확인"
 ```
+
+주문 결과 미확인 (ERD v2.10부터, R-103): 증권사가 거부한 줄은 그 줄만 실패하고 다음 요청은 나갑니다. 바스켓은 한 묶음이라 남은 줄을 보내지 않고, 이미 나간 줄의 미체결 잔량은 바로 취소를 요청합니다(체결된 수량은 되돌리지 않습니다). 주문을 보냈는데 답이 없으면(시간 초과 등) 다시 보내지 않고, 그 주문이 풀릴 때까지 그 계좌는 아무것도 보내지 않습니다. 체결 조회가 증권사 주문내역에서 하나뿐인 같은 모양의 주문을 찾으면 저절로 풀리고, 아니면 HTS에서 확인한 뒤 직접 닫습니다.
+
+```bat
+.venv\Scripts\python -m ministp confirm 3 --order-no 0000012345   :: HTS에서 본 증권사 주문번호로 접수 처리
+.venv\Scripts\python -m ministp confirm 3 --not-placed               :: 증권사에 없는 주문으로 닫기 (주문 접수 거부)
+```
+
+`run` 창에서는 `confirm 3 0000012345` 또는 `confirm 3 none`입니다.
 
 계좌가 여러 개일 때 (ERD v2.0부터):
 

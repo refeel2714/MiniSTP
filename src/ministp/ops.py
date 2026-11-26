@@ -166,9 +166,9 @@ def session_for(books: Books, broker: BrokerGateway, day: dt.date) -> TradingSes
             session.restore(day, cid, sym, Side(side), qty, limit, OrderAck(order_no, org_no),
                             cancel_requested=cid in cancel_requested)
         elif outcome is None:
-            # intent stored but no answer recorded: the process died around the broker call
-            session.anomalies.append(Anomaly(day, "UNACKED_ORDER", cid,
-                                             f"{side} {sym} x{qty}: 접수 결과 미기록, 증권사 주문내역 확인 필요"))
+            # R-103: intent stored but no answer recorded (the answer was lost, or the process died around
+            # the broker call). Tracked again so its cash stays reserved and a sync can find it.
+            session.restore_unacked(day, cid, sym, Side(side), qty, limit)
     # Next number after the highest stored one. Orders refused by the order check never reach the DB,
     # so counting rows would hand out a number already used today (S…-0003 twice).
     session._seq = max((int(r[0].rsplit("-", 1)[1]) for r in rows), default=0)
@@ -185,13 +185,22 @@ def session_for(books: Books, broker: BrokerGateway, day: dt.date) -> TradingSes
             if ack is None:
                 books.conn.execute("insert into oms_order_acks (client_id, outcome, detail)"
                                    " values (%s, 'REJECTED', %s)", (cid, detail))
-                audit.record(books.conn, "ORDER", "FAILED", account_id=books.account_id, target=cid,
-                             detail=asked, message=detail)
+                audit.record(books.conn, "ORDER_CONFIRM" if session.confirming else "ORDER", "FAILED",
+                             account_id=books.account_id, target=cid, detail=asked, message=detail)
             else:
-                books.conn.execute("insert into oms_order_acks (client_id, outcome, order_no, org_no)"
-                                   " values (%s, 'ACCEPTED', %s, %s)", (cid, ack.order_no, ack.org_no))
-                audit.record(books.conn, "ORDER", account_id=books.account_id, target=cid,
-                             detail=asked | {"order_no": ack.order_no})
+                books.conn.execute("insert into oms_order_acks (client_id, outcome, order_no, org_no, detail)"
+                                   " values (%s, 'ACCEPTED', %s, %s, %s)",
+                                   (cid, ack.order_no, ack.org_no, detail or None))
+                audit.record(books.conn, "ORDER_CONFIRM" if session.confirming else "ORDER",
+                             account_id=books.account_id, target=cid,
+                             detail=asked | {"order_no": ack.order_no}, message=detail or None)
+
+    def on_unknown(cid, detail):
+        # R-103: no ack row on purpose. The order stays "sent, answer unknown" until it is found.
+        o = session.oms.orders[cid]
+        audit.record(books.conn, "ORDER", "FAILED", account_id=books.account_id, target=cid,
+                     detail=_order_detail(o.symbol, o.side, o.qty, o.limit_price) | {"unknown": True},
+                     message=f"접수 결과 미확인: {detail}")
 
     def on_refused(d, symbol, side, qty, limit_price, detail):
         # R-85: an order the pre-check refused is in no order table. This row is all that is left of it.
@@ -211,6 +220,7 @@ def session_for(books: Books, broker: BrokerGateway, day: dt.date) -> TradingSes
                          detail=_order_detail(o.symbol, o.side, o.qty, o.limit_price) | {"order_no": ack.order_no})
 
     session.on_submit, session.on_ack, session.on_refused, session.on_cancel = on_submit, on_ack, on_refused, on_cancel
+    session.on_unknown = on_unknown
     return session
 
 
@@ -238,6 +248,32 @@ def cancel_order(books: Books, broker: BrokerGateway, day: dt.date, ref: str,
             if session.oms.orders[cid].status is not OrderStatus.CANCEL_PENDING or not wait():
                 break
     return session, cid
+
+
+def confirm_order(books: Books, broker: BrokerGateway, day: dt.date, ref: str,
+                  order_no: str | None) -> tuple[TradingSession, str, str]:
+    """R-103: settle an order of today that was sent with no answer. `order_no`: the broker's number for it
+    (from the HTS or the broker's order list); None: the broker has no such order, so it is closed as
+    refused and its request line counts as failed. A sync runs first, so one found there needs nothing.
+    Returns (session, client id, how): "found" (the sync found it), "confirmed" or "not_placed"."""
+    session = session_for(books, broker, day)
+    waiting = set(session.unacked)
+    session.sync(day)
+    try:
+        cid = session.find(ref)
+    except KeyError:
+        raise OpsError(f"오늘 MiniSTP가 낸 주문 가운데 {ref}을(를) 찾지 못했어요.") from None
+    if cid not in session.unacked:
+        if cid in waiting:                # the sync just found it in the broker's list
+            return session, cid, "found"
+        o = session.oms.orders[cid]
+        raise OpsError(f"주문 {cid}는 결과를 기다리는 주문이 아니에요 (지금 {o.status.value}).")
+    try:
+        session.confirm_unacked(day, cid, order_no)
+    except InvalidTransition as exc:
+        raise OpsError(str(exc).split(": ", 1)[-1]) from None
+    session.sync(day)                     # a found order may already have fills
+    return session, cid, "not_placed" if order_no is None else "confirmed"
 
 
 def stored_open_orders(books: Books, day: dt.date) -> list[OpenOrder]:
@@ -509,6 +545,9 @@ class IntradayStats:
     quote_failures: int = 0
 
 
+UNACKED_POLL = 10.0   # 답이 없는 주문이 있으면 이 간격으로 증권사 주문내역을 봐요 (R-103)
+
+
 class IntradayRunner:
     """Main loop of `python -m ministp run`: the only ledger writer during market hours.
 
@@ -533,6 +572,7 @@ class IntradayRunner:
         self.quotes: dict[str, Quote] = latest_quotes(books.conn, day)   # 다시 띄워도 오늘 받은 가격부터
         self._quote_failing: set[str] = set()
         self._last_poll = self._last_recon = self._last_quote = self._last_send = self.monotonic()
+        self._paused_for: tuple[str, ...] = ()   # 답이 없는 주문 때문에 전송을 멈춘 주문들 (R-103)
 
     # --- handlers ---
 
@@ -658,6 +698,9 @@ class IntradayRunner:
             if cmd == "cancel" and len(parts) == 2:
                 self.cancel(parts[1])
                 return True
+            if cmd == "confirm" and len(parts) == 3:
+                self.confirm(parts[1], None if parts[2].lower() in ("none", "없음", "--not-placed") else parts[2])
+                return True
             if cmd == "status":
                 self.print_status()
                 return True
@@ -667,7 +710,8 @@ class IntradayRunner:
         except (ValueError, OpsError) as exc:
             self.out(f"오류: {exc}")
             return True
-        self.out("명령: buy 종목 수량 [지정가] | sell 종목 수량 [지정가] | cancel 주문 | status | recon | quit")
+        self.out("명령: buy 종목 수량 [지정가] | sell 종목 수량 [지정가] | cancel 주문 | confirm 주문 증권사번호|none"
+                 " | status | recon | quit")
         return True
 
     def order(self, symbol: str, side: Side, qty: int, limit: int | None) -> None:
@@ -694,11 +738,47 @@ class IntradayRunner:
         """승인된 오늘 요청을 보내요 (R-101). 보내기 직전에 묶음 검증을 다시 해요."""
         from . import approval
         self._last_send = self.monotonic()
+        waiting = self.session.unacked
+        if waiting and self.monotonic() - self._last_poll >= UNACKED_POLL:
+            self.poll("답 없는 주문 찾기")    # 주기 조회(1분)를 기다리지 않고 증권사 주문내역에서 먼저 찾아봐요
+            waiting = self.session.unacked
+        if waiting:                       # R-103: 찾을 때까지 보내지 않아요. 같은 안내는 한 번만
+            if tuple(waiting) != self._paused_for:
+                self._paused_for = tuple(waiting)
+                self.out(f"[{self.now():%H:%M:%S}] 접수 결과를 모르는 주문 {', '.join(waiting)} 때문에 전송을 멈췄어요. "
+                         "조회로 증권사 주문내역에서 찾으면 이어서 보내요. 없으면 `confirm 주문ID --not-placed`")
+            return
+        if self._paused_for:
+            self._paused_for = ()
+            self.out(f"[{self.now():%H:%M:%S}] 답이 없던 주문을 모두 확인했어요. 승인된 요청을 이어서 보내요.")
         for s in approval.send_approved(self.books, self.session, self.day, now=self.now()):
-            if s.client_id:
+            if s.unknown:
+                self.out(f"[{self.now():%H:%M:%S}] {s} → 주문 {s.client_id} 증권사 답 없음. 다시 보내지 않고 "
+                         f"{UNACKED_POLL:.0f}초 안에 증권사 주문내역에서 찾아봐요. 그때까지 다른 요청도 멈춰요.")
+            elif s.client_id:
                 self.out(f"[{self.now():%H:%M:%S}] {s} → 주문 {s.client_id} 접수. 체결되면 바로 원장에 반영해요.")
             else:
                 self.out(f"[{self.now():%H:%M:%S}] {s} 전송 실패: {s.detail}")
+
+    def confirm(self, ref: str, order_no: str | None) -> None:
+        """R-103: `confirm 3 0000012345` (답이 없던 주문의 증권사 주문번호) or `confirm 3 none` (증권사에 없음)."""
+        self.poll("확인 전 조회")          # often the order list already settles it
+        try:
+            cid = self.session.find(ref)
+        except KeyError:
+            self.out(f"오늘 MiniSTP가 낸 주문 가운데 {ref}을(를) 찾지 못했어요.")
+            return
+        if cid not in self.session.unacked:
+            self.out(f"주문 {cid}는 결과를 기다리는 주문이 아니에요 (지금 {self.session.oms.orders[cid].status.value}).")
+            return
+        try:
+            self.session.confirm_unacked(self.day, cid, order_no)
+        except InvalidTransition as exc:
+            self.out(f"확인하지 않았어요: {str(exc).split(': ', 1)[-1]}")
+            return
+        self.out(f"주문 {cid}: " + (f"증권사 주문 {order_no}로 확인했어요." if order_no else
+                                     "증권사에 없는 주문으로 닫았어요. 그 줄은 전송 실패로 남아요. 필요하면 새로 요청해 주세요."))
+        self.poll("확인 후 조회")
 
     def cancel(self, ref: str) -> None:
         """R-45: `cancel 3` (오늘 세 번째 주문), `cancel S20261124-0003` or the broker's order number."""

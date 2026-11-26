@@ -227,12 +227,13 @@ Phase 2 구현(v1.4)은 위 설계를 단순화했다. 주문 생성 정보는 `
 | 뷰 | 주요 컬럼 | 비고 |
 |---|---|---|
 | user_rights_v | user_id, user_name, account_id, right_code, max_order_value, self_approve, effective_from | 오늘 적용되는 권한(부여된 것만) |
-| order_requests_v | trade_date, request_no, order_type, line_count, amount, status, approved_by, self_approved, sent_lines, failed_lines, last_reason | 요청마다 상태(결재 이력의 마지막 행과 줄별 전송 결과) |
-| order_request_lines_v | trade_date, request_no, line_no, symbol, side, qty, limit_price, amount, send_outcome, client_id, send_reason | 줄마다 전송 결과 |
+| order_requests_v | trade_date, request_no, order_type, line_count, amount, status, approved_by, self_approved, sent_lines, failed_lines, accepted_lines, rejected_lines, unknown_lines, last_reason | 요청마다 상태(결재 이력의 마지막 행과 줄별 전송·접수 결과). v2.10: 결과를 기다리는 줄이 있으면 SEND_UNKNOWN, 전송은 한 줄 이상 접수(R-103) |
+| order_request_lines_v | trade_date, request_no, line_no, symbol, side, qty, limit_price, amount, send_outcome, client_id, send_reason, ack_outcome, order_no, ack_detail | 줄마다 전송 결과와 증권사 답(`oms_order_acks`, 주문 ID로 연결). 전송했는데 답이 없으면 결과 미확인(R-103) |
 
 1. **여섯 다 추가만 한다**: 고치거나 지우지 않는다. 권한 변경은 새 행, 요청의 상태 변화는 결재 이력이나 전송 이력의 새 행이다.
 2. **이중 전송 방지**: 전송 행은 주문 의도(`oms_orders`)와 같은 트랜잭션에 증권사 호출 전에 들어간다. 줄 하나에 전송 행 하나, 주문 ID 하나에 전송 행 하나, 승인 다음에만 전송(트리거).
 3. **v2.8 → v2.9 (11/24)**: 운영 적용 전에 요청 키를 `Q날짜-순번` 글자에서 주문일 + 요청 번호로, 바스켓을 종목마다 요청에서 요청 한 건 + 줄 여러 개로 바꿨다. 마이그레이션은 `0009_order_approval` 하나다.
+4. **v2.10 (11/24, 초안)**: 주문 결과 미확인(R-103). 테이블은 그대로이고 두 뷰와 공통코드(REQUEST_STATUS SEND_UNKNOWN, AUDIT_ACTION ORDER_CONFIRM)만 바뀐다. 마이그레이션 `0010_send_unknown`.
 ## 원장 무결성 점검 (v1.11)
 
 `python -m ministp verify`는 저장된 원장이 이벤트를 처음부터 다시 계산한 결과와 같은지 읽기 전용으로 확인한다. 쓰기 잠금을 잡지 않으므로 `run`이 떠 있어도 실행할 수 있다. 하나라도 어긋나면 종료 코드 1을 돌려준다.

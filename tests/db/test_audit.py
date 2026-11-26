@@ -6,6 +6,7 @@ import pytest
 
 from ministp import __main__ as cli
 from ministp import accounts, audit, codes
+from ministp.broker import OrderRejected
 from ministp.ledger import Side
 from ministp.ops import OpsError, close_books, daily_close, open_books, place_order, resolve_break
 from ministp.recon import Cause
@@ -169,7 +170,7 @@ def test_an_order_refused_before_the_broker_is_in_no_order_table_but_in_the_log(
         "REFUSED", {"symbol": "999999"}, "종목 등록이 필요해요: 999999")
 
     def down(*a):
-        raise RuntimeError("APBK0919 주문가능금액 초과")
+        raise OrderRejected("APBK0919 주문가능금액 초과", "APBK0919")
     broker.place_order = down                                         # the broker says no: the intent is stored, so FAILED names it
     _, cid = place_order(books(conn), broker, DAY, "069500", Side.BUY, 1)
     row, stored = last(conn), conn.execute("select client_id from oms_orders").fetchall()
@@ -273,9 +274,9 @@ def test_applying_a_migration_is_the_first_row_of_a_migrated_database(capsys):
     assert cli.run(["db-migrate", "--apply"], environ=env) == 0
     capsys.readouterr()
     with psycopg.connect(URL, autocommit=True) as c:
-        assert list(mg.applied(c)) == [1, 2, 3, 4, 5, 6, 7, 8, 9]
-        assert log(c) == [("DB_MIGRATE", "DONE", None, "ERD v2.9")]
-        assert len(last(c).detail["applied"]) == 9 and last(c).channel == "CLI"
+        assert list(mg.applied(c)) == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+        assert log(c) == [("DB_MIGRATE", "DONE", None, "ERD v2.10")]
+        assert len(last(c).detail["applied"]) == 10 and last(c).channel == "CLI"
         assert codes.check(c) == [] and audit.chain_problems(c)[2] == []
 
 

@@ -204,7 +204,8 @@ SEED: tuple[CodeGroup, ...] = (
                   ("CANCELED", "취소", ""),
                   ("SENT", "전송", "모든 줄을 처리했고 한 줄 이상 나감"),
                   ("SEND_FAILED", "전송 실패", "모든 줄이 전송 실패"),
-                  ("EXPIRED", "만료", ""))),
+                  ("EXPIRED", "만료", ""),
+                  ("SEND_UNKNOWN", "결과 미확인", "보낸 줄 가운데 증권사 답이 없는 줄이 있음. 찾을 때까지 다음 전송을 멈춰요"))),
     CodeGroup("ORDER_TYPE", "주문 유형", "요청 한 건에 담긴 주문의 모양. 결재는 요청 단위로 해요 (R-99).",
               "order_requests.order_type", (
                   ("SINGLE", "단건", "종목 한 줄"),
@@ -252,7 +253,8 @@ SEED: tuple[CodeGroup, ...] = (
         ("ORDER_REQUEST", "주문 결재 요청", "묶음 검증(R-98)을 통과한 요청만 남아요"),
         ("ORDER_APPROVE", "주문 승인", "셀프 승인 포함"),
         ("ORDER_REJECT", "주문 반려", ""),
-        ("ORDER_REQUEST_CANCEL", "주문 요청 취소", "작성자가 전송 전에 거둠"))),
+        ("ORDER_REQUEST_CANCEL", "주문 요청 취소", "작성자가 전송 전에 거둠"),
+        ("ORDER_CONFIRM", "주문 결과 확인", "답이 없던 주문을 사람이 증권사 주문내역과 맞춰 확인함"))),
 )
 
 

@@ -1,5 +1,5 @@
 -- MiniSTP ledger schema (spec 03).
--- ERD version: 2.9  (bump on every schema change, then run scripts/gen_erd.py) Append-only tables are enforced in the DB,
+-- ERD version: 2.10  (bump on every schema change, then run scripts/gen_erd.py) Append-only tables are enforced in the DB,
 -- not just in application code.
 
 create table if not exists accounts_chart (
@@ -711,13 +711,16 @@ select r.user_id, u.name as user_name, r.account_id, r.right_code, r.max_order_v
 create or replace view order_requests_v as
 select q.trade_date, q.request_no, q.account_id, q.order_type, q.created_by, q.created_at,
        n.lines as line_count, n.amount,
-       case when l.action = 'APPROVE' and s.done = n.lines then case when s.sent > 0 then 'SENT' else 'SEND_FAILED' end
+       case when l.action = 'APPROVE' and s.unknown > 0 then 'SEND_UNKNOWN'
+            when l.action = 'APPROVE' and s.done = n.lines then case when s.accepted > 0 then 'SENT' else 'SEND_FAILED' end
             else case l.action when 'REQUEST' then 'PENDING' when 'APPROVE' then 'APPROVED' when 'REJECT' then 'REJECTED'
                                when 'CANCEL' then 'CANCELED' when 'EXPIRE' then 'EXPIRED' end end as status,
        a.actor as approved_by, a.self_approved, a.at as approved_at,
        coalesce(s.sent, 0) as sent_lines, coalesce(s.failed, 0) as failed_lines,
-       case when l.action = 'APPROVE' and s.failed > 0 then s.reason else l.reason end as last_reason,
-       greatest(l.at, s.at) as status_at
+       case when l.action = 'APPROVE' and (s.failed > 0 or s.rejected > 0) then s.reason else l.reason end as last_reason,
+       greatest(l.at, s.at) as status_at,
+       coalesce(s.accepted, 0) as accepted_lines, coalesce(s.rejected, 0) as rejected_lines,
+       coalesce(s.unknown, 0) as unknown_lines
   from order_requests q
   join lateral (select count(*) as lines, sum(qty * limit_price) as amount from order_request_lines r
                  where r.trade_date = q.trade_date and r.request_no = q.request_no) n on true
@@ -726,17 +729,26 @@ select q.trade_date, q.request_no, q.account_id, q.order_type, q.created_by, q.c
   left join lateral (select actor, self_approved, at from order_approvals o
                       where o.trade_date = q.trade_date and o.request_no = q.request_no and o.action = 'APPROVE'
                       order by id desc limit 1) a on true
-  left join lateral (select count(*) as done, count(*) filter (where outcome = 'SENT') as sent,
-                            count(*) filter (where outcome = 'FAILED') as failed, max(at) as at,
-                            (array_agg(reason order by id desc) filter (where outcome = 'FAILED'))[1] as reason
-                       from order_sends x where x.trade_date = q.trade_date and x.request_no = q.request_no) s on true;
+  left join lateral (select count(*) as done, count(*) filter (where x.outcome = 'SENT') as sent,
+                            count(*) filter (where x.outcome = 'FAILED') as failed,
+                            count(*) filter (where k.outcome = 'ACCEPTED') as accepted,
+                            count(*) filter (where k.outcome = 'REJECTED') as rejected,
+                            count(*) filter (where x.outcome = 'SENT' and k.client_id is null) as unknown,
+                            greatest(max(x.at), max(k.created_at)) as at,
+                            (array_agg(coalesce(x.reason, k.detail) order by x.id desc)
+                               filter (where x.outcome = 'FAILED' or k.outcome = 'REJECTED'))[1] as reason
+                       from order_sends x left join oms_order_acks k on k.client_id = x.client_id
+                      where x.trade_date = q.trade_date and x.request_no = q.request_no) s on true;
 
 create or replace view order_request_lines_v as
 select r.trade_date, r.request_no, r.line_no, q.account_id, q.order_type, r.symbol, r.side, r.qty, r.limit_price,
-       r.qty * r.limit_price as amount, s.outcome as send_outcome, s.client_id, s.reason as send_reason, s.at as sent_at
+       r.qty * r.limit_price as amount, s.outcome as send_outcome, s.client_id, s.reason as send_reason, s.at as sent_at,
+       k.outcome as ack_outcome, k.order_no, k.detail as ack_detail,
+       (s.outcome = 'SENT' and k.client_id is null) as awaiting_ack
   from order_request_lines r
   join order_requests q using (trade_date, request_no)
-  left join order_sends s using (trade_date, request_no, line_no);
+  left join order_sends s using (trade_date, request_no, line_no)
+  left join oms_order_acks k on k.client_id = s.client_id;
 
 -- Korean names (한글 명칭). Shown in pgAdmin and in docs/erd. Every table, view and
 -- column must have one; tests/db/test_erd.py fails otherwise.
@@ -1169,7 +1181,7 @@ comment on column order_requests_v.created_by is '작성자';
 comment on column order_requests_v.created_at is '작성 시각';
 comment on column order_requests_v.line_count is '줄 수';
 comment on column order_requests_v.amount is '주문금액 합계 (지정가 줄만, 시장가 줄은 빠짐)';
-comment on column order_requests_v.status is '상태 (PENDING 결재 대기 / APPROVED 승인·전송 대기 / REJECTED 반려 / CANCELED 취소 / SENT 전송 / SEND_FAILED 전송 실패 / EXPIRED 만료)';
+comment on column order_requests_v.status is '상태 (PENDING 결재 대기 / APPROVED 승인·전송 대기 / REJECTED 반려 / CANCELED 취소 / SENT 전송 / SEND_FAILED 전송 실패 / SEND_UNKNOWN 결과 미확인 / EXPIRED 만료)';
 comment on column order_requests_v.approved_by is '승인자';
 comment on column order_requests_v.self_approved is '셀프 승인';
 comment on column order_requests_v.approved_at is '승인 시각';
@@ -1177,6 +1189,9 @@ comment on column order_requests_v.sent_lines is '전송한 줄 수';
 comment on column order_requests_v.failed_lines is '전송 실패한 줄 수';
 comment on column order_requests_v.last_reason is '마지막 사유';
 comment on column order_requests_v.status_at is '상태 시각';
+comment on column order_requests_v.accepted_lines is '증권사가 접수한 줄 수';
+comment on column order_requests_v.rejected_lines is '증권사가 거부한 줄 수';
+comment on column order_requests_v.unknown_lines is '보냈지만 접수 결과를 모르는 줄 수 (R-103)';
 
 comment on view order_request_lines_v is '주문 요청 줄 현황 (줄마다 한 행, 전송 결과와 주문 ID)';
 comment on column order_request_lines_v.trade_date is '주문일';
@@ -1193,6 +1208,10 @@ comment on column order_request_lines_v.send_outcome is '전송 결과';
 comment on column order_request_lines_v.client_id is '주문 ID';
 comment on column order_request_lines_v.send_reason is '전송 실패 사유';
 comment on column order_request_lines_v.sent_at is '전송 시각';
+comment on column order_request_lines_v.ack_outcome is '증권사 접수 결과 (ACCEPTED 접수 / REJECTED 거부, 비어 있으면 아직 모름)';
+comment on column order_request_lines_v.order_no is '증권사 주문번호';
+comment on column order_request_lines_v.ack_detail is '접수 결과 내용 (거부 사유, 조회로 찾음 등)';
+comment on column order_request_lines_v.awaiting_ack is '보냈지만 접수 결과를 모름 (R-103)';
 
 -- 마이그레이션 적용 기록. 새 DB는 이 스키마로 만들어지면서 그때까지의 마이그레이션이 적용된 것으로 기록된다.
 create table if not exists schema_migrations (

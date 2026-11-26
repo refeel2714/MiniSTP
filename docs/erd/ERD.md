@@ -1,6 +1,6 @@
 # MiniSTP ERD
 
-ERD 버전: v2.9 · 스키마 해시: `33391824846f`
+ERD 버전: v2.10 · 스키마 해시: `dc77c5d901ef`
 
 이 문서는 `scripts/gen_erd.py`가 `src/ministp/store/schema.sql`로 만든 DB에서 읽어 생성해요. 직접 고치지 말고 스키마의 한글 주석(COMMENT)을 고친 뒤 다시 생성하세요. 모든 원장 테이블은 append-only(수정·삭제 불가)예요.
 
@@ -882,7 +882,7 @@ erDiagram
 | `created_at` | 작성 시각 | timestamp with time zone |  |  |
 | `line_count` | 줄 수 | bigint |  |  |
 | `amount` | 주문금액 합계 (지정가 줄만, 시장가 줄은 빠짐) | numeric |  |  |
-| `status` | 상태 (PENDING 결재 대기 / APPROVED 승인·전송 대기 / REJECTED 반려 / CANCELED 취소 / SENT 전송 / SEND_FAILED 전송 실패 / EXPIRED 만료) | text |  |  |
+| `status` | 상태 (PENDING 결재 대기 / APPROVED 승인·전송 대기 / REJECTED 반려 / CANCELED 취소 / SENT 전송 / SEND_FAILED 전송 실패 / SEND_UNKNOWN 결과 미확인 / EXPIRED 만료) | text |  |  |
 | `approved_by` | 승인자 | text |  |  |
 | `self_approved` | 셀프 승인 | boolean |  |  |
 | `approved_at` | 승인 시각 | timestamp with time zone |  |  |
@@ -890,6 +890,9 @@ erDiagram
 | `failed_lines` | 전송 실패한 줄 수 | bigint |  |  |
 | `last_reason` | 마지막 사유 | text |  |  |
 | `status_at` | 상태 시각 | timestamp with time zone |  |  |
+| `accepted_lines` | 증권사가 접수한 줄 수 | bigint |  |  |
+| `rejected_lines` | 증권사가 거부한 줄 수 | bigint |  |  |
+| `unknown_lines` | 보냈지만 접수 결과를 모르는 줄 수 (R-103) | bigint |  |  |
 
 ### order_request_lines_v — 주문 요청 줄 현황 (줄마다 한 행, 전송 결과와 주문 ID) (뷰)
 
@@ -909,6 +912,10 @@ erDiagram
 | `client_id` | 주문 ID | text |  |  |
 | `send_reason` | 전송 실패 사유 | text |  |  |
 | `sent_at` | 전송 시각 | timestamp with time zone |  |  |
+| `ack_outcome` | 증권사 접수 결과 (ACCEPTED 접수 / REJECTED 거부, 비어 있으면 아직 모름) | text |  |  |
+| `order_no` | 증권사 주문번호 | text |  |  |
+| `ack_detail` | 접수 결과 내용 (거부 사유, 조회로 찾음 등) | text |  |  |
+| `awaiting_ack` | 보냈지만 접수 결과를 모름 (R-103) | boolean |  |  |
 
 ## 변경 이력
 
@@ -926,3 +933,4 @@ erDiagram
 | v2.7 | 2026-11-24 | 종목 마스터 이력(R-94, R-95). 적재 기록 `master_loads`(KIS 마스터 파일을 넣은 기준일마다 한 행, 두 파일의 SHA-256과 신규·변경·빠짐 건수)와 종목 마스터 이력 `instrument_master`(시장 전 종목, 속성이 바뀐 날에만 한 행: 종목명, 시장, 증권그룹, 매매수량단위, 액면가, 상장주수, 거래정지·정리매매·관리종목·시장경고) 신설, 둘 다 수정·삭제·비우기 금지(테이블 18개). 파일에서 빠진 종목은 상장 여부가 거짓인 행으로 남는다. 가격(기준가, 시가총액, 거래량)은 담지 않는다. 등록 종목 `instruments`와는 FK로 묶지 않고 뷰 `instrument_master_current_v`(종목마다 최근 행), `instrument_master_match_v`(등록 종목과 마스터 대조) 추가. 공통코드 그룹 2개(증권그룹 구분, 종목 마스터 대조 결과)와 감사 행위 `MASTER_LOAD` 추가(마이그레이션 `0008_instrument_master`). 기존 데이터는 바뀌지 않는다. |
 | v2.8 | 2026-11-24 | (초안, 운영 적용 전에 v2.9로 바뀜) 주문 결재(스펙 D9, R-99~101). 사용자 `app_users`(지금은 PC 로그인 이름이 ID), 결재 권한 이력 `user_rights`(주문 작성·주문 승인·권한 관리, 계좌별 또는 모든 계좌, 1건 승인 한도, 셀프 승인 허용, 적용 시작일, 부여·회수마다 한 행), 주문 요청 `order_requests`(주문일, 묶음 번호와 줄 번호, 종목·매매·수량·지정가, 작성자), 결재 이력 `order_approvals`(요청·승인·반려·취소·전송·전송 실패·만료마다 한 행, 그때의 묶음 검증 결과, 전송한 주문 ID) 신설, 넷 다 수정·삭제·비우기 금지(테이블 22개). 결재 순서는 DB 트리거 `ministp_order_approval_flow`가 지킨다(요청 다음에만 승인·반려, 승인 다음에만 전송, 요청과 취소는 작성자만, 셀프 승인 표시는 DB가 채움, 같은 요청은 잠그고 처리). 주문 ID 하나에 전송 기록 하나(부분 유일 인덱스). 뷰 `user_rights_v`(오늘 적용되는 권한), `order_requests_v`(요청마다 상태) 추가. 공통코드 그룹 3개(결재 권한, 결재 행위, 주문 요청 상태)와 감사 행위 7개 추가(마이그레이션 `0009_order_approval`). 기존 데이터는 바뀌지 않는다. |
 | v2.9 | 2026-11-24 | 주문 결재 요청 번호 체계(11/24 사용자 피드백, v2.8 초안을 적용 전에 고침). 요청 키를 `Q날짜-순번` 글자에서 주문일 + 요청 번호(주문일마다 1부터, 계좌와 무관)로 바꾸고, 주문 유형 `order_type`(단건 SINGLE / 바스켓 BASKET)을 따로 둔다. 바스켓은 종목마다 요청이 아니라 요청 한 건이다: 종목 줄은 새 테이블 `order_request_lines`(요청 뒤에는 줄을 더하지 못함, 트리거 `ministp_order_lines_fixed`), 묶음 번호 `batch_id`는 없앤다. 결재 이력 `order_approvals`는 요청 단위(요청·승인·반려·취소·만료), 전송은 새 테이블 `order_sends`에 줄마다 한 번(전송·전송 실패, 주문 ID 유일, 승인 다음에만: 트리거 `ministp_order_send_flow`). 한 줄이라도 나간 요청은 취소·만료하지 않는다. 뷰 `order_requests_v`(요청마다 상태, 줄 수, 금액 합계, 전송·실패 줄 수)를 바꾸고 `order_request_lines_v`(줄마다 전송 결과) 추가. 수정·삭제·비우기 금지 테이블 24개. 공통코드 그룹 2개(주문 유형, 전송 결과) 추가, 결재 행위에서 전송·전송 실패를 뺀다. 마이그레이션은 `0009_order_approval` 하나(v2.7 → v2.9). |
+| v2.10 | 2026-11-24 | 주문 결과 미확인 처리(R-103). 테이블은 그대로다. 뷰 `order_requests_v`가 증권사 접수 결과(`oms_order_acks`)를 함께 읽어서 상태에 결과 미확인 `SEND_UNKNOWN`(보낸 줄 가운데 답이 없는 줄이 있음)을 더하고, 전송한 줄을 다시 증권사가 접수·거부한 줄로 나누며(접수·거부·미확인 줄 수 컬럼 추가), 모든 줄이 거부되면 전송 실패로 본다. 뷰 `order_request_lines_v`에 접수 결과·증권사 주문번호·내용·결과 대기 여부 컬럼 추가. 공통코드에 요청 상태 `SEND_UNKNOWN`과 감사 행위 `ORDER_CONFIRM`(사람이 답 없던 주문을 확인) 추가(마이그레이션 `0010_send_unknown`). 기존 데이터는 바뀌지 않는다. |

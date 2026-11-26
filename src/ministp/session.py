@@ -8,7 +8,7 @@ later call the same `sync` path.
 import datetime as dt
 from dataclasses import dataclass, field
 
-from .broker.base import BrokerBalance, BrokerGateway, OrderAck, recon_items
+from .broker.base import BrokerBalance, BrokerGateway, OrderAck, OrderRejected, recon_items
 from .ledger import ExecutionEvent, LateExecutionEvent, Ledger, Side
 from .oms import InvalidTransition, OrderManager, OrderStatus, OverfillError
 from .recon import ReconItem, ReconResult, reconcile
@@ -31,6 +31,7 @@ def failure_text(detail: str) -> str:
 class Anomaly:
     day: dt.date
     kind: str      # UNKNOWN_ORDER | ODD_FILL_PRICE | BROKER_REJECTED | SUBMIT_FAILED | OVERFILL | LATE_FILL
+                   # | UNACKED_ORDER (R-103: sent, no answer) | UNACKED_FOUND (found in the broker's list)
     ref: str
     detail: str
 
@@ -39,7 +40,7 @@ class Anomaly:
 class _Tracked:
     client_id: str
     day: dt.date
-    ack: OrderAck
+    ack: OrderAck | None      # None: sent but no answer yet (R-103); found later in the broker's order list
     booked_qty: int = 0
     booked_amount: int = 0
     fills: int = 0
@@ -55,6 +56,7 @@ class TradingSession:
     _by_broker_no: dict[str, _Tracked] = field(default_factory=dict)
     _by_client: dict[str, _Tracked] = field(default_factory=dict)
     _seq: int = 0
+    _broker_orders: list = field(default_factory=list)
     last_balance: BrokerBalance | None = None
     on_submit: object = None  # callable(cid, day, symbol, side, qty, limit) before the broker call
     on_ack: object = None     # callable(cid, ack | None, detail) after it
@@ -62,6 +64,15 @@ class TradingSession:
     account_open: bool = True  # R-39: a suspended or closed account takes no new orders
     id_prefix: str = "S"       # client order ids are unique in the database; other accounts add their id
     on_cancel: object = None  # callable(cid, ack) after the broker took a cancel request
+    on_unknown: object = None  # callable(cid, detail): sent, but no usable answer (R-103)
+    confirming: bool = False   # a person is settling an unanswered order (audit names it ORDER_CONFIRM)
+
+    @property
+    def unacked(self) -> list[str]:
+        """R-103: orders sent today with no answer yet. They may be live at the broker, so they keep their
+        cash reserved, nothing more is sent until each is found or confirmed not placed, and none is resent."""
+        return [cid for cid, t in self._by_client.items() if t.ack is None
+                and self.oms.orders[cid].status is OrderStatus.NEW]
 
     def _open_orders(self):
         closed = (OrderStatus.FILLED, OrderStatus.CANCELED, OrderStatus.REJECTED)
@@ -125,22 +136,97 @@ class TradingSession:
             self.on_submit(cid, day, symbol, side, qty, limit_price)  # durable intent first
         try:
             ack = self.broker.place_order(symbol, side.value, qty, limit_price)
-        except Exception as exc:  # broker said no, or network: nothing was placed we know of
+        except OrderRejected as exc:  # the broker answered no: nothing was placed
             self.oms.on_rejected(cid)
             self.anomalies.append(Anomaly(day, "SUBMIT_FAILED", cid, f"broker: {exc}"))
             if self.on_ack:
                 self.on_ack(cid, None, f"broker: {exc}")
             return None
-        if self.on_ack:
-            self.on_ack(cid, ack, "")
-        self.oms.on_accepted(cid)
-        t = _Tracked(cid, day, ack)
-        self._by_client[cid] = t
-        self._by_broker_no[ack.order_no] = t
+        except Exception as exc:      # R-103: no usable answer. It may be at the broker: never resend it
+            self._by_client[cid] = _Tracked(cid, day, None)
+            detail = f"{side.value} {symbol} x{qty}: 접수 결과 미확인 ({exc}). 증권사 주문내역에서 찾을 때까지 다음 주문을 멈춰요"
+            self.anomalies.append(Anomaly(day, "UNACKED_ORDER", cid, detail))
+            if self.on_unknown:
+                self.on_unknown(cid, str(exc))
+            return cid
+        self._accept(cid, day, ack, "")
         return cid
+
+    def _accept(self, cid: str, day: dt.date, ack: OrderAck, detail: str) -> None:
+        if self.on_ack:
+            self.on_ack(cid, ack, detail)
+        self.oms.on_accepted(cid)
+        t = self._by_client.get(cid)
+        if t is None:
+            t = self._by_client[cid] = _Tracked(cid, day, ack)
+        t.ack = ack
+        self._by_broker_no[ack.order_no] = t
+
+    def restore_unacked(self, day: dt.date, client_id: str, symbol: str, side: Side, qty: int,
+                        limit_price: int | None) -> None:
+        """Re-track an order another process sent with no answer recorded (it died around the broker call,
+        or the answer was lost). Same as a fresh unknown answer: cash stays reserved until it is found."""
+        self.oms.create(client_id, symbol=symbol, side=side, qty=qty, limit_price=limit_price or 0)
+        self._by_client[client_id] = _Tracked(client_id, day, None)
+        self.anomalies.append(Anomaly(day, "UNACKED_ORDER", client_id,
+                                      f"{side.value} {symbol} x{qty}: 접수 결과 미기록, 증권사 주문내역 확인 필요"))
+
+    def _claim(self, day: dt.date, b) -> str | None:
+        """R-103: a broker order MiniSTP does not track may be one of its own unanswered orders. It is taken
+        only when exactly one unanswered order and exactly one untracked broker order match on symbol,
+        side and quantity, so two look-alike orders are never guessed between; a person confirms those."""
+        mine = [cid for cid in self.unacked if (o := self.oms.orders[cid]).symbol == b.symbol
+                and o.side == b.side and o.qty == b.qty]
+        if len(mine) != 1:
+            return None
+        twins = [x for x in self._broker_orders if x.order_no not in self._by_broker_no
+                 and (x.symbol, x.side, x.qty) == (b.symbol, b.side, b.qty)]
+        if len(twins) != 1:
+            return None
+        cid = mine[0]
+        self._accept(cid, day, OrderAck(b.order_no, b.org_no), "증권사 주문내역에서 찾음")
+        self.anomalies.append(Anomaly(day, "UNACKED_FOUND", cid, f"주문번호 {b.order_no}로 확인"))
+        return cid
+
+    def confirm_unacked(self, day: dt.date, client_id: str, order_no: str | None) -> None:
+        """A person settles an unanswered order (R-103): `order_no` is the broker's number for it, or None
+        when the broker has no such order (then it is closed as refused, and may be sent again as a new one)."""
+        self.confirming = True
+        try:
+            self._confirm(day, client_id, order_no)
+        finally:
+            self.confirming = False
+
+    def _confirm(self, day: dt.date, client_id: str, order_no: str | None) -> None:
+        t = self._by_client.get(client_id)
+        if t is None or t.ack is not None or self.oms.orders[client_id].status is not OrderStatus.NEW:
+            raise InvalidTransition(f"{client_id}: 결과를 기다리는 주문이 아니에요")
+        known = {b.order_no: b for b in self.broker.daily_orders(day)}
+        o = self.oms.orders[client_id]
+        if order_no is None:
+            alike = [b for n, b in known.items() if n not in self._by_broker_no
+                     and (b.symbol, b.side, b.qty) == (o.symbol, o.side, o.qty)]
+            if alike:
+                raise InvalidTransition(f"{client_id}: 증권사 주문내역에 같은 모양의 주문이 있어요 "
+                                        f"({', '.join(b.order_no for b in alike)}). 그 번호로 확인해 주세요")
+            self.oms.on_rejected(client_id)
+            if self.on_ack:
+                self.on_ack(client_id, None, "broker: 증권사 주문내역에 없음 (사람이 확인)")
+            return
+        b = known.get(order_no)
+        if b is None:
+            raise InvalidTransition(f"{client_id}: 오늘 증권사 주문내역에 {order_no}이(가) 없어요")
+        if order_no in self._by_broker_no:
+            raise InvalidTransition(f"{client_id}: {order_no}은(는) 이미 다른 주문 {self._by_broker_no[order_no].client_id}이에요")
+        if (b.symbol, b.side, b.qty) != (o.symbol, o.side, o.qty):
+            raise InvalidTransition(f"{client_id}: {order_no}은(는) {b.side} {b.symbol} x{b.qty}라 "
+                                    f"{o.side} {o.symbol} x{o.qty}와 달라요")
+        self._accept(client_id, day, OrderAck(order_no, b.org_no), "사람이 증권사 주문내역에서 확인")
 
     def executions_of(self, client_id: str) -> list[str]:
         t = self._by_client[client_id]
+        if t.ack is None:
+            return []
         return [f"{exec_prefix(t.day, t.ack.order_no)}{i}" for i in range(1, t.fills + 1)]
 
     def find(self, ref: str) -> str:
@@ -162,6 +248,8 @@ class TradingSession:
         `CANCEL_PENDING` only once the broker took the request, and `CANCELED` when a sync sees
         the broker's confirmed quantity. A refused request leaves the order as it was."""
         o = self.oms.orders[client_id]
+        if self._by_client[client_id].ack is None:
+            raise InvalidTransition(f"{client_id}: 접수 결과를 아직 몰라서 취소할 수 없어요. 증권사 주문내역에서 먼저 확인해요")
         if o.status not in (OrderStatus.SUBMITTED, OrderStatus.PARTIALLY_FILLED):
             raise InvalidTransition(f"{client_id}: {o.status} 상태라 취소할 수 없어요")
         self.broker.cancel_order(self._by_client[client_id].ack)
@@ -172,8 +260,11 @@ class TradingSession:
     def sync(self, day: dt.date) -> list[str]:
         """Book fill increases reported by the broker. Returns new execution ids."""
         booked = []
-        for b in self.broker.daily_orders(day):
+        self._broker_orders = self.broker.daily_orders(day)
+        for b in self._broker_orders:
             t = self._by_broker_no.get(b.order_no)
+            if t is None and self.unacked and self._claim(day, b):
+                t = self._by_broker_no[b.order_no]
             if t is None:
                 if not any(a.kind == "UNKNOWN_ORDER" and a.ref == b.order_no for a in self.anomalies):
                     self.anomalies.append(Anomaly(day, "UNKNOWN_ORDER", b.order_no,

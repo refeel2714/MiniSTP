@@ -2,7 +2,7 @@
 import pytest
 
 from conftest import d
-from ministp.broker import BrokerBalance, BrokerOrder, BrokerPosition, OrderAck
+from ministp.broker import BrokerBalance, BrokerOrder, BrokerPosition, OrderAck, OrderRejected
 from ministp.ledger import Side
 from ministp.oms import InvalidTransition, OrderStatus, OverfillError
 from ministp.recon import Status
@@ -26,7 +26,7 @@ class FakeBroker:
 
     def place_order(self, symbol, side, qty, limit_price):
         if self.reject:
-            raise RuntimeError("APBK0919 주문가능금액 초과")
+            raise OrderRejected("APBK0919 주문가능금액 초과", "APBK0919")
         no = f"{len(self.placed) + 1:010d}"
         self.placed.append((symbol, side, qty, limit_price))
         self.orders[no] = BrokerOrder(no, symbol, side, qty, 0, 0, 0, 0)
@@ -221,3 +221,41 @@ def test_price_lookup_failure_does_not_crash_or_order(session):
     assert session.submit(DAY, "A", Side.BUY, 1) is None
     assert session.broker.placed == []
     assert "price:" in session.anomalies[-1].detail
+
+
+def test_an_order_with_no_answer_keeps_its_cash_is_never_resent_and_is_found_by_a_sync(session):
+    """R-103: anything but a clear refusal may have reached the broker."""
+    real = session.broker.place_order
+
+    def lost(symbol, side, qty, limit_price):
+        real(symbol, side, qty, limit_price)          # placed, but the answer never comes back
+        raise TimeoutError("read timed out")
+    session.broker.place_order = lost
+    cid = session.submit(DAY, "A", Side.BUY, 10, limit_price=50_000)
+    assert cid is not None and session.unacked == [cid]
+    assert session.oms.orders[cid].status is OrderStatus.NEW
+    assert [(o.client_id, o.remaining_qty) for o in session.open_orders()] == [(cid, 10)]   # 현금을 잡아 둬요
+    assert session.anomalies[-1].kind == "UNACKED_ORDER" and "read timed out" in session.anomalies[-1].detail
+    assert session.executions_of(cid) == []
+    with pytest.raises(InvalidTransition, match="접수 결과를 아직 몰라서"):
+        session.cancel(cid)
+    session.broker.fill("0000000001", 4, 50_000)      # it was live: fills come in before we know its number
+    assert session.sync(DAY) == ["20261102-0000000001-1"]
+    assert session.unacked == [] and session.oms.orders[cid].status is OrderStatus.PARTIALLY_FILLED
+    assert [a.kind for a in session.anomalies][-1] == "UNACKED_FOUND"
+    assert session.broker.placed == [("A", "BUY", 10, 50_000)]
+
+
+def test_a_person_confirms_an_unanswered_order_only_against_the_brokers_list(session):
+    def unreachable(*a):
+        raise ConnectionResetError("reset by peer")
+    session.broker.place_order = unreachable
+    cid = session.submit(DAY, "A", Side.BUY, 3)
+    session.sync(DAY)
+    assert session.unacked == [cid]
+    with pytest.raises(InvalidTransition, match="없어요"):
+        session.confirm_unacked(DAY, cid, "0000000009")
+    session.confirm_unacked(DAY, cid, None)
+    assert session.unacked == [] and session.oms.orders[cid].status is OrderStatus.REJECTED
+    with pytest.raises(InvalidTransition, match="결과를 기다리는 주문이 아니에요"):
+        session.confirm_unacked(DAY, cid, None)
