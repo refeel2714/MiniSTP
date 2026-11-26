@@ -99,7 +99,7 @@ def test_form_errors_come_from_the_same_order_check():
     assert r.lines[0].together == ("NOT_BUSINESS_DAY",)
 
 
-# ---------- 바스켓 시뮬레이션(STP-1500)도 같은 검사를 써요 ----------
+# ---------- 바스켓 시뮬레이션(STP-1310)도 같은 검사를 써요 ----------
 
 PF = Portfolio(instruments=INST, prices=PRICES, held_qty={"069500": 243, "005930": 96},
                sellable_qty={"069500": 243, "005930": 96}, available_cash=66_160_000, projected_cash=66_160_000)
