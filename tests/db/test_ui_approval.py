@@ -227,11 +227,11 @@ def test_the_screens_sit_in_the_new_area_and_split_as_drawn():
     assert [g.id for g in left] == ["lines"] and [g.id for g in right] == ["set", "history"] and below == []
     left, right, _ = split_sides(screens["STP-5100"])
     assert [g.id for g in left] == ["requests"] and [g.id for g in right] == ["set", "lines", "history"]
-    assert screens["STP-1500"].grids[1].handoff["screen"] == "STP-1210"
+    assert screens["STP-1310"].grids[1].handoff["screen"] == "STP-1210"
 
 
 def test_the_basket_hands_its_lines_to_the_order_screen(ctx):
-    plan = run_tx("STP1500R02", ctx, {"amount": 3_000_000, "side": "BUY", "basis": "현재가 지정가"})
+    plan = run_tx("STP1310R02", ctx, {"amount": 3_000_000, "side": "BUY", "basis": "현재가 지정가"})
     lines = [r["line"] for r in rows(plan) if r["line"]]
     assert lines and all(x.endswith(":BK") for x in lines)
     keyed = ",".join(f"N{i}:{x}" for i, x in enumerate(lines, 1))
