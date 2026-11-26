@@ -726,6 +726,22 @@ def holdings_view(base: Dataset, ledger: Ledger, quotes=None, now: dt.datetime |
                    rows)
 
 
+ASSET_TYPE_NAMES = {"STOCK": "주식", "ETF": "ETF"}
+
+
+def holdings_mix(view: Dataset) -> Dataset:
+    """자산 유형별 보유: 종목 수, 평가금액, 비중, 평가손익. 평가 가격이 없는 종목은 장부금액으로 셈에 넣지 않고 수만 세요."""
+    rows = view.records()
+    total = sum(r["market_value"] or 0 for r in rows)
+    out = []
+    for t in sorted({r["asset_type"] for r in rows}, key=lambda t: (t != "STOCK", t)):
+        mine = [r for r in rows if r["asset_type"] == t]
+        value = sum(r["market_value"] or 0 for r in mine)
+        out.append((ASSET_TYPE_NAMES.get(t, t), len(mine), value, round(value / total, 4) if total else None,
+                    sum(r["unrealized_pnl"] or 0 for r in mine)))
+    return Dataset(("asset_type_name", "count", "market_value", "weight", "unrealized_pnl"), tuple(out))
+
+
 def _mark_time(m) -> str:
     """가격 칸 아래에 적는 말: 현재가는 받은 시각, 종가는 그 날짜."""
     if m.source == "현재가":
