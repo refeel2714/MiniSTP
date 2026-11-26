@@ -1,4 +1,5 @@
 """Read services the screens will call: a real day's records, read back through them."""
+import datetime as dt
 import pytest
 
 from db.test_ops import CAL, D, books, broker, conn  # noqa: F401
@@ -63,9 +64,22 @@ def test_events_newest_first_and_filtered(conn, broker):
 
 def test_trial_balance_is_balanced(conn, broker):
     _a_day(conn, broker)
-    ds, balanced = trial_balance(conn)
-    assert balanced and len(ds) > 0
-    assert set(ds.columns) == {"code", "name", "normal_side", "balance"}
+    ds, meta = trial_balance(conn, DAY)
+    rows = ds.records()
+    assert meta == {"day": DAY.isoformat(), "balanced": "예"}
+    assert [r["level"] for r in rows][-1] == "total" and rows[-1]["d_now"] == rows[-1]["c_now"]
+    assert rows[-1]["d_change"] == rows[-1]["c_change"] and rows[-1]["d_change"]
+    classes = [r for r in rows if r["level"] == "class"]
+    assert classes[0]["code"] == "1000" and classes[0]["name"] == "자산 합계"
+    cash = next(r for r in rows if r["code"] == "1010")
+    assert cash["c_now"] is None and cash["d_now"] == cash["d_prev"] + (cash["d_change"] or 0) - (cash["c_change"] or 0)
+    # 분류 합계는 그 분류 계정들의 합
+    for k in classes:
+        mine = [r for r in rows if r["level"] == "account" and r["code"][0] == k["code"][0]]
+        side = "d_now" if k["d_now"] is not None else "c_now"
+        assert k[side] == sum(r[side] for r in mine)
+    before, _ = trial_balance(conn, DAY - dt.timedelta(days=1))
+    assert [r["level"] for r in before.records()] == ["total"]
 
 
 def test_recon_history_shows_judgement_next_to_the_break(conn, broker):
@@ -97,7 +111,7 @@ def test_recon_calendar_reads_each_day_the_way_the_gate_does(conn, broker):
     today = D("2026-11-25")
     rows = {r["date"]: r for r in recon_calendar(conn, CAL, today).records()}
     assert list(rows) == sorted(rows, reverse=True)
-    assert (rows[DAY]["state"], rows[DAY]["breaks"], rows[DAY]["open_breaks"]) == ("판단 완료", 2, 0)
+    assert (rows[DAY]["state"], rows[DAY]["breaks"], rows[DAY]["open_breaks"]) == ("불일치(판단함)", 2, 0)
     assert (rows[late]["state"], rows[late]["breaks"], rows[late]["open_breaks"]) == ("불일치", 2, 2)
     assert rows[DAY]["items"] == len(recon_history(conn, DAY, DAY))
     assert (rows[D("2026-11-23")]["state"], rows[D("2026-11-23")]["items"]) == ("대사 없음", None)   # 빠진 영업일
@@ -184,4 +198,4 @@ def test_nav_series_keeps_each_day_as_it_was(conn, broker):
 
 def test_every_transaction_is_registered_once():
     assert len(set(TRANSACTIONS.values())) == len(TRANSACTIONS)
-    assert all(k[:7] in {"STP1100", "STP1200", "STP1300", "STP2100", "STP2110", "STP2200", "STP2210", "STP2300", "STP2400", "STP3100", "STP3200", "STP3300", "STP3400", "STP4100", "STP4300", "STP6100"} for k in TRANSACTIONS)
+    assert all(k[:7] in {"STP1100", "STP1200", "STP1300", "STP2100", "STP2110", "STP2200", "STP2210", "STP2300", "STP2400", "STP3100", "STP3200", "STP3300", "STP3400", "STP4100", "STP4300", "STP4500", "STP6100"} for k in TRANSACTIONS)

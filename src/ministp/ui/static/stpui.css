@@ -157,6 +157,13 @@ button.primary:hover { filter: brightness(1.08); }
 .grid tbody tr:hover td { background: var(--hover); }
 .drillable .grid tbody tr { cursor: pointer; }
 .grid tfoot td { position: sticky; bottom: 0; background: var(--head); font-weight: 650; border-top: 1px solid var(--line-strong); }
+/* 묶음 머리(시산표 차변 | 계정과목 | 대변): both header rows stay; each band is centred over its columns */
+.grid.banded tr.band th { text-align: center; color: var(--ink); border-bottom: 1px solid var(--grid-line); }
+.grid.banded tr.band th + th + th, .grid.banded .edge { border-left: 1px solid var(--line-strong); }
+.grid.banded thead tr:last-child th { top: 26px; }
+/* 강조 기준(emphasis): 분류 합계는 굵게 한 번 더 깔고, 총합계는 위에 두 줄 */
+.grid tbody tr.lv-class td { background: var(--head); font-weight: 650; }
+.grid tbody tr.lv-total td { font-weight: 700; border-top: 3px double var(--line-strong); background: var(--head); }
 .grid td.js { max-width: 360px; overflow: hidden; text-overflow: ellipsis; font: 11.5px ui-monospace, Consolas, monospace; color: var(--muted); }
 .up { color: var(--up); } .down { color: var(--down); }
 .st-ok { color: var(--ok); font-weight: 600; } .st-bad { color: var(--bad); font-weight: 600; } .st-warn { color: var(--warn); font-weight: 600; }
@@ -222,7 +229,7 @@ button.primary:hover { filter: brightness(1.08); }
 button.day { cursor: pointer; transition: box-shadow var(--t-fast) var(--ease), transform var(--t-fast) var(--ease); }
 button.day:hover { border-color: var(--ink); }
 .day.off { border-color: transparent; opacity: .55; }
-.day.st-ok { background: var(--ok-bg); border-color: var(--ok); color: var(--ink); font-weight: 500; }
+.day.st-ok { color: var(--ink); }   /* 일치한 날은 칠하지 않아요: 눈은 불일치 날로 가요 */
 .day.st-warn { background: var(--warn-bg); border-color: var(--warn); color: var(--ink); font-weight: 500; }
 .day.st-bad { background: var(--bad-bg); border-color: var(--bad); color: var(--ink); font-weight: 500; }
 .day.st-miss { border-style: dashed; border-color: var(--bad); color: var(--bad); font-weight: 500; }
@@ -240,6 +247,7 @@ button.day:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--panel), 0 
 .card:last-child { border-right: 0; }
 .cl { color: var(--muted); font-size: 12px; }
 .cv { font-size: 18px; font-weight: 650; margin-top: 2px; }
+.cv.dt { font-size: 15px; line-height: 27px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }   /* 날짜·시각은 한 줄, 조금 작게 */
 
 .chart { border-bottom: 1px solid var(--line); padding: 4px 8px 0; }
 .line { width: 100%; height: 160px; display: block; }
@@ -276,6 +284,25 @@ button.day:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--panel), 0 
 .tsum { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 22px; padding-top: 9px; border-top: 1px solid var(--line); }
 .tsum b { margin-left: 6px; }
 .tsum .pill { margin-left: auto; }
+/* 전표 보기: ERP 전표처럼 차변(계정·과목·금액)과 대변(계정·과목·금액)을 나란히. 전표 사이는 점선 */
+.vwrap { padding: 10px 14px 14px; overflow-x: auto; }
+.vtable { width: 100%; min-width: 560px; border-collapse: collapse; font-size: 13px; }
+.vtable th { padding: 6px 8px; text-align: left; font-size: 12px; font-weight: 600; color: var(--muted); background: var(--head);
+  border-top: 1px solid var(--line-strong); border-bottom: 1px solid var(--line-strong); white-space: nowrap; }
+.vtable td { padding: 6px 8px; border-bottom: 1px solid var(--line); }
+.vtable .num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.vtable .vcode { width: 4.5em; font: 12px ui-monospace, "Cascadia Mono", Consolas, monospace; color: var(--muted); }
+.vtable .vsplit { border-left: 1px solid var(--line-strong); }
+.vtable tbody + tbody tr:first-child td { border-top: 2px dotted var(--sel-line); }
+.vtable .vname { white-space: nowrap; }
+.vtable .vfacts { width: 12.5em; min-width: 12.5em; vertical-align: top; border-right: 1px solid var(--line-strong); background: var(--head); font-size: 12px; }
+.vtable td.vfacts { padding: 7px 10px; }
+.vtable .vno { color: var(--muted); margin-bottom: 4px; } .vtable .vno b { margin-left: 6px; color: var(--ink); font-size: 13px; }
+.vtable .vfacts dl { display: grid; grid-template-columns: auto 1fr; gap: 2px 8px; margin: 0; }
+.vtable .vfacts dt { color: var(--muted); min-width: 4.8em; max-width: 4.8em; line-height: 1.25; word-break: keep-all; } .vtable .vfacts dd { margin: 0; color: var(--ink); white-space: nowrap; }
+.vtable .vfacts .pill { display: inline-block; margin-top: 6px; }
+.vtable tfoot td { font-weight: 650; background: var(--head); border-top: 1px solid var(--line-strong); border-bottom: 1px solid var(--line-strong); }
+.vtable tfoot .pill { margin-left: 10px; font-weight: 600; }
 
 /* 구성 지도: 타일 하나가 행 하나. 면적은 크기 열, 색은 부호 열(이익 빨강, 손실 파랑, 짙을수록 큼) */
 .tmapbox { padding: 10px 12px 10px; }

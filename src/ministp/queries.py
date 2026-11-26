@@ -7,10 +7,12 @@ registered under a transaction id (`TRANSACTIONS`), one id per read the screens
 need (화면 기획서: 조회 트랜잭션 하나 = 조회 서비스 하나).
 """
 import datetime as dt
+import json
 from dataclasses import dataclass
 
 import psycopg
 
+from .journal_templates import KIND_NAMES as JOURNAL_KIND_NAMES  # 전표 유형 이름: 분개 모형과 같은 표
 from .ledger import Ledger
 from .risk import REASON_TEXT
 from .store import DEFAULT_ACCOUNT
@@ -100,11 +102,12 @@ def _balanced(journal: Dataset) -> bool:
 
 def _journal_of(conn: psycopg.Connection, seq: int) -> Dataset:
     return _q(conn, """
-        select j.entry_id, j.date, j.kind, j.source_id, j.reverses_entry_id,
+        select j.entry_id, j.date, j.kind, coalesce(%s::jsonb ->> j.kind, j.kind) as kind_name,
+               j.source_id, j.reverses_entry_id,
                l.line_id, l.account_code, a.name as account_name, l.debit, l.credit
           from journal_entries j join journal_lines l using (entry_id)
           join accounts_chart a on a.code = l.account_code
-         where j.event_seq = %s order by j.entry_id, l.line_id""", (seq,))
+         where j.event_seq = %s order by j.entry_id, l.line_id""", (json.dumps(JOURNAL_KIND_NAMES), seq))
 
 
 def event_journal(conn: psycopg.Connection, seq: int) -> tuple[Dataset, bool]:
@@ -129,15 +132,50 @@ def event_trace(conn: psycopg.Connection, seq: int) -> EventTrace:
     return EventTrace(event, journal, positions, cash)
 
 
-def trial_balance(conn: psycopg.Connection, account_id: str = DEFAULT_ACCOUNT) -> tuple[Dataset, bool]:
-    """One account's 시산표 and whether its total debits equal its total credits."""
-    ds = _q(conn, "select code, name, normal_side, balance from account_balances_v"
-                  " where account_id = %s and balance <> 0 order by code", (account_id,))
-    dr, cr = conn.execute(
-        "select coalesce(sum(l.debit), 0), coalesce(sum(l.credit), 0)"
-        " from journal_entries e join journal_lines l using (entry_id) where e.account_id = %s",
-        (account_id,)).fetchone()
-    return ds, dr == cr
+ACCOUNT_CLASSES = {"1": "자산", "2": "부채", "3": "자본", "4": "수익", "5": "비용"}
+
+
+def trial_balance(conn: psycopg.Connection, day: dt.date,
+                  account_id: str = DEFAULT_ACCOUNT) -> tuple[Dataset, dict]:
+    """합계잔액시산표 모양: 차변(당일잔액·당일증감·전일잔액) | 계정 | 대변(전일잔액·당일증감·당일잔액).
+
+    잔액은 계정의 정상 쪽(자산·비용은 차변, 부채·자본·수익은 대변)에 적고, 반대로 쌓인 잔액(평가조정 같은 차감 계정)은
+    그 쪽에 음수로 적어요. 당일증감은 그날의 차변 합계와 대변 합계를 양쪽에 그대로 적어요. 계정 분류(코드 첫 자리)마다
+    합계 줄이 먼저 오고, 맨 아래 총합계 줄의 차변과 대변이 같아야 해요. 계좌 하나(기본 계좌)의 장부만 더해요."""
+    rows = conn.execute("""
+        select a.code, a.name, a.normal_side,
+               coalesce(sum(l.debit - l.credit) filter (where e.date < %(d)s), 0) as prev,
+               coalesce(sum(l.debit) filter (where e.date = %(d)s), 0) as dr,
+               coalesce(sum(l.credit) filter (where e.date = %(d)s), 0) as cr
+          from accounts_chart a
+          left join journal_lines l on l.account_code = a.code
+          left join journal_entries e on e.entry_id = l.entry_id and e.date <= %(d)s and e.account_id = %(a)s
+         group by a.code, a.name, a.normal_side order by a.code""", {"d": day, "a": account_id}).fetchall()
+
+    def line(code, name, side, prev, dr, cr, level):
+        now = prev + dr - cr
+        d_now, d_prev = (now, prev) if side == "D" else (None, None)
+        c_prev, c_now = (-prev, -now) if side == "C" else (None, None)
+        return (d_now, dr or None, d_prev, code, name, c_prev, cr or None, c_now, level)
+
+    out, totals = [], {"D": [0, 0, 0, 0], "C": [0, 0, 0, 0]}
+    for cls, cls_name in ACCOUNT_CLASSES.items():
+        mine = [r for r in rows if r[0].startswith(cls) and (r[3] or r[4] or r[5])]
+        if not mine:
+            continue
+        side = mine[0][2]
+        prev, dr, cr = (sum(r[i] for r in mine) for i in (3, 4, 5))
+        out.append(line(cls + "000", f"{cls_name} 합계", side, prev, dr, cr, "class"))
+        out.extend(line(c, n, sd, pv, d, cr_, "account") for c, n, sd, pv, d, cr_ in mine)
+        t = totals[side]
+        for i, v in enumerate((prev + dr - cr, dr, prev, cr)):
+            t[i] += v
+    d, c = totals["D"], totals["C"]
+    out.append((d[0], (d[1] + c[1]) or None, d[2], "", "총합계", -c[2], (d[3] + c[3]) or None, -c[0], "total"))
+    debit_total, credit_total = d[0], -c[0]
+    return (Dataset(("d_now", "d_change", "d_prev", "code", "name", "c_prev", "c_change", "c_now", "level"),
+                    tuple(out)),
+            {"day": day.isoformat(), "balanced": "예" if debit_total == credit_total else "아니요"})
 
 
 # ---------- STP-2110 원장 내부 대사 ----------
@@ -188,10 +226,17 @@ def recon_history(conn: psycopg.Connection, date_from: dt.date | None = None, da
     matches, so a break of one holding out of a hundred is not lost in the middle. `key_name` names the
     instrument when the key is a symbol."""
     return _q(conn, """
-        select r.id, r.date, s.kind, s.taken_at, r.item, r.key, i.name as key_name,
+        select r.id, r.date, s.kind, s.taken_at, r.item,
+               coalesce(%(items)s::jsonb ->> r.item, r.item) as item_name,
+               case when i.symbol is not null then '종목' when r.key ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' then '일자'
+                    when coalesce(r.key, '') = '' then '계좌 전체' else '기타' end as key_kind,
+               r.key, i.name as key_name,
                r.internal_value, r.broker_value, r.diff,
-               r.status, r.cause_code,
-               j.id as resolved_by, j.cause_code as resolved_cause, j.note as resolved_note,
+               r.status, case when r.status = 'MATCH' then '일치' when j.id is null then '불일치'
+                              else '불일치(판단함)' end as status_name,
+               r.cause_code, %(causes)s::jsonb ->> r.cause_code as cause_name,
+               j.id as resolved_by, j.cause_code as resolved_cause, %(causes)s::jsonb ->> j.cause_code as resolved_cause_name,
+               j.note as resolved_note,
                j.created_at as resolved_at
           from recon_results r
           join broker_snapshots s on s.snapshot_id = r.run_id
@@ -204,7 +249,15 @@ def recon_history(conn: psycopg.Connection, date_from: dt.date | None = None, da
            and (%(t)s::date is null or r.date <= %(t)s)
            and (not %(ob)s or r.status = 'BREAK')
          order by r.date desc, r.run_id desc, (r.status = 'BREAK' and j.id is null) desc, r.status = 'BREAK' desc, r.id""",
-              {"kind": kind, "f": date_from, "t": date_to, "ob": only_breaks})
+              {"kind": kind, "f": date_from, "t": date_to, "ob": only_breaks,
+               "items": json.dumps(RECON_ITEM_NAMES), "causes": json.dumps(RECON_CAUSE_NAMES)})
+
+
+# 대사 항목과 원인의 한글 이름 (화면에 영어 코드 대신)
+RECON_ITEM_NAMES = {"CASH_D0": "예수금 D+0", "CASH_PROJECTED": "예수금 D+2", "EXEC_QTY": "체결 수량",
+                    "EXEC_COUNT": "체결 건수", "POSITION_QTY": "보유 수량", "BOOK_COST": "장부금액"}
+RECON_CAUSE_NAMES = {"MISSING_EXEC": "체결 누락", "FEE_DIFF": "수수료 차이", "TAX_DIFF": "세금 차이",
+                     "ROUNDING": "끝수 차이", "CORP_ACTION": "권리 처리", "TIMING": "시점 차이", "UNKNOWN": "원인 모름"}
 
 
 def _open_day(calendar, day: dt.date) -> bool | None:
@@ -220,7 +273,7 @@ def recon_calendar(conn: psycopg.Connection, calendar, today: dt.date, date_from
     """날짜별 대사 요약, newest first: one row a day, judged by that day's latest run (ops.recon_days,
     the same reading the gate count uses).
 
-    일치 = no break · 판단 완료 = breaks, every one judged (the gate still counts the day) ·
+    일치 = no break · 불일치(판단함) = breaks, every one judged (the gate still counts the day) ·
     불일치 = a break nobody has judged. A weekday without a run is 휴장 on an exchange holiday,
     대사 전 if it is today, 대사 없음 if it has passed (일 마감 대사 only: a missed day ends the
     clean streak; an intraday recon is not owed every day). Days before the first run and after
@@ -238,7 +291,7 @@ def recon_calendar(conn: psycopg.Connection, calendar, today: dt.date, date_from
     while d >= date_from:
         day = days.get(d)
         if day is not None:
-            state = "일치" if not day.breaks else "판단 완료" if day.clean else "불일치"
+            state = "일치" if not day.breaks else "불일치(판단함)" if day.clean else "불일치"
             rows.append((d, state, kind, day.items, day.breaks, day.open_breaks))
         elif d.weekday() < 5:
             if _open_day(calendar, d) is False:
@@ -252,7 +305,7 @@ def recon_calendar(conn: psycopg.Connection, calendar, today: dt.date, date_from
 # ---------- STP-1200 주문·체결 블로터 ----------
 
 def order_blotter(conn: psycopg.Connection, day: dt.date) -> Dataset:
-    """그날 주문: 의도 → 접수 → 반영된 체결, 체결통보 반영 지연."""
+    """그날 주문: 전송(주문 의도 기록) → 접수 → 반영된 체결, 체결통보 반영 지연."""
     return _q(conn, """
         select o.client_id, o.trade_date, o.created_at, o.symbol, i.name as instrument_name, i.asset_type,
                o.side, o.qty, o.limit_price, a.outcome, a.order_no, a.detail,
@@ -275,7 +328,7 @@ def order_blotter(conn: psycopg.Connection, day: dt.date) -> Dataset:
 
 
 # 주문 진행 단계: where an order stands on its way to cash. Each step is done · now · stop · wait.
-ORDER_STEPS = ("의도", "접수", "체결", "결제")
+ORDER_STEPS = ("전송", "접수", "체결", "결제")   # 전송: 보내기 직전에 주문을 기록하고 보냄 (oms_orders, 주문 의도)
 
 
 def order_progress(outcome: str | None, qty: int, filled: int, settled: int, day_over: bool,
@@ -721,6 +774,22 @@ def holdings_view(base: Dataset, ledger: Ledger, quotes=None, now: dt.datetime |
                    rows)
 
 
+ASSET_TYPE_NAMES = {"STOCK": "주식", "ETF": "ETF"}
+
+
+def holdings_mix(view: Dataset) -> Dataset:
+    """자산 유형별 보유: 종목 수, 평가금액, 비중, 평가손익. 평가 가격이 없는 종목은 장부금액으로 셈에 넣지 않고 수만 세요."""
+    rows = view.records()
+    total = sum(r["market_value"] or 0 for r in rows)
+    out = []
+    for t in sorted({r["asset_type"] for r in rows}, key=lambda t: (t != "STOCK", t)):
+        mine = [r for r in rows if r["asset_type"] == t]
+        value = sum(r["market_value"] or 0 for r in mine)
+        out.append((ASSET_TYPE_NAMES.get(t, t), len(mine), value, round(value / total, 4) if total else None,
+                    sum(r["unrealized_pnl"] or 0 for r in mine)))
+    return Dataset(("asset_type_name", "count", "market_value", "weight", "unrealized_pnl"), tuple(out))
+
+
 def _mark_time(m) -> str:
     """가격 칸 아래에 적는 말: 현재가는 받은 시각, 종가는 그 날짜."""
     if m.source == "현재가":
@@ -861,7 +930,7 @@ def instrument_rules(books, symbol: str, today: dt.date) -> Dataset:
     return Dataset(("kind", "item", "value", "note"), tuple(rows))
 
 
-# ---------- STP-3400 계좌정보 ----------
+# ---------- STP-3400 예수금·결제 현황 ----------
 # The account's own state (balances, what is still to settle, the last recon): it is the books' view of one
 # account, so it sits with the ledger screens and not with reference data.
 
@@ -964,6 +1033,34 @@ def risk_rules() -> Dataset:
                    ((r.max_order_value, _pct(r.cash_buffer_rate), "금지 (매도가능수량까지만)"),))
 
 
+# ---------- STP-4500 분개 모형 ----------
+
+def journal_templates() -> Dataset:
+    """분개 모형 목록: 원장이 이벤트 유형마다 만드는 전표의 모양 (코드에 있는 규칙, DB를 읽지 않아요)."""
+    from .journal_templates import KIND_NAMES, SIDE_NAMES, TEMPLATES
+
+    def shape(t):
+        return " / ".join(f"{SIDE_NAMES[ln.side]} {ln.account.value[1] if ln.account else '직전 평가 전표'}"
+                          for ln in t.lines)
+    return Dataset(("code", "event_type", "kind", "kind_name", "case", "shape", "line_count", "note"),
+                   tuple((t.code, t.event_type, t.kind, KIND_NAMES.get(t.kind, t.kind), t.case, shape(t), len(t.lines),
+                          t.note) for t in TEMPLATES))
+
+
+def journal_template_lines(code: str) -> tuple[Dataset, dict]:
+    """모형 하나의 줄(차변·대변, 계정, 금액 산식, 업무 규칙 번호)과 그 모형의 참고 한 줄.
+    KeyError when there is no such template."""
+    from .journal_templates import SIDE_NAMES, TEMPLATES
+    t = next((t for t in TEMPLATES if t.code == code), None)
+    if t is None:
+        raise KeyError(f"없는 분개 모형: {code}")
+    return (Dataset(("side_name", "account_code", "account_name", "amount", "rule"),
+                    tuple((SIDE_NAMES[ln.side], ln.account.code if ln.account else None,
+                           ln.account.value[1] if ln.account else "직전 평가 전표의 계정", ln.amount, ln.rule or None)
+                          for ln in t.lines)),
+            {"case": t.case, "note": t.note or "없음"})
+
+
 # Transaction id -> service. Ids follow the screen numbers (화면번호 + R + 일련번호).
 TRANSACTIONS = {
     "STP1100R01": holdings,
@@ -976,6 +1073,8 @@ TRANSACTIONS = {
     "STP3200R02": event_journal,
     "STP3300R01": trial_balance,
     "STP3400R01": account_summary,
+    "STP4500R01": journal_templates,
+    "STP4500R02": journal_template_lines,
     "STP3400R02": cash_ladder,
     "STP3400R03": pending_settlements,
     "STP2100R01": recon_history,
