@@ -131,7 +131,7 @@ def test_split_layout_is_one_list_on_the_left_and_a_few_details_on_the_right():
     shipped = load_screens()
     for sid, on_left, on_right, under in [("STP-3100", ["events"], ["positions", "cash"], []),
                                           ("STP-3200", ["events"], ["journal"], []),   # the journal has the right side to itself
-                                          ("STP-4100", ["instruments"], ["rules"], [])]:
+                                          ("STP-4100", ["instruments"], ["attrs"], [])]:
         assert shipped[sid].layout == "split"
         left, right, below = split_sides(shipped[sid])
         assert ([g.id for g in left], [g.id for g in right], [g.id for g in below]) == (on_left, on_right, under)
@@ -453,7 +453,9 @@ def test_every_shipped_screen_has_its_place_in_the_classification():
     assert [(a["id"], a["name"]) for a in tree] == [("1", "주문·잔고"), ("2", "대사·평가"), ("3", "원장·회계"),
                                                     ("4", "기준정보"), ("6", "성과")]  # the order a trade flows in
     placed = [s["id"] for a in tree for g in a["groups"] for s in g["screens"]]
-    assert sorted(placed) == sorted(screens) and len(placed) == len(set(placed))   # every screen once
+    subs = [x["id"] for a in tree for g in a["groups"] for s in g["screens"] for x in s["subs"]]
+    assert sorted(placed) == sorted(i for i in screens if i.endswith("0")) and len(placed) == len(set(placed))  # once each
+    assert subs == sorted(i for i in screens if not i.endswith("0")) == ["STP-4101"]   # 딸린 화면 under their parent
     # groups in the order menu.yaml lists them (업무 순서): 주문 준비(13) comes before 주문·체결(12)
     assert placed[:4] == ["STP-1100", "STP-1300", "STP-1310", "STP-1200"]
     for a in tree:
@@ -481,6 +483,21 @@ def test_a_screen_number_outside_the_classification_is_a_problem():
     twice = [MenuArea("1", "주문·잔고", "", (MenuGroup("11", "잔고"), MenuGroup("11", "보유")))]
     assert "중분류 번호 중복 11" in one(menu_problems(twice, named("STP-1100")))
     assert "대분류 번호는 1~9 한 자리" in menu_problems([MenuArea("10", "기타", "", ())], {})[0]
+
+
+def test_a_sub_screen_hangs_from_its_representative_screen_and_is_opened_from_it():
+    """화면번호 끝자리 1~9는 대표 화면(끝자리 0)에서 들어가는 딸린 화면이에요. 메뉴트리에는 대표 화면 아래 매달려요."""
+    from ministp.ui.definitions import MenuArea, MenuGroup, menu_problems, menu_tree, parent_id
+    menu = [MenuArea("1", "주문·잔고", "", (MenuGroup("11", "잔고"),))]
+    assert (parent_id("STP-1101"), parent_id("STP-1100"), parent_id("STP-1119")) == ("STP-1100", None, "STP-1110")
+    lone = named("STP-1100", "STP-1101")
+    assert "대표 화면 STP-1100에서 이 화면으로 가는 이동(drill)이 없어요" in menu_problems(menu, lone)[0]
+    assert "대표 화면 STP-1110가 없어요" in menu_problems(menu, named("STP-1100", "STP-1111"))[0]
+    lone["STP-1100"].grids.append(Grid("g", "목록", "STP1100R01", [Column("x", label="x")],
+                                       drill={"screen": "STP-1101", "params": {}}))
+    assert menu_problems(menu, lone) == []
+    (screen_,) = menu_tree(menu, lone)[0]["groups"][0]["screens"]
+    assert (screen_["id"], screen_["subs"]) == ("STP-1100", [{"id": "STP-1101", "title": "화면 1101"}])
 
 
 def test_a_column_that_stores_a_common_code_is_shown_by_the_codes_name():

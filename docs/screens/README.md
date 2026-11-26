@@ -4,7 +4,7 @@
 
 ## 화면 분류
 
-화면번호 `STP-ABCC`가 곧 분류예요. 첫 자리 A는 대분류(거래가 흘러가는 순서), 둘째 자리까지 AB는 중분류(그 단계에서 다루는 대상), 뒤 두 자리 CC는 같은 대상을 다루는 화면의 순번이에요. 조회와 처리는 번호가 아니라 트랜잭션 ID로 갈라요(R 조회, U 처리). 분류는 [menu.yaml](../../src/ministp/ui/menu.yaml) 한 곳에 적고, 서버는 시작할 때 모든 화면번호가 분류에 들어가는지, 화면이 없는 분류가 없는지 확인해요. 왼쪽 메뉴트리와 첫 화면도 이 표를 그대로 그려요.
+화면번호 `STP-ABCD`가 곧 분류예요. 첫 자리 A는 대분류(거래가 흘러가는 순서), 둘째 자리까지 AB는 중분류(그 단계에서 다루는 대상), 셋째 자리 C는 같은 대상을 다루는 화면의 순번이에요. 끝자리 D가 0이면 대표 화면이고, 1~9면 그 대표 화면(ABC0)에서 들어가는 딸린 화면이라 메뉴트리에 따로 나오지 않고 아래 표에서 대표 화면 뒤 괄호에 적어요. 조회와 처리는 번호가 아니라 트랜잭션 ID로 갈라요(R 조회, U 처리). 분류는 [menu.yaml](../../src/ministp/ui/menu.yaml) 한 곳에 적고, 서버는 시작할 때 모든 화면번호가 분류에 들어가는지, 화면이 없는 분류가 없는지 확인해요. 왼쪽 메뉴트리와 첫 화면도 이 표를 그대로 그려요.
 
 | 대분류 | 중분류 | 화면 |
 |---|---|---|
@@ -20,7 +20,7 @@
 |  | 32 분개 | [STP-3200](STP-3200.md) 분개 조회 |
 |  | 33 시산표 | [STP-3300](STP-3300.md) 시산표 |
 |  | 34 계좌 현황 | [STP-3400](STP-3400.md) 예수금·결제 현황 |
-| **4 기준정보**<br>위 세 단계가 함께 쓰는 종목, 거래 기준, 분개 모형, 계좌 등록 정보, 공통코드 (보유와 잔액은 1~3에 있어요) | 41 종목 | [STP-4100](STP-4100.md) 종목정보 |
+| **4 기준정보**<br>위 세 단계가 함께 쓰는 종목, 거래 기준, 분개 모형, 계좌 등록 정보, 공통코드 (보유와 잔액은 1~3에 있어요) | 41 종목 | [STP-4100](STP-4100.md) 종목정보 (딸린 화면 [STP-4101](STP-4101.md) 마스터 적재 이력) |
 |  | 43 거래 기준 | [STP-4300](STP-4300.md) 거래 기준 |
 |  | 44 계좌 관리 | [STP-4400](STP-4400.md) 계좌 관리 |
 |  | 45 회계 기준 | [STP-4500](STP-4500.md) 분개 모형 |
@@ -46,7 +46,8 @@
 | [STP-3200](STP-3200.md) | 분개 조회 | 2 | `STP3200R01`, `STP3200R02` |
 | [STP-3300](STP-3300.md) | 시산표 | 1 | `STP3300R01` |
 | [STP-3400](STP-3400.md) | 예수금·결제 현황 | 3 | `STP3400R01`, `STP3400R02`, `STP3400R03` |
-| [STP-4100](STP-4100.md) | 종목정보 | 2 | `STP4100R01`, `STP4100R02` |
+| [STP-4100](STP-4100.md) | 종목정보 | 2 | `STP4100R01`, `STP4100R06` |
+| [STP-4101](STP-4101.md) | 마스터 적재 이력 | 2 | `STP4101R01`, `STP4101R02` |
 | [STP-4300](STP-4300.md) | 거래 기준 | 5 | `STP4300R01`, `STP4300R02`, `STP4300R03`, `STP4300R04`, `STP4300R05` |
 | [STP-4400](STP-4400.md) | 계좌 관리 | 2 | `STP4400R01`, `STP4400R02`, `STP4400U01`, `STP4400U02` |
 | [STP-4500](STP-4500.md) | 분개 모형 | 2 | `STP4500R01`, `STP4500R02` |
@@ -59,8 +60,8 @@
 
 | 찾는 것 | 목록을 주는 트랜잭션 | 열 수 있는 화면 (넘기는 조회조건) |
 |---|---|---|
-| 화면 | - | 화면 21개 모두 |
-| 종목 | `STP4100R01` | STP-1300 주문가능 조회(`symbol`), STP-3100 원장 조회(`symbol`), STP-3200 분개 조회(`symbol`) |
+| 화면 | - | 화면 22개 모두 |
+| 종목 | `STP4100R05` | STP-1300 주문가능 조회(`symbol`), STP-3100 원장 조회(`symbol`), STP-3200 분개 조회(`symbol`) |
 
 ## 영향도: DB 컬럼 → 화면
 
@@ -94,10 +95,16 @@
 | `customer_positions_v.symbol` | 종목코드 | STP-1400 positions |
 | `customers.alias` | 고객 별칭 | STP-1400 customers, STP-1400 customers 버튼 add, STP-4400 accounts |
 | `customers.customer_id` | 고객 ID | STP-1400 customers, STP-1400 customers 버튼 add |
-| `instruments.asset_type` | 자산 유형 | STP-1100 holdings, STP-1200 orders, STP-1300 symbols, STP-1310 basket, STP-1310 plan, STP-1400 positions, STP-2300 symbols, STP-3400 settlements, STP-4100 instruments, STP-4300 fees, STP-4300 ticks |
-| `instruments.market` | 시장 | STP-4100 instruments, STP-4300 fees |
-| `instruments.name` | 종목명 | STP-1100 holdings, STP-1200 orders, STP-1300 symbols, STP-1310 basket, STP-1310 plan, STP-1400 positions, STP-2300 symbols, STP-3400 settlements, STP-4100 instruments |
-| `instruments.symbol` | 종목코드 | STP-1100 holdings, STP-1300 symbols, STP-1300 조회조건, STP-1310 basket, STP-1310 plan, STP-2300 symbols, STP-3100 events, STP-3100 조회조건, STP-3200 events, STP-3200 조회조건, STP-3400 settlements, STP-4100 instruments |
+| `instrument_master.load_id` | 적재 번호 | STP-4100 attrs |
+| `instrument_master.market` | 시장 | STP-4100 instruments |
+| `instrument_master.name` | 종목명 | STP-4100 instruments, STP-4101 changes |
+| `instrument_master.sec_group` | 증권그룹 구분 | STP-4100 instruments, STP-4100 조회조건, STP-4101 changes |
+| `instrument_master.symbol` | 단축코드 | STP-4100 instruments, STP-4101 changes |
+| `instrument_master_match_v.status` | 대조 결과 | STP-4100 instruments |
+| `instruments.asset_type` | 자산 유형 | STP-1100 holdings, STP-1200 orders, STP-1300 symbols, STP-1310 basket, STP-1310 plan, STP-1400 positions, STP-2300 symbols, STP-3400 settlements, STP-4300 fees, STP-4300 ticks |
+| `instruments.market` | 시장 | STP-4100 조회조건, STP-4300 fees |
+| `instruments.name` | 종목명 | STP-1100 holdings, STP-1200 orders, STP-1300 symbols, STP-1310 basket, STP-1310 plan, STP-1400 positions, STP-2300 symbols, STP-3400 settlements |
+| `instruments.symbol` | 종목코드 | STP-1100 holdings, STP-1300 symbols, STP-1300 조회조건, STP-1310 basket, STP-1310 plan, STP-2300 symbols, STP-3100 events, STP-3100 조회조건, STP-3200 events, STP-3200 조회조건, STP-3400 settlements |
 | `journal_entries.date` | 회계일 | STP-3200 journal |
 | `journal_entries.entry_id` | 전표 번호 | STP-3200 journal |
 | `journal_entries.kind` | 전표 유형 | STP-4500 templates |
@@ -110,6 +117,12 @@
 | `ledger_events.payload` | 이벤트 내용 | STP-3100 events |
 | `ledger_events.recorded_at` | 기록 시각 | STP-3100 events |
 | `ledger_events.seq` | 이벤트 순번 | STP-3100 events, STP-3100 조회조건, STP-3200 events, STP-3200 조회조건 |
+| `master_loads.base_date` | 기준일 | STP-4101 loads |
+| `master_loads.load_id` | 적재 번호 | STP-4101 loads, STP-4101 조회조건 |
+| `master_loads.rows_changed` | 변경 | STP-4101 loads |
+| `master_loads.rows_delisted` | 빠짐 | STP-4101 loads |
+| `master_loads.rows_new` | 신규 | STP-4101 loads |
+| `master_loads.rows_total` | 종목 수 | STP-4101 loads |
 | `oms_order_acks.detail` | 거부 사유 | STP-1200 order |
 | `oms_order_acks.order_no` | 증권사 주문번호 | STP-1200 order |
 | `oms_order_acks.outcome` | 결과 | STP-1200 order |

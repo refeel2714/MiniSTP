@@ -224,7 +224,8 @@ def load_lookups(path=None) -> dict[str, Lookup]:
 
 
 # ---------- 화면 분류 (menu.yaml) ----------
-# 화면번호 STP-ABCC: A 대분류, AB 중분류, CC 그 안의 순번. The number is the classification, so the
+# 화면번호 STP-ABCD: A 대분류, AB 중분류, C 그 안의 순번, D 0이면 대표 화면이고 1~9면 그 화면(ABC0)에서
+# 들어가는 딸린 화면. 딸린 화면은 메뉴트리에 따로 나오지 않고 대표 화면 아래에 매달려요. The number is the classification, so the
 # menu tree, the breadcrumb and the 화면정의서 cannot disagree about where a screen belongs.
 
 @dataclass(frozen=True)
@@ -252,8 +253,20 @@ def load_menu(path=None) -> list[MenuArea]:
         raise DefinitionError(f"menu.yaml: 형식 오류 {e}") from e
 
 
+def parent_id(screen_id: str) -> str | None:
+    """The representative screen a 딸린 화면 (last digit 1~9) hangs from; None for a representative screen."""
+    digits = screen_id.removeprefix("STP-")
+    return None if digits.endswith("0") else f"STP-{digits[:3]}0"
+
+
+def _drills_to(screen: Screen, target: str) -> bool:
+    return any(g.drill and target in ([g.drill.get("screen")] + list(g.drill.get("screens") or []))
+               for g in screen.grids)
+
+
 def menu_problems(menu: list[MenuArea], screens: dict[str, Screen]) -> list[str]:
-    """Every screen number falls in one 대분류 and one 중분류 of menu.yaml, and nothing there is empty."""
+    """Every screen number falls in one 대분류 and one 중분류 of menu.yaml, and nothing there is empty.
+    A 딸린 화면 has its representative screen, and that screen opens it (else nothing leads there)."""
     errs = []
     areas = [a.id for a in menu]
     groups = [g.id for a in menu for g in a.groups]
@@ -275,6 +288,11 @@ def menu_problems(menu: list[MenuArea], screens: dict[str, Screen]) -> list[str]
         elif digits[:2] not in groups:
             errs.append(f"{s.id} {s.title}: 중분류 {digits[:2]}가 menu.yaml에 없어요")
         used.add(digits[:2])
+        parent = parent_id(s.id)
+        if parent and parent not in screens:
+            errs.append(f"{s.id} {s.title}: 딸린 화면인데 대표 화면 {parent}가 없어요")
+        elif parent and not _drills_to(screens[parent], s.id):
+            errs.append(f"{s.id} {s.title}: 대표 화면 {parent}에서 이 화면으로 가는 이동(drill)이 없어요")
     errs += [f"menu.yaml: 중분류 {g.id} {g.name}에 화면이 없어요" for a in menu for g in a.groups if g.id not in used]
     errs += [f"menu.yaml: 중분류 {g.id}의 first에 적은 {sid}는 그 중분류의 화면이 아니에요"
              for a in menu for g in a.groups for sid in g.first
@@ -284,10 +302,17 @@ def menu_problems(menu: list[MenuArea], screens: dict[str, Screen]) -> list[str]
 
 def menu_tree(menu: list[MenuArea], screens: dict[str, Screen]) -> list[dict]:
     """대분류 → 중분류 → 화면 in menu.yaml's order (a group's `first` screens, then the rest in number order):
-    what the left menu, the home page and the index doc draw."""
+    what the left menu, the home page and the index doc draw.
+    A 딸린 화면 is not a line of its own: it sits in its representative screen's "subs"."""
     by_group: dict[str, list[dict]] = {}
+    subs: dict[str, list[dict]] = {}
     for s in sorted(screens.values(), key=lambda s: s.id):
-        by_group.setdefault(s.id.removeprefix("STP-")[:2], []).append({"id": s.id, "title": s.title})
+        if parent_id(s.id):
+            subs.setdefault(parent_id(s.id), []).append({"id": s.id, "title": s.title})
+    for s in sorted(screens.values(), key=lambda s: s.id):
+        if not parent_id(s.id):
+            by_group.setdefault(s.id.removeprefix("STP-")[:2], []).append(
+                {"id": s.id, "title": s.title, "subs": subs.get(s.id, [])})
 
     def ordered(g: MenuGroup) -> list[dict]:
         listed = by_group.get(g.id, [])

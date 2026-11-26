@@ -34,6 +34,9 @@
     "접수 거부": "bad", "결제 지연": "bad", "접수 기록 없음": "miss",
     "정상": "ok", "주의": "warn", "확인 필요": "bad", "평가 전": "info",
     "완료": "ok", "대기": "info", "누락": "miss", "점검 완료": "ok", "진행 중": "info",
+    RENAMED: "warn", DIFFERENT: "bad", DELISTED: "bad", MISSING: "miss",   // 종목 마스터 대조 (R-95)
+    "등록": "info", "신규": "info", "변경": "warn", "빠짐": "miss", "상장폐지": "miss",
+    "거래정지": "bad", "정리매매": "bad", "관리종목": "warn", "투자주의": "warn", "투자경고": "warn", "투자위험": "bad",
   };
 
   // ---------- account (다계좌) ----------
@@ -212,7 +215,7 @@
   // the number, the name and the code stay readable, the picture adds size, trend or state.
   const WEEK = ["월", "화", "수", "목", "금", "토", "일"];
   const HUES = 8;
-  const ROUND = new Set(["STOCK"]);   // 주식은 원, 그 밖(ETF, ETN ...)은 둥근 사각
+  const ROUND = new Set(["STOCK", "ST"]);   // 주식(자산 유형 STOCK, 증권그룹 ST 주권)은 원, 그 밖(ETF, ETN ...)은 둥근 사각
   function hue(code) {
     let n = 0;
     for (const ch of String(code ?? "")) n = (n * 31 + ch.codePointAt(0)) % 9973;
@@ -584,7 +587,7 @@
   // 메뉴트리: 대분류 > (중분류) > 화면. A 중분류 holding one screen is not drawn as a branch of its own:
   // the screen sits right under the 대분류, and the branch appears when a second screen joins it.
   function leaf(m, screen) {
-    const on = screen && m.id === screen.id;
+    const on = screen && (m.id === screen.id || (DATA.parent && m.id === DATA.parent.id));   // a 딸린 화면 lights its parent
     return h("li", {}, h("a", { href: "/screen/" + m.id, class: on ? "on" : null, "aria-current": on ? "page" : null, title: m.id + " " + m.title },
       h("span", { class: "sid", text: m.id.slice(4) }), h("span", { class: "lt", text: m.title })));
   }
@@ -828,8 +831,24 @@
       body.style.maxHeight = Math.max(360, Math.round(room)) + "px";
     }
 
+    // 화면 분류, and for a 딸린 화면 the screen it is opened from with a way back to it
+    function crumbLine() {
+      const p = DATA.parent;
+      if (!DATA.path.length && !p) return null;
+      if (!p) return h("p", { class: "crumb", "aria-label": "화면 분류", text: DATA.path.join(" › ") });
+      const back = h("button", { type: "button", class: "back", title: "들어온 화면으로 돌아가요" }, "← 돌아가기");
+      back.addEventListener("click", () => {
+        const from = document.referrer && new URL(document.referrer).origin === location.origin;
+        if (from && history.length > 1) history.back(); else location.href = "/screen/" + p.id;
+      });
+      return h("p", { class: "crumb", "aria-label": "화면 분류" }, back,
+        h("span", { text: (DATA.path.length ? DATA.path.join(" › ") + " › " : "") }),
+        h("a", { href: "/screen/" + p.id, text: p.id.slice(4) + " " + p.title }),
+        h("span", { text: " › " + def.id.slice(4) + " 딸린 화면" }));
+    }
+
     frame(def, h("main", { class: "screen" },
-      DATA.path.length ? h("p", { class: "crumb", "aria-label": "화면 분류", text: DATA.path.join(" › ") }) : null,
+      crumbLine(),
       h("div", { class: "title" },
         h("h1", {}, h("span", { class: "sid", text: def.id }), " " + def.title),
         h("a", { class: "spec", href: "/spec/" + def.id, title: "정의 파일과 DB 주석에서 생성한 화면정의서" }, "화면정의서")),

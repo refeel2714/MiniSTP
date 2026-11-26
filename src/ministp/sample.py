@@ -167,10 +167,56 @@ def _build_sample(conn, calendar, fees, start, days, seed, accounts) -> SampleSu
             x.run_day(conn, calendar, fees, instruments, broker.prices, n, day)
         summary.days += 1
         summary.last_day = day
+    _sample_master(conn, summary.first_day, calendar.add_business_days(summary.first_day, days // 2),
+                   summary.last_day)
     summary.streak = clean_streak(conn, calendar, summary.last_day)
     for x in others:
         x.summary.streak = clean_streak(conn, calendar, summary.last_day, x.spec.account_id)
     return summary
+
+
+# 시장 종목 마스터 (ERD v2.7): the three instruments the books use and a few made-up codes around them,
+# loaded on three days so the history screens have something that changed. Not real market data.
+def _master_row(symbol, name, market, group, **kw):
+    from .master import MasterRow
+    f = dict(isin=("KR7" + symbol + "000")[:12].ljust(12, "0"), base_price=0, lot=1, halted=False,
+             liquidation=False, managed=False, warning="00", lock="00", spac=False, preferred="0", margin=40,
+             listed_on=dt.date(2010, 1, 4), par_value=100 if group == "ST" else 0, prev_volume=0,
+             listed_shares=1_000, market_cap=0)
+    f.update(kw)
+    return MasterRow(symbol, f.pop("isin"), name, market, group, **f)
+
+
+def _sample_master(conn, first: dt.date, middle: dt.date, last: dt.date) -> None:
+    import hashlib
+
+    from . import master_db
+    from .master import KeptDay
+    base = [_master_row(i.symbol, i.name, i.market, "ST" if i.asset_type is AssetType.STOCK else "EF")
+            for i, _ in SAMPLE_INSTRUMENTS]
+    base += [_master_row("900010", "샘플바이오", Market.KOSDAQ, "ST", listed_shares=18_000),
+             _master_row("900020", "샘플스팩1호", Market.KOSDAQ, "ST", spac=True),
+             _master_row("900030", "샘플리츠", Market.KOSPI, "RT"),
+             _master_row("900040", "샘플전자", Market.KOSDAQ, "ST"),
+             _master_row("900050", "샘플 ETN", Market.KOSPI, "EN")]
+    by = {r.symbol: r for r in base}
+    from dataclasses import replace
+    days = [(first, by),
+            (middle, {**by, "900010": replace(by["900010"], managed=True, listed_shares=19_500),
+                      "900020": replace(by["900020"], halted=True),
+                      "900060": _master_row("900060", "샘플에너지", Market.KOSDAQ, "ST")}),
+            (last, {**{k: v for k, v in by.items() if k != "900040"},
+                    "900010": replace(by["900010"], managed=True, warning="01", listed_shares=19_500),
+                    "900020": replace(by["900020"], halted=True),
+                    "900030": replace(by["900030"], name="샘플오피스리츠"),
+                    "900060": _master_row("900060", "샘플에너지", Market.KOSDAQ, "ST")})]
+    done = None
+    for day, rows in days:
+        if done is not None and day <= done:   # a sample of a day or two: fewer loads
+            continue
+        done = day
+        digest = {m: hashlib.sha256(f"{day}{m.value}{sorted(rows.items())}".encode()).hexdigest() for m in Market}
+        master_db.load(conn, KeptDay(day, dt.datetime.combine(day, dt.time(8, 30)), digest), rows)
 
 
 def _books(conn, calendar, fees, account_id: str = DEFAULT_ACCOUNT) -> Books:

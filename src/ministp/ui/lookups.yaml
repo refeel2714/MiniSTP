@@ -5,7 +5,7 @@
 # 화면 정의에서는 조회조건이나 입력 항목에 `lookup: <이름>`으로 붙여요.
 symbol:
   title: 종목 찾기
-  tx: STP4100R01
+  tx: STP4100R05
   value: symbol
   shows: instrument_name
   columns:
