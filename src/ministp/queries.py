@@ -849,7 +849,7 @@ def instrument_rules(books, symbol: str, today: dt.date) -> Dataset:
     return Dataset(("kind", "item", "value", "note"), tuple(rows))
 
 
-# ---------- STP-3400 계좌정보 ----------
+# ---------- STP-3400 예수금·결제 현황 ----------
 # The account's own state (balances, what is still to settle, the last recon): it is the books' view of one
 # account, so it sits with the ledger screens and not with reference data.
 
