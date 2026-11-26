@@ -198,4 +198,4 @@ def test_nav_series_keeps_each_day_as_it_was(conn, broker):
 
 def test_every_transaction_is_registered_once():
     assert len(set(TRANSACTIONS.values())) == len(TRANSACTIONS)
-    assert all(k[:7] in {"STP1100", "STP1200", "STP1300", "STP2100", "STP2110", "STP2200", "STP2210", "STP2300", "STP2400", "STP3100", "STP3200", "STP3300", "STP3400", "STP4100", "STP4300", "STP6100"} for k in TRANSACTIONS)
+    assert all(k[:7] in {"STP1100", "STP1200", "STP1300", "STP2100", "STP2110", "STP2200", "STP2210", "STP2300", "STP2400", "STP3100", "STP3200", "STP3300", "STP3400", "STP4100", "STP4300", "STP4500", "STP6100"} for k in TRANSACTIONS)
