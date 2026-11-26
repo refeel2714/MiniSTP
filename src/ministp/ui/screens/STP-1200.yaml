@@ -1,6 +1,6 @@
 id: STP-1200
 title: 주문·체결 블로터
-purpose: 왼쪽에서 주문마다 의도 → 접수 → 체결 → 결제 가운데 어디까지 왔는지 한 줄로 보고, 주문을 고르면 오른쪽에 접수 내용과 체결별 결제 예정일·결제일이 나와요. 결제는 예수금 화면과 같은 원장에서 읽어요.
+purpose: 왼쪽에서 주문마다 전송 → 접수 → 체결 → 결제 가운데 어디까지 왔는지 한 줄로 보고, 주문을 고르면 오른쪽에 접수 내용과 체결별 결제 예정일·결제일이 나와요. 결제는 예수금 화면과 같은 원장에서 읽어요.
 layout: split
 left: 58
 conditions:
@@ -21,7 +21,7 @@ grids:
       - {name: side, source: oms_orders.side, format: code, color: side, display: pill}
       - {name: filled_qty, label: 체결 / 주문, format: number, display: meter, of: qty}
       - {name: qty, source: oms_orders.qty, format: number}
-      - {name: progress, label: 진행 단계, format: steps, display: steps, steps: [의도, 접수, 체결, 결제]}
+      - {name: progress, label: 진행 단계, format: steps, display: steps, steps: [전송, 접수, 체결, 결제]}
       - {name: stage, label: 진행 상태, color: status, display: pill}
       - {name: client_id, source: oms_orders.client_id, format: code, hidden: true}
   - id: order
