@@ -1,15 +1,28 @@
 id: STP-3300
 title: 시산표
-purpose: 계정과목별 잔액을 한 표로 보여줘요. 장부 전체의 차변 합계와 대변 합계가 같은지를 표 위에 함께 보여줘요. 어느 이벤트가 그 잔액을 만들었는지는 분개 조회(STP-3200)에서 따라가요.
+purpose: 합계잔액시산표 모양으로, 가운데 계정과목을 두고 왼쪽에 차변(당일잔액·당일증감·전일잔액), 오른쪽에 대변(전일잔액·당일증감·당일잔액)을 적어요. 자산·비용은 차변에, 부채·자본·수익은 대변에 잔액이 서고, 계정 분류마다 합계 줄이 먼저 와요. 맨 아래 총합계의 차변과 대변이 같아야 하고, 그 결과를 표 위에 함께 보여줘요. 어느 이벤트가 그 잔액을 만들었는지는 분개 조회(STP-3200)에서 따라가요.
+conditions:
+  - {name: day, type: date, label: 기준일, default: today}
 grids:
   - id: trial
-    title: 시산표
+    title: 합계잔액시산표
     live: true
     tx: STP3300R01
     load: open
-    meta: {balanced: 차대 일치}
+    key: code
+    meta: {day: 기준일, balanced: 차대 일치}
+    bands:
+      - {label: 차변, span: 3}
+      - {label: 계정과목, span: 2}
+      - {label: 대변, span: 3}
+    emphasis: level
     columns:
+      - {name: d_now, label: 당일잔액, format: money}
+      - {name: d_change, label: 당일증감, format: money}
+      - {name: d_prev, label: 전일잔액, format: money}
       - {name: code, source: accounts_chart.code, format: code}
       - {name: name, source: accounts_chart.name}
-      - {name: normal_side, source: accounts_chart.normal_side, format: code}
-      - {name: balance, source: account_balances_v.balance, format: money}
+      - {name: c_prev, label: 전일잔액, format: money}
+      - {name: c_change, label: 당일증감, format: money}
+      - {name: c_now, label: 당일잔액, format: money}
+      - {name: level, label: 줄 종류, hidden: true}
