@@ -9,6 +9,7 @@ on the owner's PC, in environment variables that start with `MINISTP_<credential
 Rows are never changed: a status change is a new row in `account_status_history`.
 """
 import datetime as dt
+import os
 import re
 from dataclasses import dataclass
 
@@ -45,6 +46,16 @@ class AccountInfo:
 
 def env_prefix(credential_ref: str) -> str:
     return f"MINISTP_{credential_ref}"
+
+
+def masked_account_no(credential_ref: str, environ=os.environ) -> str | None:
+    """The account number as the screens may show it: the first two and last two digits of the 8-digit number and
+    the product code, the rest hidden (`12****78-01`). Read from this PC's `MINISTP_<ref>_ACCOUNT` each time it is
+    asked, never stored or logged. None when this PC has no number for the account (or it is not a number)."""
+    raw = (environ.get(f"{env_prefix(credential_ref)}_ACCOUNT") or "").replace("-", "").strip()
+    if len(raw) not in (8, 10) or not raw.isdigit():
+        return None
+    return f"{raw[:2]}****{raw[6:8]}-{raw[8:] or '01'}"
 
 
 _SELECT = ("select t.account_id, t.company_id, t.alias, t.broker, t.env, t.account_type, t.credential_ref,"

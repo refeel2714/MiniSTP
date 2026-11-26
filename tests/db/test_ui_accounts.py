@@ -127,6 +127,20 @@ def test_account_list_and_status_history(client, conn, sample):
     assert not {"cash_d0", "book_cost", "holdings", "events", "clean_streak"} & set(second)
     text = json.dumps(body)
     assert "account_no" not in text and "app_key" not in text.lower()
+    assert {a["masked_no"] for a in accounts} == {"이 PC에 없음"}   # the sample PC has no account numbers
+
+
+def test_the_account_number_is_masked_from_this_pc_and_never_answered_whole(client, monkeypatch):
+    """계좌번호 is not in the database: the list reads this PC's MINISTP_<ref>_ACCOUNT and shows only its ends."""
+    from ministp.accounts import masked_account_no
+    assert masked_account_no("KIS_2", {"MINISTP_KIS_2_ACCOUNT": "12345678-01"}) == "12****78-01"
+    assert masked_account_no("KIS_2", {"MINISTP_KIS_2_ACCOUNT": "12345678"}) == "12****78-01"
+    assert masked_account_no("KIS_2", {"MINISTP_KIS_2_ACCOUNT": "1234"}) is None
+    assert masked_account_no("KIS_2", {}) is None
+    monkeypatch.setenv("MINISTP_KIS_2_ACCOUNT", "98765432-01")
+    accounts, body = rows(client, "STP4400R01", "A0001")
+    assert {a["account_id"]: a["masked_no"] for a in accounts}["A0002"] == "98****32-01"
+    assert "98765432" not in json.dumps(body) and "765432" not in json.dumps(body)
 
     history, _ = rows(client, "STP4400R02", params={"account_id": "A0003"})
     assert [h["status"] for h in history] == ["OPEN", "SUSPENDED", "OPEN"]       # newest first
@@ -139,8 +153,8 @@ def test_the_account_list_shows_little_and_its_detail_is_on_the_right(client, co
     screen = load_screens()["STP-4400"]
     master, *details = screen.grids
     assert screen.layout == "split" and master.id == "accounts" and master.load == "open"
-    assert [c.name for c in master.columns] == ["account_id", "alias", "company_alias", "status", "broker", "env",
-                                                "account_type", "opened_on"]
+    assert [c.name for c in master.columns] == ["account_id", "alias", "company_alias", "masked_no", "status", "broker",
+                                                "env", "account_type", "opened_on"]
     assert not master.totals                                      # 기준정보: no balances to add up
     assert [(g.id, g.load, g.master, g.link) for g in details] == [
         ("status_history", "master", "accounts", {"account_id": "account_id"})]
